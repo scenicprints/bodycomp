@@ -39,9 +39,17 @@ Fasted-dates set is additive. **Low data risk.**
 ---
 
 ## Batch 2 — Meal Maker  → v1.3.0  ✅ SHIPPED
-*(Decision: skipped cooked-weight tracking — portions scale the raw-ingredient meal by
-calories OR grams; per-ingredient amounts come out proportional. Also bundled the fix for
-bottom sheets being cut off by the gesture nav bar.)*
+*(v1.3.0: skipped cooked-weight; saved-meal library + bottom-sheet nav-bar fix.)*
+
+## Batch 2.5 — Cook rework + hourly log  → v1.4.0  ✅ SHIPPED
+Reworked the meal maker after feedback (the saved library cluttered; cooked weight matters):
+- **Cook tab** (top-level) — a calculator, not a library. Enter raw ingredients →
+  "I'll eat X cal" → it tells you the **cooked grams to weigh on your plate**.
+- **Cooked weight via per-ingredient yields** (rice swells, meat shrinks; editable),
+  because the user can't weigh the whole pot — only the portion. Calories from raw (exact).
+- **24h leftovers** — a cooked dish stays for a day to grab another portion, then auto-retires.
+- **Hourly food log** (grid by hour, tap an hour to add) replacing meal-period groups.
+- **Linked Grams↔Servings** fields; **move/copy by date AND time**.
 Build a meal from ingredients (raw weights), then portion it by calories.
 
 **The math (proposed):**

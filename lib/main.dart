@@ -1328,6 +1328,12 @@ class _HomeShellState extends State<HomeShell> {
   int _tab = 0;
   @override
   Widget build(BuildContext context) {
+    int ph = 0;
+    if (widget.logs.isNotEmpty) {
+      ph = MathEngine.phase(MathEngine.progress(
+          widget.cal.startBf, widget.logs.last.bf, widget.cal.targetBf));
+    }
+    final Color accent = kPhases[ph].accent;
     return Scaffold(
       body: SafeArea(
           child: IndexedStack(index: _tab, children: [
@@ -1348,6 +1354,14 @@ class _HomeShellState extends State<HomeShell> {
             onSetFoods: widget.onSetFoods,
             onSetFasted: widget.onSetFasted,
             onSetMeals: widget.onSetMeals),
+        _CookScreen(
+            accent: accent,
+            meals: widget.meals,
+            onSetMeals: widget.onSetMeals,
+            logDate: formatDate(DateTime.now()),
+            embedded: true,
+            onLogFood: (FoodEntry e) =>
+                widget.onSetFoods(<FoodEntry>[...widget.foods, e])),
         LedgerScreen(
             logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
         SettingsScreen(
@@ -1369,6 +1383,8 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.dashboard_rounded), label: 'DASHBOARD'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.restaurant_rounded), label: 'FOOD'),
+            BottomNavigationBarItem(
+                icon: Icon(Icons.outdoor_grill_rounded), label: 'COOK'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.list_alt_rounded), label: 'LEDGER'),
             BottomNavigationBarItem(
@@ -2774,6 +2790,7 @@ class FoodScreen extends StatefulWidget {
 
 class _FoodScreenState extends State<FoodScreen> {
   late String _date;
+  String? _pendingTime; // set when adding via a specific hour slot
 
   @override
   void initState() {
@@ -2814,10 +2831,20 @@ class _FoodScreenState extends State<FoodScreen> {
     return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
   }
 
-  Future<String?> _pickDate(String initial) async {
+  // Time stamped onto a newly-added entry: the tapped hour slot, else now.
+  String _timeForNew() => _pendingTime ?? _nowTime();
+
+  void _addAtHour(int hour) {
+    _pendingTime = '${hour.toString().padLeft(2, '0')}:00';
+    _showAddMenu();
+  }
+
+  /// Picks a date, then a time. Returns (date 'YYYY-MM-DD', time 'HH:mm').
+  Future<(String, String)?> _pickDateTime(
+      String initialDate, String initialTime) async {
     final DateTime? d = await showDatePicker(
         context: context,
-        initialDate: DateTime.parse(initial),
+        initialDate: DateTime.parse(initialDate),
         firstDate: DateTime(2020),
         lastDate: DateTime(2100),
         builder: (BuildContext ctx, Widget? child) => Theme(
@@ -2825,18 +2852,38 @@ class _FoodScreenState extends State<FoodScreen> {
                 colorScheme:
                     ColorScheme.dark(primary: _accent, surface: kSurface2)),
             child: child!));
-    return d != null ? formatDate(d) : null;
+    if (d == null || !mounted) {
+      return null;
+    }
+    final List<String> hm =
+        initialTime.contains(':') ? initialTime.split(':') : <String>['12', '0'];
+    final TimeOfDay? t = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay(
+            hour: int.tryParse(hm[0]) ?? 12, minute: int.tryParse(hm[1]) ?? 0),
+        builder: (BuildContext ctx, Widget? child) => Theme(
+            data: ThemeData.dark().copyWith(
+                colorScheme:
+                    ColorScheme.dark(primary: _accent, surface: kSurface2)),
+            child: child!));
+    if (t == null) {
+      return null;
+    }
+    final String time =
+        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
+    return (formatDate(d), time);
   }
 
-  void _moveEntry(FoodEntry e, String date) {
+  void _moveEntry(FoodEntry e, String date, String time) {
     widget.onSetFoods(widget.foods
-        .map((FoodEntry x) => x.id == e.id ? x.copyWith(date: date) : x)
+        .map((FoodEntry x) =>
+            x.id == e.id ? x.copyWith(date: date, time: time) : x)
         .toList());
   }
 
-  void _copyEntry(FoodEntry e, String date) {
+  void _copyEntry(FoodEntry e, String date, String time) {
     widget.onSetFoods(List<FoodEntry>.from(widget.foods)
-      ..add(e.copyWith(id: _newId(), date: date)));
+      ..add(e.copyWith(id: _newId(), date: date, time: time)));
   }
 
   String _dateLabel() {
@@ -2863,6 +2910,7 @@ class _FoodScreenState extends State<FoodScreen> {
 
   void _addEntry(FoodEntry e) {
     widget.onSetFoods(List<FoodEntry>.from(widget.foods)..add(e));
+    _pendingTime = null; // consumed
   }
 
   void _updateEntry(FoodEntry e) {
@@ -2896,8 +2944,8 @@ class _FoodScreenState extends State<FoodScreen> {
             Navigator.pop(context);
             _searchFood();
           }),
-          _menuTile(Icons.restaurant_menu_rounded, 'From a meal',
-              'Build meals from ingredients, log a portion', () {
+          _menuTile(Icons.restaurant_menu_rounded, 'Cook a meal',
+              'Combine ingredients, portion by calories', () {
             Navigator.pop(context);
             _openMeals();
           }),
@@ -2965,14 +3013,12 @@ class _FoodScreenState extends State<FoodScreen> {
 
   void _openMeals() {
     Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => _MealsScreen(
+      builder: (_) => _CookScreen(
         accent: _accent,
         meals: widget.meals,
         onSetMeals: widget.onSetMeals,
-        onLogPortion: (Meal meal, MealPortion portion) {
-          _addEntry(MealMath.toEntry(meal, portion,
-              id: _newId(), date: _date, time: _nowTime()));
-        },
+        logDate: _date,
+        onLogFood: _addEntry,
       ),
     ));
   }
@@ -2993,7 +3039,7 @@ class _FoodScreenState extends State<FoodScreen> {
               date: _date,
               grams: grams,
               servingLabel: label,
-              time: _nowTime()));
+              time: _timeForNew()));
           Navigator.pop(context);
         },
       ),
@@ -3028,18 +3074,20 @@ class _FoodScreenState extends State<FoodScreen> {
             ? null
             : () async {
                 Navigator.pop(context);
-                final String? d = await _pickDate(existing.date);
-                if (d != null) {
-                  _moveEntry(existing, d);
+                final (String, String)? dt =
+                    await _pickDateTime(existing.date, existing.time);
+                if (dt != null) {
+                  _moveEntry(existing, dt.$1, dt.$2);
                 }
               },
         onCopy: existing == null
             ? null
             : () async {
                 Navigator.pop(context);
-                final String? d = await _pickDate(existing.date);
-                if (d != null) {
-                  _copyEntry(existing, d);
+                final (String, String)? dt =
+                    await _pickDateTime(existing.date, existing.time);
+                if (dt != null) {
+                  _copyEntry(existing, dt.$1, dt.$2);
                 }
               },
         buildEntry: (String name, String serving, double cal, double p,
@@ -3047,7 +3095,7 @@ class _FoodScreenState extends State<FoodScreen> {
           return FoodEntry(
             id: existing?.id ?? _newId(),
             date: existing?.date ?? _date,
-            time: existing?.time ?? _nowTime(),
+            time: existing?.time ?? _timeForNew(),
             name: name,
             serving: serving,
             calories: cal,
@@ -3063,44 +3111,49 @@ class _FoodScreenState extends State<FoodScreen> {
     );
   }
 
-  List<Widget> _groupedFoods(List<FoodEntry> dayFoods, Color accent) {
-    const List<String> order = <String>[
-      'Breakfast',
-      'Lunch',
-      'Dinner',
-      'Snacks',
-      'Other'
-    ];
-    final Map<String, List<FoodEntry>> groups = <String, List<FoodEntry>>{};
+  int _hourOf(FoodEntry e) =>
+      e.time.length >= 2 ? (int.tryParse(e.time.split(':').first) ?? 12) : 12;
+
+  List<Widget> _hourGrid(List<FoodEntry> dayFoods, Color accent) {
+    final Map<int, List<FoodEntry>> byHour = <int, List<FoodEntry>>{};
     for (final FoodEntry e in dayFoods) {
-      (groups[e.mealPeriod] ??= <FoodEntry>[]).add(e);
+      (byHour[_hourOf(e)] ??= <FoodEntry>[]).add(e);
+    }
+    int start = 6, end = 21; // default visible window, expands to fit entries
+    if (byHour.isNotEmpty) {
+      start = min(start, byHour.keys.reduce(min));
+      end = max(end, byHour.keys.reduce(max));
     }
     final List<Widget> out = <Widget>[];
-    for (final String period in order) {
-      final List<FoodEntry>? list = groups[period];
-      if (list == null || list.isEmpty) {
-        continue;
-      }
-      final double cal =
-          list.fold<double>(0, (double s, FoodEntry e) => s + e.calories);
-      out.add(Padding(
-        padding: const EdgeInsets.fromLTRB(4, 10, 4, 6),
-        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Text(period.toUpperCase(),
-              style: TextStyle(
-                  fontSize: 11,
-                  color: Colors.grey[600],
-                  letterSpacing: 1,
-                  fontWeight: FontWeight.w700)),
-          Text('${cal.round()} cal',
-              style: TextStyle(fontSize: 11, color: Colors.grey[700])),
-        ]),
+    for (int h = start; h <= end; h++) {
+      final List<FoodEntry> list = byHour[h] ?? <FoodEntry>[];
+      out.add(InkWell(
+        onTap: () => _addAtHour(h),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(2, 10, 2, 4),
+          child: Row(children: <Widget>[
+            SizedBox(
+                width: 52,
+                child: Text('${h.toString().padLeft(2, '0')}:00',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[list.isEmpty ? 700 : 500],
+                        fontWeight: FontWeight.w600))),
+            Expanded(
+                child: Container(height: 1, color: const Color(0xFF1C1C1C))),
+            const SizedBox(width: 8),
+            Icon(Icons.add_circle_outline_rounded,
+                size: 16, color: Colors.grey[700]),
+          ]),
+        ),
       ));
       for (final FoodEntry e in list) {
-        out.add(_FoodCard(
-            entry: e,
-            accent: accent,
-            onTap: () => _openEditor(existing: e)));
+        out.add(Padding(
+          padding: const EdgeInsets.only(left: 52),
+          child: _FoodCard(
+              entry: e, accent: accent, onTap: () => _openEditor(existing: e)),
+        ));
       }
     }
     return out;
@@ -3134,10 +3187,8 @@ class _FoodScreenState extends State<FoodScreen> {
         const SizedBox(height: 4),
         _BudgetHeader(totals: totals, targets: targets, accent: accent),
         const SizedBox(height: 8),
-        if (dayFoods.isEmpty) ...[
-          _fastedCard(accent),
-        ] else
-          ..._groupedFoods(dayFoods, accent),
+        if (dayFoods.isEmpty) _fastedCard(accent),
+        ..._hourGrid(dayFoods, accent),
         if (totals.nutrients.isNotEmpty) ...[
           const SizedBox(height: 10),
           _MicroPanel(nutrients: totals.nutrients),
@@ -3150,7 +3201,10 @@ class _FoodScreenState extends State<FoodScreen> {
         child: SizedBox(
           height: 56,
           child: ElevatedButton.icon(
-            onPressed: _showAddMenu,
+            onPressed: () {
+              _pendingTime = null;
+              _showAddMenu();
+            },
             icon: const Icon(Icons.add_rounded),
             label: const Text('ADD FOOD',
                 style: TextStyle(
@@ -3636,46 +3690,65 @@ class _ConfirmFoodSheet extends StatefulWidget {
 }
 
 class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
-  late final TextEditingController _amount;
-  late bool _byServing;
+  late final TextEditingController _gramsC;
+  late final TextEditingController _servingsC;
+  bool _syncing = false;
 
-  bool get _hasServing => widget.template.servingGrams != null;
+  bool get _hasServing =>
+      widget.template.servingGrams != null && widget.template.servingGrams! > 0;
+  double get _servingG => widget.template.servingGrams ?? 0;
 
   @override
   void initState() {
     super.initState();
-    _byServing = _hasServing;
-    _amount = TextEditingController(
-        text: _byServing
-            ? '1'
-            : _trim(widget.template.servingGrams ?? 100, dp: 1));
+    final double initGrams = _hasServing ? _servingG : 100;
+    _gramsC = TextEditingController(text: _trim(initGrams, dp: 1));
+    _servingsC = TextEditingController(text: _hasServing ? '1' : '');
   }
 
   @override
   void dispose() {
-    _amount.dispose();
+    _gramsC.dispose();
+    _servingsC.dispose();
     super.dispose();
   }
 
-  double get _amountVal => double.tryParse(_amount.text) ?? 0;
+  double get _grams => double.tryParse(_gramsC.text) ?? 0;
 
-  double get _grams =>
-      _byServing ? _amountVal * (widget.template.servingGrams ?? 0) : _amountVal;
-
-  String get _label {
-    if (_byServing) {
-      final String unit = _amountVal == 1 ? 'serving' : 'servings';
-      return '${_trim(_amountVal, dp: 1)} $unit (${_trim(_grams)} g)';
+  // The two fields stay in sync; _syncing guards against feedback loops.
+  void _onGrams(String v) {
+    if (_syncing) {
+      return;
     }
-    return '${_trim(_grams)} g';
+    _syncing = true;
+    if (_hasServing) {
+      final double? g = double.tryParse(v);
+      _servingsC.text = g != null ? _trim(g / _servingG, dp: 2) : '';
+    }
+    _syncing = false;
+    setState(() {});
   }
 
-  void _setMode(bool byServing) {
-    setState(() {
-      _byServing = byServing;
-      _amount.text =
-          byServing ? '1' : _trim(widget.template.servingGrams ?? 100, dp: 1);
-    });
+  void _onServings(String v) {
+    if (_syncing) {
+      return;
+    }
+    _syncing = true;
+    final double? s = double.tryParse(v);
+    _gramsC.text = s != null ? _trim(s * _servingG, dp: 1) : '';
+    _syncing = false;
+    setState(() {});
+  }
+
+  String get _label {
+    if (_hasServing) {
+      final double? s = double.tryParse(_servingsC.text);
+      if (s != null) {
+        final String unit = s == 1 ? 'serving' : 'servings';
+        return '${_trim(s, dp: 2)} $unit (${_trim(_grams)} g)';
+      }
+    }
+    return '${_trim(_grams)} g';
   }
 
   @override
@@ -3684,7 +3757,10 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     final double s = _grams / 100.0;
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).viewInsets.bottom +
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
               MediaQuery.of(context).viewPadding.bottom +
               24),
       child: Column(
@@ -3697,31 +3773,17 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                     fontWeight: FontWeight.w700,
                     color: widget.accent)),
             const SizedBox(height: 16),
-            if (_hasServing) ...[
-              Row(children: [
-                _modeChip('Servings', _byServing, () => _setMode(true)),
-                const SizedBox(width: 8),
-                _modeChip('Grams', !_byServing, () => _setMode(false)),
-              ]),
-              const SizedBox(height: 12),
-            ],
-            Text(
-                _byServing
-                    ? 'SERVINGS (1 = ${_trim(t.servingGrams ?? 0)} g)'
-                    : 'AMOUNT (GRAMS)',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey[600],
-                    letterSpacing: 1,
-                    fontWeight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            TextField(
-                controller: _amount,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
-                decoration: _foodDec(widget.accent),
-                onChanged: (_) => setState(() {})),
+            Row(crossAxisAlignment: CrossAxisAlignment.end, children: <Widget>[
+              Expanded(child: _amountField('GRAMS', _gramsC, _onGrams)),
+              if (_hasServing) ...<Widget>[
+                const SizedBox(width: 12),
+                Expanded(
+                    child: _amountField(
+                        'SERVINGS (${_trim(_servingG)} g)',
+                        _servingsC,
+                        _onServings)),
+              ],
+            ]),
             const SizedBox(height: 16),
             Row(children: [
               _stat('Calories', '${(t.kcal100 * s).round()}', widget.accent),
@@ -3750,23 +3812,23 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     );
   }
 
-  Widget _modeChip(String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-        decoration: BoxDecoration(
-            color: active ? widget.accent : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-                color: active ? widget.accent : const Color(0xFF333333))),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: active ? Colors.black : Colors.grey[500])),
-      ),
-    );
+  Widget _amountField(
+      String label, TextEditingController c, void Function(String) onChanged) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+      Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              letterSpacing: 1,
+              fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      TextField(
+          controller: c,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
+          decoration: _foodDec(widget.accent),
+          onChanged: onChanged),
+    ]);
   }
 
   Widget _stat(String label, String value, Color accent) {
@@ -4006,22 +4068,26 @@ InputDecoration _foodDec(Color accent) {
 
 String _newMealId() => DateTime.now().microsecondsSinceEpoch.toString();
 
-// ─── List of saved meals ───
-class _MealsScreen extends StatefulWidget {
+// ─── Cook tab: cook a meal + 24h leftovers ───
+class _CookScreen extends StatefulWidget {
   final Color accent;
   final List<Meal> meals;
   final void Function(List<Meal>) onSetMeals;
-  final void Function(Meal, MealPortion) onLogPortion;
-  const _MealsScreen(
+  final String logDate; // where logged portions land
+  final void Function(FoodEntry) onLogFood;
+  final bool embedded; // true when used as the Cook tab (don't pop the screen)
+  const _CookScreen(
       {required this.accent,
       required this.meals,
       required this.onSetMeals,
-      required this.onLogPortion});
+      required this.logDate,
+      required this.onLogFood,
+      this.embedded = false});
   @override
-  State<_MealsScreen> createState() => _MealsScreenState();
+  State<_CookScreen> createState() => _CookScreenState();
 }
 
-class _MealsScreenState extends State<_MealsScreen> {
+class _CookScreenState extends State<_CookScreen> {
   late List<Meal> _meals;
 
   @override
@@ -4030,17 +4096,36 @@ class _MealsScreenState extends State<_MealsScreen> {
     _meals = List<Meal>.from(widget.meals);
   }
 
+  int get _now => DateTime.now().millisecondsSinceEpoch;
+
+  List<Meal> get _active {
+    final List<Meal> a = _meals.where((Meal m) => m.isActive(_now)).toList();
+    a.sort((Meal x, Meal y) => y.createdAtMs.compareTo(x.createdAtMs));
+    return a;
+  }
+
   void _persist() => widget.onSetMeals(_meals);
 
-  Future<void> _newMeal() async {
+  String _nowTime() {
+    final DateTime n = DateTime.now();
+    return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _cookNew() async {
     final Meal? m = await Navigator.of(context).push<Meal>(
         MaterialPageRoute<Meal>(
             builder: (_) =>
                 _MealEditScreen(accent: widget.accent, existing: null)));
-    if (m != null && m.ingredients.isNotEmpty) {
-      setState(() => _meals = <Meal>[..._meals, m]);
-      _persist();
+    if (m == null || m.ingredients.isEmpty || !mounted) {
+      return;
     }
+    // Keep only still-active leftovers, then add the fresh dish.
+    setState(() => _meals = <Meal>[
+          ..._meals.where((Meal x) => x.isActive(_now)),
+          m,
+        ]);
+    _persist();
+    _portion(m); // straight to "how much do I eat?"
   }
 
   Future<void> _editMeal(Meal meal) async {
@@ -4073,9 +4158,12 @@ class _MealsScreenState extends State<_MealsScreen> {
         onLog: (MealPortion portion) {
           final ScaffoldMessengerState messenger =
               ScaffoldMessenger.of(context);
-          widget.onLogPortion(meal, portion);
+          widget.onLogFood(MealMath.toEntry(meal, portion,
+              id: _newMealId(), date: widget.logDate, time: _nowTime()));
           Navigator.pop(context); // close sheet
-          Navigator.pop(context); // back to the day view
+          if (!widget.embedded && Navigator.canPop(context)) {
+            Navigator.pop(context); // back to the food day view
+          }
           messenger.showSnackBar(SnackBar(
               backgroundColor: const Color(0xFF2A2A2A),
               content: Text(
@@ -4087,78 +4175,92 @@ class _MealsScreenState extends State<_MealsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final List<Meal> active = _active;
     return Scaffold(
       backgroundColor: kBgDeep,
       appBar: AppBar(
           backgroundColor: kBgDeep,
           foregroundColor: const Color(0xFFEEEEEE),
-          title: const Text('Meals')),
+          title: const Text('Cook')),
       floatingActionButton: FloatingActionButton.extended(
-          onPressed: _newMeal,
+          onPressed: _cookNew,
           backgroundColor: widget.accent,
           foregroundColor: Colors.black,
-          icon: const Icon(Icons.add_rounded),
-          label: const Text('NEW MEAL',
+          icon: const Icon(Icons.outdoor_grill_rounded),
+          label: const Text('COOK A MEAL',
               style: TextStyle(fontWeight: FontWeight.w800))),
-      body: _meals.isEmpty
+      body: active.isEmpty
           ? Center(
               child: Padding(
                   padding: const EdgeInsets.all(32),
                   child: Text(
-                      'No meals yet.\nTap NEW MEAL to combine ingredients into a recipe you can portion by calories.',
+                      'No meals cooking.\n\nTap COOK A MEAL, add your raw ingredients, and it tells you how many grams of the cooked food to eat for your calorie target.\n\nMeals stay here for 24 hours so you can grab another portion.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                          fontSize: 14, color: Colors.grey[600], height: 1.5))))
-          : ListView.builder(
+                          fontSize: 14, color: Colors.grey[600], height: 1.6))))
+          : ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
-              itemCount: _meals.length,
-              itemBuilder: (BuildContext ctx, int i) {
-                final Meal m = _meals[i];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Material(
-                    color: kSurface0,
-                    borderRadius: BorderRadius.circular(12),
-                    child: InkWell(
+              children: <Widget>[
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Text('LEFTOVERS (next 24h)',
+                      style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey[600],
+                          letterSpacing: 1,
+                          fontWeight: FontWeight.w600)),
+                ),
+                ...active.map((Meal m) {
+                  final int hLeft = (24 -
+                          (_now - m.createdAtMs) / (60 * 60 * 1000))
+                      .ceil();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Material(
+                      color: kSurface0,
                       borderRadius: BorderRadius.circular(12),
-                      onTap: () => _portion(m),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
-                        decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: kBorder)),
-                        child: Row(children: [
-                          Expanded(
-                            child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(m.name,
-                                      style: const TextStyle(
-                                          fontSize: 15,
-                                          fontWeight: FontWeight.w600,
-                                          color: Color(0xFFDDDDDD))),
-                                  const SizedBox(height: 3),
-                                  Text(
-                                      '${m.ingredients.length} ingredients · ${m.calories.round()} cal · ${m.totalGrams.round()} g',
-                                      style: TextStyle(
-                                          fontSize: 11, color: Colors.grey[600])),
-                                ]),
-                          ),
-                          IconButton(
-                              onPressed: () => _editMeal(m),
-                              icon: const Icon(Icons.edit_rounded,
-                                  size: 18, color: Color(0xFF888888))),
-                          IconButton(
-                              onPressed: () => _deleteMeal(m),
-                              icon: const Icon(Icons.delete_outline_rounded,
-                                  size: 18, color: Color(0xFFCC5555))),
-                        ]),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => _portion(m),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 12),
+                          decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: kBorder)),
+                          child: Row(children: <Widget>[
+                            Expanded(
+                              child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: <Widget>[
+                                    Text(m.name,
+                                        style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w600,
+                                            color: Color(0xFFDDDDDD))),
+                                    const SizedBox(height: 3),
+                                    Text(
+                                        '${m.calories.round()} cal · ~${m.cookedTotalGrams.round()} g cooked · ${hLeft}h left',
+                                        style: TextStyle(
+                                            fontSize: 11,
+                                            color: Colors.grey[600])),
+                                  ]),
+                            ),
+                            IconButton(
+                                onPressed: () => _editMeal(m),
+                                icon: const Icon(Icons.edit_rounded,
+                                    size: 18, color: Color(0xFF888888))),
+                            IconButton(
+                                onPressed: () => _deleteMeal(m),
+                                icon: const Icon(Icons.delete_outline_rounded,
+                                    size: 18, color: Color(0xFFCC5555))),
+                          ]),
+                        ),
                       ),
                     ),
-                  ),
-                );
-              }),
+                  );
+                }),
+              ]),
     );
   }
 }
@@ -4195,7 +4297,9 @@ class _MealEditScreenState extends State<_MealEditScreen> {
   Meal get _meal => Meal(
       id: widget.existing?.id ?? _newMealId(),
       name: _name.text.trim(),
-      ingredients: _ings);
+      ingredients: _ings,
+      createdAtMs: widget.existing?.createdAtMs ??
+          DateTime.now().millisecondsSinceEpoch);
 
   void _addTemplate(FoodTemplate t) {
     showModalBottomSheet<void>(
@@ -4306,52 +4410,87 @@ class _MealEditScreenState extends State<_MealEditScreen> {
     );
   }
 
-  Future<void> _editGrams(int index) async {
+  Future<void> _editIngredient(int index) async {
     final MealIngredient ing = _ings[index];
-    final TextEditingController c =
+    final TextEditingController g =
         TextEditingController(text: _trim(ing.rawGrams, dp: 1));
-    final double? result = await showModalBottomSheet<double>(
+    final TextEditingController y =
+        TextEditingController(text: _trim(ing.yieldFactor, dp: 2));
+    final MealIngredient? result =
+        await showModalBottomSheet<MealIngredient>(
       context: context,
       isScrollControlled: true,
       backgroundColor: kSurface2,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => Padding(
-        padding: EdgeInsets.fromLTRB(24, 20, 24,
-            MediaQuery.of(context).viewInsets.bottom +
-                MediaQuery.of(context).viewPadding.bottom +
-                24),
-        child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
-          Text(ing.food.name,
-              style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: widget.accent)),
-          const SizedBox(height: 12),
-          TextField(
-              controller: c,
-              autofocus: true,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
-              decoration: _foodDec(widget.accent).copyWith(labelText: 'Raw grams')),
-          const SizedBox(height: 16),
-          SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                  onPressed: () =>
-                      Navigator.pop(context, double.tryParse(c.text)),
-                  style: ElevatedButton.styleFrom(
-                      backgroundColor: widget.accent,
-                      foregroundColor: Colors.black,
-                      shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12))),
-                  child: const Text('Update'))),
-        ]),
-      ),
+      builder: (_) => StatefulBuilder(
+          builder: (BuildContext ctx, void Function(void Function()) setSheet) {
+        final double raw = double.tryParse(g.text) ?? 0;
+        final double yf = double.tryParse(y.text) ?? 1;
+        return Padding(
+          padding: EdgeInsets.fromLTRB(
+              24,
+              20,
+              24,
+              MediaQuery.of(ctx).viewInsets.bottom +
+                  MediaQuery.of(ctx).viewPadding.bottom +
+                  24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+            Text(ing.food.name,
+                style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+            const SizedBox(height: 12),
+            Row(children: <Widget>[
+              Expanded(
+                  child: TextField(
+                      controller: g,
+                      autofocus: true,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      style: const TextStyle(
+                          fontSize: 16, color: Color(0xFFEEEEEE)),
+                      decoration: _foodDec(widget.accent)
+                          .copyWith(labelText: 'Raw grams'),
+                      onChanged: (_) => setSheet(() {}))),
+              const SizedBox(width: 10),
+              Expanded(
+                  child: TextField(
+                      controller: y,
+                      keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true),
+                      style: const TextStyle(
+                          fontSize: 16, color: Color(0xFFEEEEEE)),
+                      decoration: _foodDec(widget.accent)
+                          .copyWith(labelText: 'Cook yield ×'),
+                      onChanged: (_) => setSheet(() {}))),
+            ]),
+            const SizedBox(height: 10),
+            Text('Cooked ≈ ${(raw * yf).round()} g',
+                style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+            const SizedBox(height: 16),
+            SizedBox(
+                width: double.infinity,
+                height: 48,
+                child: ElevatedButton(
+                    onPressed: () => Navigator.pop(
+                        ctx,
+                        ing.copyWith(
+                            rawGrams: double.tryParse(g.text),
+                            yieldFactor: double.tryParse(y.text))),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12))),
+                    child: const Text('Update'))),
+          ]),
+        );
+      }),
     );
-    if (result != null && result > 0) {
-      setState(() => _ings[index] = ing.copyWith(rawGrams: result));
+    if (result != null && result.rawGrams > 0) {
+      setState(() => _ings[index] = result);
     }
   }
 
@@ -4396,7 +4535,7 @@ class _MealEditScreenState extends State<_MealEditScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
                   children: <Widget>[
                     _tot('Total', '${preview.calories.round()}', 'cal'),
-                    _tot('Weight', '${preview.totalGrams.round()}', 'g'),
+                    _tot('Cooked', '${preview.cookedTotalGrams.round()}', 'g'),
                     _tot('Protein', _trim(preview.protein), 'g'),
                     _tot('Carbs', _trim(preview.carbs), 'g'),
                   ]),
@@ -4411,7 +4550,7 @@ class _MealEditScreenState extends State<_MealEditScreen> {
                 borderRadius: BorderRadius.circular(10),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(10),
-                  onTap: () => _editGrams(e.key),
+                  onTap: () => _editIngredient(e.key),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
                         horizontal: 14, vertical: 11),
@@ -4420,15 +4559,19 @@ class _MealEditScreenState extends State<_MealEditScreen> {
                         border: Border.all(color: kBorder)),
                     child: Row(children: <Widget>[
                       Expanded(
-                          child: Text(ing.food.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(
-                                  fontSize: 14, color: Color(0xFFDDDDDD)))),
-                      Text('${_trim(ing.rawGrams)} g',
-                          style:
-                              TextStyle(fontSize: 13, color: Colors.grey[500])),
-                      const SizedBox(width: 6),
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: <Widget>[
+                                Text(ing.food.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                        fontSize: 14, color: Color(0xFFDDDDDD))),
+                                Text(
+                                    '${_trim(ing.rawGrams)} g raw → ${ing.cookedGrams.round()} g cooked',
+                                    style: TextStyle(
+                                        fontSize: 11, color: Colors.grey[600])),
+                              ])),
                       Text('${ing.calories.round()} cal',
                           style: TextStyle(
                               fontSize: 13,
@@ -4514,14 +4657,14 @@ class _MealPortionSheetState extends State<_MealPortionSheet> {
 
   MealPortion get _portion => _byCalories
       ? MealMath.byCalories(widget.meal, _val)
-      : MealMath.byGrams(widget.meal, _val);
+      : MealMath.byCookedGrams(widget.meal, _val);
 
   void _setMode(bool byCal) {
     setState(() {
       _byCalories = byCal;
       _amount.text = byCal
           ? '${widget.meal.calories.round()}'
-          : '${widget.meal.totalGrams.round()}';
+          : '${widget.meal.cookedTotalGrams.round()}';
     });
   }
 
@@ -4548,16 +4691,16 @@ class _MealPortionSheetState extends State<_MealPortionSheet> {
                       color: widget.accent)),
               const SizedBox(height: 4),
               Text(
-                  'Whole meal: ${widget.meal.calories.round()} cal · ${widget.meal.totalGrams.round()} g',
+                  'Whole dish: ${widget.meal.calories.round()} cal · ~${widget.meal.cookedTotalGrams.round()} g cooked',
                   style: TextStyle(fontSize: 12, color: Colors.grey[600])),
               const SizedBox(height: 16),
               Row(children: <Widget>[
                 _modeChip('By calories', _byCalories, () => _setMode(true)),
                 const SizedBox(width: 8),
-                _modeChip('By grams', !_byCalories, () => _setMode(false)),
+                _modeChip('By cooked grams', !_byCalories, () => _setMode(false)),
               ]),
               const SizedBox(height: 12),
-              Text(_byCalories ? 'CALORIES TO EAT' : 'GRAMS TO EAT',
+              Text(_byCalories ? 'CALORIES TO EAT' : 'COOKED GRAMS TO EAT',
                   style: TextStyle(
                       fontSize: 11,
                       color: Colors.grey[600],
@@ -4580,7 +4723,7 @@ class _MealPortionSheetState extends State<_MealPortionSheet> {
                     border: Border.all(color: kBorder)),
                 child: Column(children: <Widget>[
                   Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: <Widget>[
-                    _stat(_byCalories ? 'Eat' : 'Calories',
+                    _stat(_byCalories ? 'Weigh out' : 'Calories',
                         _byCalories ? '${p.grams.round()} g' : '${p.calories.round()}',
                         widget.accent),
                     _stat('Protein', '${_trim(p.protein)} g', widget.accent),
@@ -4589,7 +4732,7 @@ class _MealPortionSheetState extends State<_MealPortionSheet> {
                   ]),
                   if (p.breakdown.isNotEmpty) ...<Widget>[
                     const Divider(color: Color(0xFF262626), height: 22),
-                    Text('PER INGREDIENT (in this portion)',
+                    Text('PER INGREDIENT (cooked, this portion)',
                         style: TextStyle(
                             fontSize: 9,
                             color: Colors.grey[600],
