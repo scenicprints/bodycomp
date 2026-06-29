@@ -38,7 +38,10 @@ Fasted-dates set is additive. **Low data risk.**
 
 ---
 
-## Batch 2 — Meal Maker  → v1.3.0  *(tricky)*
+## Batch 2 — Meal Maker  → v1.3.0  ✅ SHIPPED
+*(Decision: skipped cooked-weight tracking — portions scale the raw-ingredient meal by
+calories OR grams; per-ingredient amounts come out proportional. Also bundled the fix for
+bottom sheets being cut off by the gesture nav bar.)*
 Build a meal from ingredients (raw weights), then portion it by calories.
 
 **The math (proposed):**

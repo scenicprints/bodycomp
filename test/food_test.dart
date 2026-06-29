@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bodycomp/food.dart';
 
@@ -145,6 +146,50 @@ void main() {
       expect(out.length, 2); // "onion" collapses, "onion, raw" distinct
       expect(FoodLookup.dedupe(<FoodTemplate>[mk('a'), mk('b'), mk('c')], cap: 2)
           .length, 2);
+    });
+  });
+
+  group('meal maker', () {
+    FoodTemplate ft(String n, double kcal, double p, double f, double c) =>
+        FoodTemplate(
+            name: n,
+            kcal100: kcal,
+            protein100: p,
+            fat100: f,
+            carbs100: c,
+            nutrients100: <String, double>{'fiber': 1});
+    Meal meal() => Meal(id: 'm', name: 'Rice & Chicken', ingredients: <MealIngredient>[
+          MealIngredient(food: ft('Rice', 130, 2.7, 0.3, 28), rawGrams: 200),
+          MealIngredient(food: ft('Chicken', 165, 31, 3.6, 0), rawGrams: 150),
+        ]);
+
+    test('totals sum the ingredients', () {
+      final Meal m = meal();
+      expect(m.totalGrams, 350);
+      expect(m.calories, closeTo(507.5, 1e-6));
+      expect(m.protein, closeTo(51.9, 1e-6));
+      expect(m.nutrients['fiber'], closeTo(3.5, 1e-6)); // 2.0 + 1.5
+    });
+
+    test('portion by calories scales the whole meal + breakdown', () {
+      final MealPortion pr = MealMath.byCalories(meal(), 253.75);
+      expect(pr.fraction, closeTo(0.5, 1e-9));
+      expect(pr.grams, closeTo(175, 1e-6));
+      expect(pr.protein, closeTo(25.95, 1e-6));
+      expect(pr.breakdown[0].grams, closeTo(100, 1e-6)); // rice
+      expect(pr.breakdown[1].grams, closeTo(75, 1e-6)); // chicken
+    });
+
+    test('portion by grams gives the calories', () {
+      expect(MealMath.byGrams(meal(), 175).calories, closeTo(253.75, 1e-6));
+    });
+
+    test('round-trips through JSON', () {
+      final Meal back = Meal.fromJson(
+          jsonDecode(jsonEncode(meal().toJson())) as Map<String, dynamic>);
+      expect(back.name, 'Rice & Chicken');
+      expect(back.calories, closeTo(507.5, 1e-6));
+      expect(back.ingredients.length, 2);
     });
   });
 
