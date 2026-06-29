@@ -99,14 +99,32 @@ class MathEngine {
   }
 
   static double? adaptiveTdee(List<DailyLog> logs) {
-    if (logs.length < 14) {
+    // Energy-balance back-calculation. Only days that actually have a
+    // calorie entry count toward it — a weight-only log carries no intake
+    // data and must not move the TDEE. (calories == 0 means "not logged",
+    // since the data model can't distinguish that from a true zero.)
+    final List<DailyLog> logged =
+        logs.where((DailyLog l) => l.calories > 0).toList();
+    if (logged.length < 14) {
       return null;
     }
-    final List<DailyLog> recent = logs.sublist(logs.length - 14);
+    final List<DailyLog> recent = logged.sublist(logged.length - 14);
     final int totalCal =
         recent.fold<int>(0, (int s, DailyLog l) => s + l.calories);
     final double fatLost = recent.first.fatMass - recent.last.fatMass;
     return (totalCal + fatLost * 3500) / 14;
+  }
+
+  /// Lean body mass averaged over the most recent [window] logs, so the
+  /// baseline TDEE rides a smoothed trend instead of a single noisy weigh-in.
+  static double rollingLbm(List<DailyLog> logs, {int window = 7}) {
+    if (logs.isEmpty) {
+      return 0;
+    }
+    final int start = max(0, logs.length - window);
+    final List<DailyLog> slice = logs.sublist(start);
+    return slice.fold<double>(0, (double s, DailyLog l) => s + l.lbm) /
+        slice.length;
   }
 
   static double activeTdee(List<DailyLog> logs, double mult) {
@@ -117,7 +135,7 @@ class MathEngine {
     if (logs.isEmpty) {
       return 0;
     }
-    return baselineTdee(logs.last.lbm, mult);
+    return baselineTdee(rollingLbm(logs), mult);
   }
 
   static double rollingAvg(List<DailyLog> logs, int idx, {int window = 7}) {
