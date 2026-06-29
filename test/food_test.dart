@@ -66,6 +66,66 @@ void main() {
     });
   });
 
+  group('USDA FoodData Central parsing', () {
+    // A foods/search "food" object for raw onion (per 100 g).
+    final Map<String, dynamic> onion = <String, dynamic>{
+      'description': 'Onions, raw',
+      'dataType': 'Foundation',
+      'servingSize': 100,
+      'servingSizeUnit': 'g',
+      'foodNutrients': <dynamic>[
+        <String, dynamic>{'nutrientNumber': '208', 'unitName': 'KCAL', 'value': 40},
+        <String, dynamic>{'nutrientNumber': '203', 'unitName': 'G', 'value': 1.1},
+        <String, dynamic>{'nutrientNumber': '204', 'unitName': 'G', 'value': 0.1},
+        <String, dynamic>{'nutrientNumber': '205', 'unitName': 'G', 'value': 9.34},
+        <String, dynamic>{'nutrientNumber': '291', 'unitName': 'G', 'value': 1.7},
+        <String, dynamic>{'nutrientNumber': '307', 'unitName': 'MG', 'value': 4},
+        <String, dynamic>{'nutrientNumber': '401', 'unitName': 'MG', 'value': 7.4},
+        <String, dynamic>{'nutrientNumber': '320', 'unitName': 'UG', 'value': 2},
+      ],
+    };
+
+    test('parses a whole food with correct units', () {
+      final FoodTemplate? t = Usda.parseFood(onion);
+      expect(t, isNotNull);
+      expect(t!.name, 'Onions, raw');
+      expect(t.kcal100, 40);
+      expect(t.protein100, closeTo(1.1, 1e-9));
+      expect(t.carbs100, closeTo(9.34, 1e-9));
+      expect(t.nutrients100['fiber'], closeTo(1.7, 1e-9));
+      expect(t.nutrients100['sodium'], closeTo(4, 1e-9)); // 4 mg
+      expect(t.nutrients100['vitaminC'], closeTo(7.4, 1e-9)); // 7.4 mg
+      expect(t.nutrients100['vitaminA'], closeTo(2, 1e-9)); // 2 µg
+      expect(t.servingGrams, closeTo(100, 1e-9));
+    });
+
+    test('appends brand and keeps barcode for branded foods', () {
+      final Map<String, dynamic> branded = <String, dynamic>{
+        'description': 'Protein Bar',
+        'brandName': 'Acme',
+        'gtinUpc': '012345678905',
+        'foodNutrients': <dynamic>[
+          <String, dynamic>{'nutrientNumber': '208', 'unitName': 'KCAL', 'value': 350},
+          <String, dynamic>{'nutrientNumber': '203', 'unitName': 'G', 'value': 30},
+        ],
+      };
+      final FoodTemplate? t = Usda.parseFood(branded, barcode: '012345678905');
+      expect(t!.name, 'Protein Bar (Acme)');
+      expect(t.barcode, '012345678905');
+      expect(t.protein100, 30);
+    });
+
+    test('returns null without energy data', () {
+      final Map<String, dynamic> noCal = <String, dynamic>{
+        'description': 'Mystery',
+        'foodNutrients': <dynamic>[
+          <String, dynamic>{'nutrientNumber': '203', 'unitName': 'G', 'value': 5}
+        ],
+      };
+      expect(Usda.parseFood(noCal), isNull);
+    });
+  });
+
   group('day rollups', () {
     test('totals and caloriesByDate sum a day across entries', () {
       final List<FoodEntry> foods = <FoodEntry>[

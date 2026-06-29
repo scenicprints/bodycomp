@@ -350,3 +350,233 @@ class OpenFoodFacts {
     return null;
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// USDA FOODDATA CENTRAL  (primary source — authoritative for whole foods)
+//
+// API key is injected at build time via --dart-define=USDA_API_KEY=...
+// (stored as a GitHub secret, never in source). Falls back to the rate-
+// limited DEMO_KEY so the app still works without one.
+// ═══════════════════════════════════════════════════════════════════════
+
+// USDA nutrient numbers → our registry keys (micros only; energy/macros below).
+const Map<String, String> _usdaNumToKey = <String, String>{
+  '291': 'fiber',
+  '269': 'sugars',
+  '606': 'saturatedFat',
+  '307': 'sodium',
+  '601': 'cholesterol',
+  '306': 'potassium',
+  '301': 'calcium',
+  '303': 'iron',
+  '328': 'vitaminD', // µg (D2 + D3)
+  '320': 'vitaminA', // µg RAE
+  '401': 'vitaminC',
+  '323': 'vitaminE',
+  '415': 'vitaminB6',
+  '418': 'vitaminB12',
+  '417': 'folate',
+  '304': 'magnesium',
+  '309': 'zinc',
+};
+
+class Usda {
+  static String get apiKey {
+    const String k = String.fromEnvironment('USDA_API_KEY');
+    return k.isEmpty ? 'DEMO_KEY' : k;
+  }
+
+  static Future<List<FoodTemplate>> search(String query) async {
+    final String q = query.trim();
+    if (q.isEmpty) {
+      return <FoodTemplate>[];
+    }
+    final Uri uri = Uri.parse('https://api.nal.usda.gov/fdc/v1/foods/search'
+        '?api_key=$apiKey&query=${Uri.encodeQueryComponent(q)}'
+        '&pageSize=30&dataType=${Uri.encodeQueryComponent('Foundation,SR Legacy,Branded')}');
+    final http.Response resp = await http.get(uri);
+    if (resp.statusCode != 200) {
+      return <FoodTemplate>[];
+    }
+    final Map<String, dynamic> data =
+        jsonDecode(resp.body) as Map<String, dynamic>;
+    final List<dynamic> foods =
+        (data['foods'] as List<dynamic>?) ?? <dynamic>[];
+    final List<FoodTemplate> out = <FoodTemplate>[];
+    for (final dynamic f in foods) {
+      final FoodTemplate? t = parseFood(f as Map<String, dynamic>);
+      if (t != null) {
+        out.add(t);
+      }
+    }
+    return out;
+  }
+
+  static Future<FoodTemplate?> fetchByBarcode(String barcode) async {
+    final Uri uri = Uri.parse('https://api.nal.usda.gov/fdc/v1/foods/search'
+        '?api_key=$apiKey&query=${Uri.encodeQueryComponent(barcode)}'
+        '&dataType=Branded&pageSize=10');
+    final http.Response resp = await http.get(uri);
+    if (resp.statusCode != 200) {
+      return null;
+    }
+    final Map<String, dynamic> data =
+        jsonDecode(resp.body) as Map<String, dynamic>;
+    final List<dynamic> foods =
+        (data['foods'] as List<dynamic>?) ?? <dynamic>[];
+    for (final dynamic f in foods) {
+      final Map<String, dynamic> m = f as Map<String, dynamic>;
+      if ((m['gtinUpc'] as String?)?.replaceAll(RegExp(r'^0+'), '') ==
+          barcode.replaceAll(RegExp(r'^0+'), '')) {
+        final FoodTemplate? t = parseFood(m, barcode: barcode);
+        if (t != null) {
+          return t;
+        }
+      }
+    }
+    return null;
+  }
+
+  /// Public for unit tests. Expects a foods/search "food" object.
+  static FoodTemplate? parseFood(Map<String, dynamic> food, {String? barcode}) {
+    final List<dynamic> nutrients =
+        (food['foodNutrients'] as List<dynamic>?) ?? <dynamic>[];
+    double? kcal;
+    double prot = 0, fat = 0, carb = 0;
+    final Map<String, double> micros = <String, double>{};
+
+    for (final dynamic raw in nutrients) {
+      final Map<String, dynamic> fn = raw as Map<String, dynamic>;
+      final String number =
+          (fn['nutrientNumber'] ?? fn['number'])?.toString() ?? '';
+      final double? value = _num(fn['value'] ?? fn['amount']);
+      final String unit = (fn['unitName'] ?? fn['unit'] ?? '').toString();
+      if (value == null) {
+        continue;
+      }
+      switch (number) {
+        case '208':
+          kcal = value;
+          break;
+        case '203':
+          prot = value;
+          break;
+        case '204':
+          fat = value;
+          break;
+        case '205':
+          carb = value;
+          break;
+        default:
+          final String? key = _usdaNumToKey[number];
+          if (key != null) {
+            final Nutrient? n = nutrientByKey(key);
+            if (n != null) {
+              final double? d = _toDisplay(value, unit, n);
+              if (d != null) {
+                micros[key] = d;
+              }
+            }
+          }
+      }
+    }
+    if (kcal == null) {
+      return null;
+    }
+
+    String name = (food['description'] as String?)?.trim() ?? 'Unknown food';
+    final String brand = ((food['brandName'] ?? food['brandOwner']) as String?)
+            ?.trim() ??
+        '';
+    if (brand.isNotEmpty) {
+      name = '$name ($brand)';
+    }
+
+    return FoodTemplate(
+      name: name,
+      kcal100: kcal,
+      protein100: prot,
+      fat100: fat,
+      carbs100: carb,
+      nutrients100: micros,
+      servingGrams: _servingGrams(food),
+      barcode: barcode ?? food['gtinUpc'] as String?,
+    );
+  }
+
+  static double? _toDisplay(double value, String unit, Nutrient n) {
+    double grams;
+    switch (unit.toUpperCase()) {
+      case 'G':
+        grams = value;
+        break;
+      case 'MG':
+        grams = value / 1000.0;
+        break;
+      case 'UG':
+      case 'µG':
+        grams = value / 1000000.0;
+        break;
+      default:
+        return null; // skip IU and other units we can't safely convert
+    }
+    return grams * n.fromGrams;
+  }
+
+  static double? _servingGrams(Map<String, dynamic> food) {
+    final double? size = _num(food['servingSize']);
+    if (size == null) {
+      return null;
+    }
+    final String unit =
+        (food['servingSizeUnit'] as String?)?.toLowerCase() ?? '';
+    if (unit.startsWith('g') || unit.startsWith('ml') || unit == 'grm') {
+      return size;
+    }
+    return null;
+  }
+
+  static double? _num(dynamic v) {
+    if (v is num) {
+      return v.toDouble();
+    }
+    if (v is String) {
+      return double.tryParse(v);
+    }
+    return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// UNIFIED LOOKUP — USDA primary, Open Food Facts fallback
+// ═══════════════════════════════════════════════════════════════════════
+
+class FoodLookup {
+  static Future<List<FoodTemplate>> search(String query) async {
+    List<FoodTemplate> r = <FoodTemplate>[];
+    try {
+      r = await Usda.search(query);
+    } catch (_) {}
+    if (r.isEmpty) {
+      try {
+        r = await OpenFoodFacts.search(query);
+      } catch (_) {}
+    }
+    return r;
+  }
+
+  static Future<FoodTemplate?> barcode(String code) async {
+    FoodTemplate? t;
+    try {
+      t = await Usda.fetchByBarcode(code);
+    } catch (_) {}
+    if (t != null) {
+      return t;
+    }
+    try {
+      return await OpenFoodFacts.fetchByBarcode(code);
+    } catch (_) {
+      return null;
+    }
+  }
+}

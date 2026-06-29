@@ -2663,7 +2663,7 @@ class _FoodScreenState extends State<FoodScreen> {
             child: CircularProgressIndicator(color: _accent)));
     FoodTemplate? t;
     try {
-      t = await OpenFoodFacts.fetchByBarcode(code);
+      t = await FoodLookup.barcode(code);
     } catch (_) {}
     if (!mounted) {
       return;
@@ -3131,7 +3131,7 @@ class _FoodSearchPageState extends State<_FoodSearchPage> {
     setState(() => _loading = true);
     List<FoodTemplate> r = <FoodTemplate>[];
     try {
-      r = await OpenFoodFacts.search(v);
+      r = await FoodLookup.search(v);
     } catch (_) {}
     if (!mounted || id != _reqId) {
       return; // a newer search superseded this one
