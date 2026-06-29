@@ -12,8 +12,10 @@ tracker, food journal with USDA-primary + Open Food Facts fallback).
 
 ---
 
-## Batch 1 — Food Tab v2: intuitive + budgeted  → v1.2.0
+## Batch 1 — Food Tab v2: intuitive + budgeted  → v1.2.0  ✅ SHIPPED
 Polish the food experience and make the day view feel like the reference screenshot.
+*(Deferred to a later pass: the full hour-by-hour timeline — Batch 1 groups by meal period
+instead. Macro-target rings are horizontal bars for now.)*
 
 - **Budget header** — calorie + macro **rings/bars** at the top of the Food tab
   showing consumed vs target (the MacroFactor-style indicator). *(req #1)*

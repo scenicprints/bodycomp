@@ -47,6 +47,11 @@ class UserCalibration {
   final double targetBf;
   final double activityMult;
   final int deficit;
+  // Macro-target overrides (null = auto-derive). In grams/day.
+  final double? proteinTarget;
+  final double? fatTarget;
+  final double? carbTarget;
+  final double? fiberTarget;
 
   UserCalibration({
     required this.startWeight,
@@ -54,10 +59,43 @@ class UserCalibration {
     required this.targetBf,
     this.activityMult = 1.4,
     this.deficit = 500,
+    this.proteinTarget,
+    this.fatTarget,
+    this.carbTarget,
+    this.fiberTarget,
   });
 
   double get startLbm => startWeight * (1 - startBf);
   double get startFatMass => startWeight * startBf;
+
+  UserCalibration copyWith({
+    double? targetBf,
+    double? activityMult,
+    int? deficit,
+    Object? proteinTarget = _unset,
+    Object? fatTarget = _unset,
+    Object? carbTarget = _unset,
+    Object? fiberTarget = _unset,
+  }) {
+    return UserCalibration(
+      startWeight: startWeight,
+      startBf: startBf,
+      targetBf: targetBf ?? this.targetBf,
+      activityMult: activityMult ?? this.activityMult,
+      deficit: deficit ?? this.deficit,
+      proteinTarget: proteinTarget == _unset
+          ? this.proteinTarget
+          : (proteinTarget as num?)?.toDouble(),
+      fatTarget:
+          fatTarget == _unset ? this.fatTarget : (fatTarget as num?)?.toDouble(),
+      carbTarget: carbTarget == _unset
+          ? this.carbTarget
+          : (carbTarget as num?)?.toDouble(),
+      fiberTarget: fiberTarget == _unset
+          ? this.fiberTarget
+          : (fiberTarget as num?)?.toDouble(),
+    );
+  }
 
   Map<String, dynamic> toJson() {
     return {
@@ -65,7 +103,11 @@ class UserCalibration {
       'startBf': startBf,
       'targetBf': targetBf,
       'activityMult': activityMult,
-      'deficit': deficit
+      'deficit': deficit,
+      if (proteinTarget != null) 'proteinTarget': proteinTarget,
+      if (fatTarget != null) 'fatTarget': fatTarget,
+      if (carbTarget != null) 'carbTarget': carbTarget,
+      if (fiberTarget != null) 'fiberTarget': fiberTarget,
     };
   }
 
@@ -76,9 +118,15 @@ class UserCalibration {
       targetBf: (j['targetBf'] as num).toDouble(),
       activityMult: (j['activityMult'] as num?)?.toDouble() ?? 1.4,
       deficit: (j['deficit'] as num?)?.toInt() ?? 500,
+      proteinTarget: (j['proteinTarget'] as num?)?.toDouble(),
+      fatTarget: (j['fatTarget'] as num?)?.toDouble(),
+      carbTarget: (j['carbTarget'] as num?)?.toDouble(),
+      fiberTarget: (j['fiberTarget'] as num?)?.toDouble(),
     );
   }
 }
+
+const Object _unset = Object();
 
 // ═══════════════════════════════════════════════════════════════════════
 // MATH ENGINE
@@ -101,22 +149,24 @@ class MathEngine {
     return bmr(lbmLbs) * mult;
   }
 
-  static double? adaptiveTdee(List<DailyLog> logs) {
-    // Energy-balance back-calculation. Only days that actually have a
-    // calorie entry count toward it — a weight-only log carries no intake
-    // data and must not move the TDEE. (calories == 0 means "not logged",
-    // since the data model can't distinguish that from a true zero.)
-    final List<DailyLog> logged =
-        logs.where((DailyLog l) => l.calories > 0).toList();
-    if (logged.length < 14) {
+  /// Energy-balance back-calculation over days with KNOWN intake.
+  /// Caller decides which days are known (food-logged, fasted, or manual) —
+  /// a 0-calorie fasted day is valid here, an unlogged day must be excluded.
+  static double? adaptiveTdeeFrom(List<DailyLog> intakeDays) {
+    if (intakeDays.length < 14) {
       return null;
     }
-    final List<DailyLog> recent = logged.sublist(logged.length - 14);
+    final List<DailyLog> recent =
+        intakeDays.sublist(intakeDays.length - 14);
     final int totalCal =
         recent.fold<int>(0, (int s, DailyLog l) => s + l.calories);
     final double fatLost = recent.first.fatMass - recent.last.fatMass;
     return (totalCal + fatLost * 3500) / 14;
   }
+
+  /// Backward-compatible: treats calories > 0 as the "known intake" signal.
+  static double? adaptiveTdee(List<DailyLog> logs) =>
+      adaptiveTdeeFrom(logs.where((DailyLog l) => l.calories > 0).toList());
 
   /// Lean body mass averaged over the most recent [window] logs, so the
   /// baseline TDEE rides a smoothed trend instead of a single noisy weigh-in.
@@ -130,8 +180,34 @@ class MathEngine {
         slice.length;
   }
 
-  static double activeTdee(List<DailyLog> logs, double mult) {
-    final double? adaptive = adaptiveTdee(logs);
+  /// Resolves each weigh-in day's effective intake:
+  ///  • food-logged day  → that date's food total
+  ///  • fasted day       → 0 kcal (an intentional fast IS known intake)
+  ///  • manual cal > 0   → the typed number (legacy)
+  ///  • otherwise        → excluded (we genuinely don't know)
+  static List<DailyLog> resolveIntake(List<DailyLog> logs,
+      Map<String, double> caloriesByDate, Set<String> fastedDates) {
+    final List<DailyLog> out = <DailyLog>[];
+    for (final DailyLog l in logs) {
+      final double? f = caloriesByDate[l.date];
+      if (f != null && f > 0) {
+        out.add(DailyLog(
+            date: l.date, weight: l.weight, bf: l.bf, calories: f.round()));
+      } else if (fastedDates.contains(l.date)) {
+        out.add(DailyLog(date: l.date, weight: l.weight, bf: l.bf, calories: 0));
+      } else if (l.calories > 0) {
+        out.add(l);
+      }
+    }
+    return out;
+  }
+
+  static double activeTdee(List<DailyLog> logs, double mult,
+      {Map<String, double>? caloriesByDate, Set<String>? fastedDates}) {
+    final List<DailyLog> intake = resolveIntake(
+        logs, caloriesByDate ?? <String, double>{},
+        fastedDates ?? <String>{});
+    final double? adaptive = adaptiveTdeeFrom(intake);
     if (adaptive != null) {
       return adaptive;
     }
@@ -139,21 +215,6 @@ class MathEngine {
       return 0;
     }
     return baselineTdee(rollingLbm(logs), mult);
-  }
-
-  /// Replaces each weigh-in day's calories with that date's food-log total,
-  /// but only on days that actually have food entries. Days with no scanned
-  /// food keep their manually-entered number, so old data still works.
-  static List<DailyLog> withFoodCalories(
-      List<DailyLog> logs, Map<String, double> caloriesByDate) {
-    return logs.map((DailyLog l) {
-      final double? f = caloriesByDate[l.date];
-      if (f != null && f > 0) {
-        return DailyLog(
-            date: l.date, weight: l.weight, bf: l.bf, calories: f.round());
-      }
-      return l;
-    }).toList();
   }
 
   static double rollingAvg(List<DailyLog> logs, int idx, {int window = 7}) {
@@ -228,6 +289,47 @@ class MathEngine {
 // ═══════════════════════════════════════════════════════════════════════
 // STORAGE
 // ═══════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════
+// MACRO TARGETS  (auto-derived, overridable in Settings)
+// ═══════════════════════════════════════════════════════════════════════
+
+class MacroTargets {
+  final double calories;
+  final double protein;
+  final double fat;
+  final double carbs;
+  final double fiber;
+  const MacroTargets(
+      {required this.calories,
+      required this.protein,
+      required this.fat,
+      required this.carbs,
+      required this.fiber});
+
+  static MacroTargets compute(UserCalibration cal, List<DailyLog> logs,
+      List<FoodEntry> foods, Set<String> fasted) {
+    final double tdee = logs.isEmpty
+        ? 0
+        : MathEngine.activeTdee(logs, cal.activityMult,
+            caloriesByDate: FoodMath.caloriesByDate(foods), fastedDates: fasted);
+    final double calTarget = tdee > 0 ? tdee - cal.deficit : 0;
+    final double lbm = logs.isNotEmpty ? logs.last.lbm : cal.startLbm;
+    final double bw = logs.isNotEmpty ? logs.last.weight : cal.startWeight;
+    final double protein = cal.proteinTarget ?? lbm * 1.0; // 1 g / lb LBM
+    final double fat = cal.fatTarget ?? bw * 0.3; // 0.3 g / lb body weight
+    final double carbs = cal.carbTarget ??
+        max(0.0, (calTarget - protein * 4 - fat * 9) / 4);
+    final double fiber =
+        cal.fiberTarget ?? (calTarget > 0 ? calTarget / 1000 * 14 : 25);
+    return MacroTargets(
+        calories: calTarget,
+        protein: protein,
+        fat: fat,
+        carbs: carbs,
+        fiber: fiber);
+  }
+}
 
 class AppStorage {
   static late File _file;
@@ -330,6 +432,22 @@ class AppStorage {
     _write(d);
   }
 
+  static List<String> getFastedDates() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('fasted')) {
+      return (d['fasted'] as List<dynamic>)
+          .map((dynamic e) => e as String)
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveFastedDates(List<String> dates) {
+    final Map<String, dynamic> d = _read();
+    d['fasted'] = dates;
+    _write(d);
+  }
+
   static void clearAll() {
     try {
       if (_file.existsSync()) {
@@ -410,6 +528,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<DailyLog> _logs = [];
   List<double> _dismissed = [];
   List<FoodEntry> _foods = [];
+  List<String> _fasted = [];
 
   @override
   void initState() {
@@ -418,6 +537,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _logs = AppStorage.getLogs();
     _dismissed = AppStorage.getDismissedMilestones();
     _foods = AppStorage.getFoods();
+    _fasted = AppStorage.getFastedDates();
   }
 
   void _setCal(UserCalibration c) {
@@ -448,6 +568,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveFoods(f);
   }
 
+  void _setFasted(List<String> dates) {
+    setState(() {
+      _fasted = dates;
+    });
+    AppStorage.saveFastedDates(dates);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -455,6 +582,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _logs = [];
       _dismissed = [];
       _foods = [];
+      _fasted = [];
     });
   }
 
@@ -493,9 +621,11 @@ class _BodyCompAppState extends State<BodyCompApp> {
               logs: _logs,
               dismissed: _dismissed,
               foods: _foods,
+              fasted: _fasted,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
+              onSetFasted: _setFasted,
               onDismiss: _dismiss,
               onReset: _resetAll),
     );
@@ -1138,9 +1268,11 @@ class HomeShell extends StatefulWidget {
   final List<DailyLog> logs;
   final List<double> dismissed;
   final List<FoodEntry> foods;
+  final List<String> fasted;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
+  final void Function(List<String>) onSetFasted;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
   const HomeShell(
@@ -1149,9 +1281,11 @@ class HomeShell extends StatefulWidget {
       required this.logs,
       required this.dismissed,
       required this.foods,
+      required this.fasted,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
+      required this.onSetFasted,
       required this.onDismiss,
       required this.onReset});
   @override
@@ -1170,13 +1304,16 @@ class _HomeShellState extends State<HomeShell> {
             logs: widget.logs,
             dismissed: widget.dismissed,
             foods: widget.foods,
+            fasted: widget.fasted,
             onSetLogs: widget.onSetLogs,
             onDismiss: widget.onDismiss),
         FoodScreen(
             cal: widget.cal,
             logs: widget.logs,
             foods: widget.foods,
-            onSetFoods: widget.onSetFoods),
+            fasted: widget.fasted,
+            onSetFoods: widget.onSetFoods,
+            onSetFasted: widget.onSetFasted),
         LedgerScreen(
             logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
         SettingsScreen(
@@ -1216,6 +1353,7 @@ class DashboardScreen extends StatefulWidget {
   final List<DailyLog> logs;
   final List<double> dismissed;
   final List<FoodEntry> foods;
+  final List<String> fasted;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(double) onDismiss;
   const DashboardScreen(
@@ -1224,6 +1362,7 @@ class DashboardScreen extends StatefulWidget {
       required this.logs,
       required this.dismissed,
       required this.foods,
+      required this.fasted,
       required this.onSetLogs,
       required this.onDismiss});
   @override
@@ -1363,9 +1502,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     double? tdee;
     if (widget.logs.isNotEmpty) {
-      final List<DailyLog> tdeeLogs = MathEngine.withFoodCalories(
-          widget.logs, FoodMath.caloriesByDate(widget.foods));
-      tdee = MathEngine.activeTdee(tdeeLogs, widget.cal.activityMult);
+      tdee = MathEngine.activeTdee(widget.logs, widget.cal.activityMult,
+          caloriesByDate: FoodMath.caloriesByDate(widget.foods),
+          fastedDates: widget.fasted.toSet());
     }
     double? delta;
     if (widget.logs.length >= 2) {
@@ -2188,7 +2327,7 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   bool _editing = false;
   bool _confirmReset = false;
-  late TextEditingController _tbfC, _defC;
+  late TextEditingController _tbfC, _defC, _proteinC, _fatC, _carbC, _fiberC;
   late double _am;
 
   @override
@@ -2197,6 +2336,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _tbfC = TextEditingController(
         text: (widget.cal.targetBf * 100).toStringAsFixed(1));
     _defC = TextEditingController(text: widget.cal.deficit.toString());
+    _proteinC = TextEditingController(
+        text: widget.cal.proteinTarget != null
+            ? _trim(widget.cal.proteinTarget!)
+            : '');
+    _fatC = TextEditingController(
+        text:
+            widget.cal.fatTarget != null ? _trim(widget.cal.fatTarget!) : '');
+    _carbC = TextEditingController(
+        text: widget.cal.carbTarget != null
+            ? _trim(widget.cal.carbTarget!)
+            : '');
+    _fiberC = TextEditingController(
+        text: widget.cal.fiberTarget != null
+            ? _trim(widget.cal.fiberTarget!)
+            : '');
     _am = widget.cal.activityMult;
   }
 
@@ -2204,6 +2358,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _tbfC.dispose();
     _defC.dispose();
+    _proteinC.dispose();
+    _fatC.dispose();
+    _carbC.dispose();
+    _fiberC.dispose();
     super.dispose();
   }
 
@@ -2334,6 +2492,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     }
                                   }))),
                       const SizedBox(height: 16),
+                      _fl('MACRO TARGETS (g/day — blank = auto)'),
+                      const SizedBox(height: 6),
+                      Row(children: [
+                        Expanded(child: _macroField('Protein', _proteinC)),
+                        const SizedBox(width: 10),
+                        Expanded(child: _macroField('Fat', _fatC)),
+                      ]),
+                      const SizedBox(height: 10),
+                      Row(children: [
+                        Expanded(child: _macroField('Carbs', _carbC)),
+                        const SizedBox(width: 10),
+                        Expanded(child: _macroField('Fiber', _fiberC)),
+                      ]),
+                      const SizedBox(height: 16),
                       Row(children: [
                         Expanded(
                             child: ElevatedButton(
@@ -2348,12 +2520,21 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       def <= 0) {
                                     return;
                                   }
+                                  double? ovr(TextEditingController c) {
+                                    final double? v = double.tryParse(c.text);
+                                    return (v != null && v > 0) ? v : null;
+                                  }
+
                                   widget.onSetCal(UserCalibration(
                                       startWeight: widget.cal.startWeight,
                                       startBf: widget.cal.startBf,
                                       targetBf: tbf / 100,
                                       activityMult: _am,
-                                      deficit: def));
+                                      deficit: def,
+                                      proteinTarget: ovr(_proteinC),
+                                      fatTarget: ovr(_fatC),
+                                      carbTarget: ovr(_carbC),
+                                      fiberTarget: ovr(_fiberC)));
                                   setState(() {
                                     _editing = false;
                                   });
@@ -2496,6 +2677,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
             borderSide: const BorderSide(color: Color(0xFF333333))));
   }
 
+  Widget _macroField(String label, TextEditingController c) {
+    return TextField(
+        controller: c,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        style: const TextStyle(fontSize: 15, color: Color(0xFFEEEEEE)),
+        decoration: _fDec().copyWith(
+            labelText: label,
+            labelStyle: TextStyle(color: Colors.grey[600], fontSize: 13),
+            hintText: 'auto',
+            hintStyle: const TextStyle(color: Color(0xFF555555)),
+            isDense: true));
+  }
+
   void _csv() {
     final StringBuffer buf =
         StringBuffer('Date,Weight,BodyFat%,Calories,LBM,TargetWeight\n');
@@ -2523,13 +2717,17 @@ class FoodScreen extends StatefulWidget {
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<FoodEntry> foods;
+  final List<String> fasted;
   final void Function(List<FoodEntry>) onSetFoods;
+  final void Function(List<String>) onSetFasted;
   const FoodScreen(
       {super.key,
       required this.cal,
       required this.logs,
       required this.foods,
-      required this.onSetFoods});
+      required this.fasted,
+      required this.onSetFoods,
+      required this.onSetFasted});
   @override
   State<FoodScreen> createState() => _FoodScreenState();
 }
@@ -2552,22 +2750,53 @@ class _FoodScreenState extends State<FoodScreen> {
     return kPhases[ph].accent;
   }
 
-  double? get _calorieTarget {
-    if (widget.logs.isEmpty) {
-      return null;
-    }
-    final List<DailyLog> tdeeLogs = MathEngine.withFoodCalories(
-        widget.logs, FoodMath.caloriesByDate(widget.foods));
-    return MathEngine.activeTdee(tdeeLogs, widget.cal.activityMult) -
-        widget.cal.deficit;
-  }
+  MacroTargets get _targets => MacroTargets.compute(
+      widget.cal, widget.logs, widget.foods, widget.fasted.toSet());
 
   void _shiftDay(int delta) {
+    // Future dates allowed — useful for planning meals ahead.
     final DateTime d = DateTime.parse(_date).add(Duration(days: delta));
-    if (d.isAfter(DateTime.parse(formatDate(DateTime.now())))) {
-      return; // no logging into the future
-    }
     setState(() => _date = formatDate(d));
+  }
+
+  bool get _isFasted => widget.fasted.contains(_date);
+
+  void _toggleFasted() {
+    final List<String> f = List<String>.from(widget.fasted);
+    if (!f.remove(_date)) {
+      f.add(_date);
+    }
+    widget.onSetFasted(f);
+  }
+
+  String _nowTime() {
+    final DateTime n = DateTime.now();
+    return '${n.hour.toString().padLeft(2, '0')}:${n.minute.toString().padLeft(2, '0')}';
+  }
+
+  Future<String?> _pickDate(String initial) async {
+    final DateTime? d = await showDatePicker(
+        context: context,
+        initialDate: DateTime.parse(initial),
+        firstDate: DateTime(2020),
+        lastDate: DateTime(2100),
+        builder: (BuildContext ctx, Widget? child) => Theme(
+            data: ThemeData.dark().copyWith(
+                colorScheme:
+                    ColorScheme.dark(primary: _accent, surface: kSurface2)),
+            child: child!));
+    return d != null ? formatDate(d) : null;
+  }
+
+  void _moveEntry(FoodEntry e, String date) {
+    widget.onSetFoods(widget.foods
+        .map((FoodEntry x) => x.id == e.id ? x.copyWith(date: date) : x)
+        .toList());
+  }
+
+  void _copyEntry(FoodEntry e, String date) {
+    widget.onSetFoods(List<FoodEntry>.from(widget.foods)
+      ..add(e.copyWith(id: _newId(), date: date)));
   }
 
   String _dateLabel() {
@@ -2699,8 +2928,13 @@ class _FoodScreenState extends State<FoodScreen> {
       builder: (_) => _ConfirmFoodSheet(
         template: t,
         accent: _accent,
-        onSave: (double grams) {
-          _addEntry(t.toEntry(id: _newId(), date: _date, grams: grams));
+        onSave: (double grams, String label) {
+          _addEntry(t.toEntry(
+              id: _newId(),
+              date: _date,
+              grams: grams,
+              servingLabel: label,
+              time: _nowTime()));
           Navigator.pop(context);
         },
       ),
@@ -2731,11 +2965,30 @@ class _FoodScreenState extends State<FoodScreen> {
                 _deleteEntry(existing.id);
                 Navigator.pop(context);
               },
+        onMove: existing == null
+            ? null
+            : () async {
+                Navigator.pop(context);
+                final String? d = await _pickDate(existing.date);
+                if (d != null) {
+                  _moveEntry(existing, d);
+                }
+              },
+        onCopy: existing == null
+            ? null
+            : () async {
+                Navigator.pop(context);
+                final String? d = await _pickDate(existing.date);
+                if (d != null) {
+                  _copyEntry(existing, d);
+                }
+              },
         buildEntry: (String name, String serving, double cal, double p,
             double f, double c, Map<String, double> micros) {
           return FoodEntry(
             id: existing?.id ?? _newId(),
             date: existing?.date ?? _date,
+            time: existing?.time ?? _nowTime(),
             name: name,
             serving: serving,
             calories: cal,
@@ -2751,12 +3004,55 @@ class _FoodScreenState extends State<FoodScreen> {
     );
   }
 
+  List<Widget> _groupedFoods(List<FoodEntry> dayFoods, Color accent) {
+    const List<String> order = <String>[
+      'Breakfast',
+      'Lunch',
+      'Dinner',
+      'Snacks',
+      'Other'
+    ];
+    final Map<String, List<FoodEntry>> groups = <String, List<FoodEntry>>{};
+    for (final FoodEntry e in dayFoods) {
+      (groups[e.mealPeriod] ??= <FoodEntry>[]).add(e);
+    }
+    final List<Widget> out = <Widget>[];
+    for (final String period in order) {
+      final List<FoodEntry>? list = groups[period];
+      if (list == null || list.isEmpty) {
+        continue;
+      }
+      final double cal =
+          list.fold<double>(0, (double s, FoodEntry e) => s + e.calories);
+      out.add(Padding(
+        padding: const EdgeInsets.fromLTRB(4, 10, 4, 6),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(period.toUpperCase(),
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w700)),
+          Text('${cal.round()} cal',
+              style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+        ]),
+      ));
+      for (final FoodEntry e in list) {
+        out.add(_FoodCard(
+            entry: e,
+            accent: accent,
+            onTap: () => _openEditor(existing: e)));
+      }
+    }
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
     final Color accent = _accent;
     final List<FoodEntry> dayFoods = FoodMath.forDate(widget.foods, _date);
     final DayTotals totals = FoodMath.totals(widget.foods, _date);
-    final double? target = _calorieTarget;
+    final MacroTargets targets = _targets;
 
     return Stack(children: [
       ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 100), children: [
@@ -2764,7 +3060,8 @@ class _FoodScreenState extends State<FoodScreen> {
         Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
           IconButton(
               onPressed: () => _shiftDay(-1),
-              icon: const Icon(Icons.chevron_left_rounded, color: Color(0xFF888888))),
+              icon: const Icon(Icons.chevron_left_rounded,
+                  color: Color(0xFF888888))),
           Text(_dateLabel(),
               style: const TextStyle(
                   fontSize: 16,
@@ -2776,19 +3073,14 @@ class _FoodScreenState extends State<FoodScreen> {
                   color: Color(0xFF888888))),
         ]),
         const SizedBox(height: 4),
-        _DaySummary(totals: totals, target: target, accent: accent),
-        const SizedBox(height: 16),
-        if (dayFoods.isEmpty)
-          Padding(
-              padding: const EdgeInsets.symmetric(vertical: 40),
-              child: Text('No food logged for this day.\nTap + to scan or add.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 14, color: Colors.grey[600])))
-        else
-          ...dayFoods.map((FoodEntry e) => _FoodCard(
-              entry: e, accent: accent, onTap: () => _openEditor(existing: e))),
+        _BudgetHeader(totals: totals, targets: targets, accent: accent),
+        const SizedBox(height: 8),
+        if (dayFoods.isEmpty) ...[
+          _fastedCard(accent),
+        ] else
+          ..._groupedFoods(dayFoods, accent),
         if (totals.nutrients.isNotEmpty) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
           _MicroPanel(nutrients: totals.nutrients),
         ],
       ]),
@@ -2803,7 +3095,9 @@ class _FoodScreenState extends State<FoodScreen> {
             icon: const Icon(Icons.add_rounded),
             label: const Text('ADD FOOD',
                 style: TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5)),
             style: ElevatedButton.styleFrom(
                 backgroundColor: accent,
                 foregroundColor: Colors.black,
@@ -2814,22 +3108,58 @@ class _FoodScreenState extends State<FoodScreen> {
       ),
     ]);
   }
+
+  Widget _fastedCard(Color accent) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 24),
+      child: Column(children: [
+        Text(
+            _isFasted
+                ? 'Marked as a fasted day.\nCounts as 0 calories in your TDEE.'
+                : 'No food logged for this day.\nTap + to scan or add.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14, color: Colors.grey[600], height: 1.5)),
+        const SizedBox(height: 14),
+        OutlinedButton.icon(
+          onPressed: _toggleFasted,
+          icon: Icon(
+              _isFasted
+                  ? Icons.check_circle_rounded
+                  : Icons.no_meals_rounded,
+              size: 18),
+          label: Text(_isFasted ? 'Fasted day ✓ (tap to undo)' : 'Mark as fasted day'),
+          style: OutlinedButton.styleFrom(
+              foregroundColor: _isFasted ? accent : Colors.grey[400],
+              side: BorderSide(
+                  color: _isFasted
+                      ? accent
+                      : const Color(0xFF333333)),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10))),
+        ),
+      ]),
+    );
+  }
 }
 
-// ─── Day summary: calorie bar + macro chips ───
-class _DaySummary extends StatelessWidget {
+// ─── Budget header: calorie + macro progress vs targets ───
+class _BudgetHeader extends StatelessWidget {
   final DayTotals totals;
-  final double? target;
+  final MacroTargets targets;
   final Color accent;
-  const _DaySummary(
-      {required this.totals, required this.target, required this.accent});
+  const _BudgetHeader(
+      {required this.totals, required this.targets, required this.accent});
 
   @override
   Widget build(BuildContext context) {
     final double cal = totals.calories;
-    final double? remaining = target != null ? target! - cal : null;
+    final double calTarget = targets.calories;
+    final double? remaining = calTarget > 0 ? calTarget - cal : null;
     final double frac =
-        target != null && target! > 0 ? (cal / target!).clamp(0.0, 1.0) : 0.0;
+        calTarget > 0 ? (cal / calTarget).clamp(0.0, 1.0) : 0.0;
+    final bool over = remaining != null && remaining < 0;
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -2846,20 +3176,17 @@ class _DaySummary extends StatelessWidget {
           const SizedBox(width: 4),
           Padding(
               padding: const EdgeInsets.only(bottom: 4),
-              child: Text(target != null ? '/ ${target!.round()} cal' : 'cal',
+              child: Text(calTarget > 0 ? '/ ${calTarget.round()} cal' : 'cal',
                   style: TextStyle(fontSize: 13, color: Colors.grey[600]))),
           const Spacer(),
           if (remaining != null)
-            Text(
-                remaining >= 0
-                    ? '${remaining.round()} left'
-                    : '${(-remaining).round()} over',
+            Text(over ? '${(-remaining).round()} over' : '${remaining.round()} left',
                 style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
-                    color: remaining >= 0 ? accent : const Color(0xFFCC6644))),
+                    color: over ? const Color(0xFFCC6644) : accent)),
         ]),
-        if (target != null) ...[
+        if (calTarget > 0) ...[
           const SizedBox(height: 8),
           ClipRRect(
               borderRadius: BorderRadius.circular(3),
@@ -2868,36 +3195,47 @@ class _DaySummary extends StatelessWidget {
                   minHeight: 6,
                   backgroundColor: const Color(0xFF111111),
                   valueColor: AlwaysStoppedAnimation<Color>(
-                      remaining != null && remaining < 0
-                          ? const Color(0xFFCC6644)
-                          : accent))),
+                      over ? const Color(0xFFCC6644) : accent))),
         ],
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
         Row(children: [
-          _macro('Protein', totals.protein, accent),
-          _macro('Fat', totals.fat, accent),
-          _macro('Carbs', totals.carbs, accent),
-          _macro('Fiber', totals.nutrients['fiber'] ?? 0, accent),
+          _macroBar('Protein', totals.protein, targets.protein, accent),
+          const SizedBox(width: 10),
+          _macroBar('Fat', totals.fat, targets.fat, accent),
+          const SizedBox(width: 10),
+          _macroBar('Carbs', totals.carbs, targets.carbs, accent),
+          const SizedBox(width: 10),
+          _macroBar(
+              'Fiber', totals.nutrients['fiber'] ?? 0, targets.fiber, accent),
         ]),
       ]),
     );
   }
 
-  Widget _macro(String label, double grams, Color accent) {
+  Widget _macroBar(String label, double v, double target, Color accent) {
+    final double frac = target > 0 ? (v / target).clamp(0.0, 1.0) : 0.0;
     return Expanded(
-      child: Column(children: [
-        Text('${_trim(grams)} g',
-            style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFFEEEEEE))),
-        const SizedBox(height: 2),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text(label.toUpperCase(),
             style: TextStyle(
-                fontSize: 10,
+                fontSize: 9,
                 color: Colors.grey[600],
                 letterSpacing: 0.5,
-                fontWeight: FontWeight.w600)),
+                fontWeight: FontWeight.w700)),
+        const SizedBox(height: 3),
+        Text('${_trim(v)}/${_trim(target)}g',
+            style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFEEEEEE))),
+        const SizedBox(height: 4),
+        ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+                value: frac,
+                minHeight: 4,
+                backgroundColor: const Color(0xFF111111),
+                valueColor: AlwaysStoppedAnimation<Color>(accent))),
       ]),
     );
   }
@@ -3231,7 +3569,7 @@ class _FoodSearchPageState extends State<_FoodSearchPage> {
 class _ConfirmFoodSheet extends StatefulWidget {
   final FoodTemplate template;
   final Color accent;
-  final void Function(double grams) onSave;
+  final void Function(double grams, String label) onSave;
   const _ConfirmFoodSheet(
       {required this.template, required this.accent, required this.onSave});
   @override
@@ -3239,22 +3577,47 @@ class _ConfirmFoodSheet extends StatefulWidget {
 }
 
 class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
-  late TextEditingController _g;
+  late final TextEditingController _amount;
+  late bool _byServing;
+
+  bool get _hasServing => widget.template.servingGrams != null;
 
   @override
   void initState() {
     super.initState();
-    _g = TextEditingController(
-        text: _trim(widget.template.servingGrams ?? 100, dp: 1));
+    _byServing = _hasServing;
+    _amount = TextEditingController(
+        text: _byServing
+            ? '1'
+            : _trim(widget.template.servingGrams ?? 100, dp: 1));
   }
 
   @override
   void dispose() {
-    _g.dispose();
+    _amount.dispose();
     super.dispose();
   }
 
-  double get _grams => double.tryParse(_g.text) ?? 0;
+  double get _amountVal => double.tryParse(_amount.text) ?? 0;
+
+  double get _grams =>
+      _byServing ? _amountVal * (widget.template.servingGrams ?? 0) : _amountVal;
+
+  String get _label {
+    if (_byServing) {
+      final String unit = _amountVal == 1 ? 'serving' : 'servings';
+      return '${_trim(_amountVal, dp: 1)} $unit (${_trim(_grams)} g)';
+    }
+    return '${_trim(_grams)} g';
+  }
+
+  void _setMode(bool byServing) {
+    setState(() {
+      _byServing = byServing;
+      _amount.text =
+          byServing ? '1' : _trim(widget.template.servingGrams ?? 100, dp: 1);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3273,7 +3636,18 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                     fontWeight: FontWeight.w700,
                     color: widget.accent)),
             const SizedBox(height: 16),
-            Text('AMOUNT (GRAMS)',
+            if (_hasServing) ...[
+              Row(children: [
+                _modeChip('Servings', _byServing, () => _setMode(true)),
+                const SizedBox(width: 8),
+                _modeChip('Grams', !_byServing, () => _setMode(false)),
+              ]),
+              const SizedBox(height: 12),
+            ],
+            Text(
+                _byServing
+                    ? 'SERVINGS (1 = ${_trim(t.servingGrams ?? 0)} g)'
+                    : 'AMOUNT (GRAMS)',
                 style: TextStyle(
                     fontSize: 11,
                     color: Colors.grey[600],
@@ -3281,8 +3655,9 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                     fontWeight: FontWeight.w600)),
             const SizedBox(height: 6),
             TextField(
-                controller: _g,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                controller: _amount,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
                 decoration: _foodDec(widget.accent),
                 onChanged: (_) => setState(() {})),
@@ -3298,7 +3673,8 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                 width: double.infinity,
                 height: 50,
                 child: ElevatedButton(
-                  onPressed: _grams > 0 ? () => widget.onSave(_grams) : null,
+                  onPressed:
+                      _grams > 0 ? () => widget.onSave(_grams, _label) : null,
                   style: ElevatedButton.styleFrom(
                       backgroundColor: widget.accent,
                       foregroundColor: Colors.black,
@@ -3310,6 +3686,25 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                   child: const Text('Log it'),
                 )),
           ]),
+    );
+  }
+
+  Widget _modeChip(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+            color: active ? widget.accent : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: active ? widget.accent : const Color(0xFF333333))),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: active ? Colors.black : Colors.grey[500])),
+      ),
     );
   }
 
@@ -3338,6 +3733,8 @@ class _ManualFoodSheet extends StatefulWidget {
   final FoodEntry? existing;
   final void Function(FoodEntry) onSave;
   final VoidCallback? onDelete;
+  final VoidCallback? onMove;
+  final VoidCallback? onCopy;
   final FoodEntry Function(String name, String serving, double cal, double p,
       double f, double c, Map<String, double> micros) buildEntry;
   const _ManualFoodSheet(
@@ -3345,6 +3742,8 @@ class _ManualFoodSheet extends StatefulWidget {
       required this.existing,
       required this.onSave,
       required this.onDelete,
+      required this.onMove,
+      required this.onCopy,
       required this.buildEntry});
   @override
   State<_ManualFoodSheet> createState() => _ManualFoodSheetState();
@@ -3473,6 +3872,29 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
                           color: Color(0xFFCC5555))),
                 ],
               ]),
+              if (widget.onMove != null || widget.onCopy != null) ...[
+                const SizedBox(height: 8),
+                Row(children: [
+                  if (widget.onMove != null)
+                    Expanded(
+                        child: TextButton.icon(
+                      onPressed: widget.onMove,
+                      icon: const Icon(Icons.event_rounded, size: 18),
+                      label: const Text('Move to day'),
+                      style: TextButton.styleFrom(
+                          foregroundColor: Colors.grey[400]),
+                    )),
+                  if (widget.onCopy != null)
+                    Expanded(
+                        child: TextButton.icon(
+                      onPressed: widget.onCopy,
+                      icon: const Icon(Icons.copy_rounded, size: 18),
+                      label: const Text('Copy to day'),
+                      style: TextButton.styleFrom(
+                          foregroundColor: Colors.grey[400]),
+                    )),
+                ]),
+              ],
             ]),
       ),
     );

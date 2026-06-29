@@ -126,6 +126,28 @@ void main() {
     });
   });
 
+  group('search dedupe', () {
+    FoodTemplate mk(String n) => FoodTemplate(
+        name: n,
+        kcal100: 1,
+        protein100: 0,
+        fat100: 0,
+        carbs100: 0,
+        nutrients100: <String, double>{});
+
+    test('collapses near-identical names and caps the count', () {
+      final List<FoodTemplate> out = FoodLookup.dedupe(<FoodTemplate>[
+        mk('Onion'),
+        mk('onion'),
+        mk('Onion, raw'),
+        mk('Onion'),
+      ], cap: 10);
+      expect(out.length, 2); // "onion" collapses, "onion, raw" distinct
+      expect(FoodLookup.dedupe(<FoodTemplate>[mk('a'), mk('b'), mk('c')], cap: 2)
+          .length, 2);
+    });
+  });
+
   group('day rollups', () {
     test('totals and caloriesByDate sum a day across entries', () {
       final List<FoodEntry> foods = <FoodEntry>[
