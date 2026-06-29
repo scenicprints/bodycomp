@@ -24,7 +24,7 @@ rebuilt into a real Flutter project with **over-the-air updates**. Core ideas:
 
 ## 2. Current status
 
-**Latest shipped version: v1.5.0** (`pubspec.yaml` `version:` is the source of truth — currently `1.5.0+10`).
+**Latest shipped version: v1.6.0** (`pubspec.yaml` `version:` is the source of truth — currently `1.6.0+11`).
 
 Release history (each is a GitHub Release with a signed APK):
 | Version | What shipped |
@@ -39,6 +39,7 @@ Release history (each is a GitHub Release with a signed APK):
 | 1.3.0 | Meal Maker (saved-meal library) + nav-bar bottom-sheet fix |
 | 1.4.0 | **Cook tab** (cooked-weight calculator + 24h leftovers), hourly food log, linked Grams↔Servings, date+time move/copy |
 | 1.5.0 | Multi-select food log (long-press → banner: Edit/View · Copy · Move · Modify Timestamp); scroll-wheel time picker (replaced the clock) |
+| 1.6.0 | **Food Advisor** — AI coach (Claude API) on Dashboard; on-demand daily/weekly, model selectable in Settings, adaptive tone, local digest builder |
 
 ---
 
@@ -96,6 +97,13 @@ Simple string secrets via `gh secret set NAME --body "..."` are fine.
 Food search uses USDA FoodData Central. The key is the GitHub secret **`USDA_API_KEY`**, injected at
 build via `--dart-define`. The app falls back to `DEMO_KEY` (rate-limited) if absent. If the key is
 ever lost, get a new free one at https://fdc.nal.usda.gov/api-key-signup.html and re-set the secret.
+
+### Anthropic API key (Food Advisor)
+The AI coach uses the GitHub secret **`ANTHROPIC_API_KEY`** (a key from console.anthropic.com with
+its own pay-as-you-go billing — **separate from any Claude subscription**), injected via
+`--dart-define`. No key → the coach shows "not set up" and stays dormant; nothing else breaks. Cost
+is per call (on-demand daily/weekly only), model chosen in Settings. Set the secret from **Git Bash**
+(raw stdin), not PowerShell.
 
 ### In-app updater
 `lib/updater.dart` hits `api.github.com/repos/scenicprints/bodycomp/releases/latest`, compares the
@@ -177,7 +185,15 @@ carbs = remaining calories, fiber ≈ 14 g/1000 kcal. Drives the Food-tab budget
 The user has a big vision. Build each as its own batch (branch → build → one release). Confirm the
 open decisions with the user before building each.
 
-### Batch 3 — Food Advisor  (coaching/insights)
+### Batch 3 — Food Advisor  ✅ SHIPPED (v1.6.0)
+Built as **hybrid**: `AdvisorDigest.build()` (in main.dart) computes the facts locally; the
+Claude API (`lib/advisor.dart`, raw HTTP — no Dart SDK) writes the coaching. Model is
+**selectable in Settings** (`UserCalibration.advisorModel`, default `claude-opus-4-8`). API key
+is the GitHub secret **`ANTHROPIC_API_KEY`**, injected via `--dart-define` (separate API billing,
+NOT the Claude subscription). On-demand daily (≤1/day) + weekly (≤1/week) buttons on the Dashboard
+coach card; insights cached in storage (`insights` key). Adaptive tone, confident-only patterns,
+RDA-aware (the model knows RDAs — no table). Original plan below for reference:
+
 **Goal:** tell the user how they're doing and tie it to results.
 - **Tier 1 — heuristics (build first):** compare each day/week's intake to `MacroTargets` and surface
   plain-language flags: "fiber low (12 g vs 30 g goal)", "protein under target 4 of last 7 days",

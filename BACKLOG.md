@@ -68,7 +68,11 @@ meals that generate food-log entries. Additive.
 
 ---
 
-## Batch 3 — Food Advisor  → v1.4.0
+## Batch 3 — Food Advisor  ✅ SHIPPED (v1.6.0)
+*(Hybrid: local digest → Claude API coaching. Model selectable in Settings (default Opus),
+key = `ANTHROPIC_API_KEY` secret, on-demand daily/weekly, adaptive tone. See ROADMAP.md.)*
+
+### (original plan)  → v1.4.0
 Coaching on how you're doing, tied to actual results.
 
 - **Tier 1 (heuristic):** macro target adherence (e.g. "fiber low — 12 g vs 30 g goal",
