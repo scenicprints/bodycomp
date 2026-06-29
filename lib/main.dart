@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'updater.dart';
 import 'food.dart';
+import 'advisor.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -53,6 +54,8 @@ class UserCalibration {
   final double? fatTarget;
   final double? carbTarget;
   final double? fiberTarget;
+  // AI coach model (Settings-selectable).
+  final String advisorModel;
 
   UserCalibration({
     required this.startWeight,
@@ -64,6 +67,7 @@ class UserCalibration {
     this.fatTarget,
     this.carbTarget,
     this.fiberTarget,
+    this.advisorModel = kDefaultAdvisorModel,
   });
 
   double get startLbm => startWeight * (1 - startBf);
@@ -77,6 +81,7 @@ class UserCalibration {
     Object? fatTarget = _unset,
     Object? carbTarget = _unset,
     Object? fiberTarget = _unset,
+    String? advisorModel,
   }) {
     return UserCalibration(
       startWeight: startWeight,
@@ -84,6 +89,7 @@ class UserCalibration {
       targetBf: targetBf ?? this.targetBf,
       activityMult: activityMult ?? this.activityMult,
       deficit: deficit ?? this.deficit,
+      advisorModel: advisorModel ?? this.advisorModel,
       proteinTarget: proteinTarget == _unset
           ? this.proteinTarget
           : (proteinTarget as num?)?.toDouble(),
@@ -109,6 +115,7 @@ class UserCalibration {
       if (fatTarget != null) 'fatTarget': fatTarget,
       if (carbTarget != null) 'carbTarget': carbTarget,
       if (fiberTarget != null) 'fiberTarget': fiberTarget,
+      'advisorModel': advisorModel,
     };
   }
 
@@ -123,6 +130,7 @@ class UserCalibration {
       fatTarget: (j['fatTarget'] as num?)?.toDouble(),
       carbTarget: (j['carbTarget'] as num?)?.toDouble(),
       fiberTarget: (j['fiberTarget'] as num?)?.toDouble(),
+      advisorModel: (j['advisorModel'] as String?) ?? kDefaultAdvisorModel,
     );
   }
 }
@@ -332,6 +340,127 @@ class MacroTargets {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ADVISOR DIGEST  — the local facts we send to the AI coach
+// ═══════════════════════════════════════════════════════════════════════
+
+class AdvisorDigest {
+  static String build(UserCalibration cal, List<DailyLog> logs,
+      List<FoodEntry> foods, Set<String> fasted, String kind) {
+    final DateTime now = DateTime.now();
+    final String today = formatDate(now);
+    final MacroTargets t = MacroTargets.compute(cal, logs, foods, fasted);
+    final Map<String, double> byDateCal = FoodMath.caloriesByDate(foods);
+    final Map<String, DailyLog> logByDate = <String, DailyLog>{
+      for (final DailyLog l in logs) l.date: l
+    };
+    final double tdee = logs.isEmpty
+        ? 0
+        : MathEngine.activeTdee(logs, cal.activityMult,
+            caloriesByDate: byDateCal, fastedDates: fasted);
+
+    final StringBuffer sb = StringBuffer();
+    sb.writeln('DATE: $today');
+    sb.writeln(
+        'GOAL: start body-fat ${(cal.startBf * 100).toStringAsFixed(1)}% → target ${(cal.targetBf * 100).toStringAsFixed(1)}%; intended daily deficit ${cal.deficit} cal.');
+    sb.writeln(
+        'DAILY TARGETS: ${t.calories.round()} cal, protein ${t.protein.round()} g, fat ${t.fat.round()} g, carbs ${t.carbs.round()} g, fiber ${t.fiber.round()} g.');
+    if (tdee > 0) {
+      sb.writeln('ESTIMATED TDEE (maintenance): ${tdee.round()} cal.');
+    }
+
+    if (logs.isNotEmpty) {
+      final DailyLog last = logs.last;
+      sb.writeln(
+          'LATEST WEIGH-IN (${last.date}): ${last.weight.toStringAsFixed(1)} lb, ${(last.bf * 100).toStringAsFixed(1)}% BF, lean mass ${last.lbm.toStringAsFixed(1)} lb.');
+      double? change(int days) {
+        final String cutoff = formatDate(now.subtract(Duration(days: days)));
+        final List<DailyLog> older =
+            logs.where((DailyLog l) => l.date.compareTo(cutoff) <= 0).toList();
+        return older.isEmpty ? null : last.weight - older.last.weight;
+      }
+
+      final double? c14 = change(14), c30 = change(30);
+      if (c14 != null) {
+        sb.writeln(
+            'WEIGHT CHANGE last ~14d: ${c14 >= 0 ? '+' : ''}${c14.toStringAsFixed(1)} lb.');
+      }
+      if (c30 != null) {
+        sb.writeln(
+            'WEIGHT CHANGE last ~30d: ${c30 >= 0 ? '+' : ''}${c30.toStringAsFixed(1)} lb.');
+      }
+      final DateTime? goal = MathEngine.goalDate(logs, cal.targetBf);
+      if (goal != null) {
+        sb.writeln(
+            'PROJECTED GOAL DATE at current pace: ${monthName(goal.month)} ${goal.day}, ${goal.year}.');
+      }
+      if (MathEngine.isPlateau(logs)) {
+        sb.writeln('NOTE: rolling weight average has plateaued (~10 days).');
+      }
+    }
+
+    // Adherence + deficit-vs-actual over the detail window.
+    final int detailDays = kind == 'weekly' ? 7 : 14;
+    int eaten = 0;
+    double sumCal = 0, sumP = 0, sumF = 0, sumC = 0, sumFiber = 0;
+    for (int i = 0; i < detailDays; i++) {
+      final String d = formatDate(now.subtract(Duration(days: i)));
+      if ((byDateCal[d] ?? 0) > 0) {
+        final DayTotals dt = FoodMath.totals(foods, d);
+        eaten++;
+        sumCal += dt.calories;
+        sumP += dt.protein;
+        sumF += dt.fat;
+        sumC += dt.carbs;
+        sumFiber += dt.nutrients['fiber'] ?? 0;
+      }
+    }
+    if (eaten > 0) {
+      final double avgCal = sumCal / eaten;
+      sb.writeln(
+          '\nLAST $detailDays DAYS — logged $eaten day(s); averages: ${avgCal.round()} cal, protein ${(sumP / eaten).round()} g, fat ${(sumF / eaten).round()} g, carbs ${(sumC / eaten).round()} g, fiber ${(sumFiber / eaten).round()} g.');
+      if (tdee > 0) {
+        final double dailyDeficit = tdee - avgCal;
+        sb.writeln(
+            'AVERAGE ACTUAL DEFICIT: ${dailyDeficit.round()} cal/day (predicts ~${(dailyDeficit * 7 / 3500).toStringAsFixed(1)} lb/week of fat).');
+      }
+    }
+
+    sb.writeln('\nPER-DAY DETAIL (oldest to newest):');
+    for (int i = detailDays - 1; i >= 0; i--) {
+      final String d = formatDate(now.subtract(Duration(days: i)));
+      final DailyLog? log = logByDate[d];
+      final bool hasFood = (byDateCal[d] ?? 0) > 0;
+      final bool isFast = fasted.contains(d);
+      if (log == null && !hasFood && !isFast) {
+        continue;
+      }
+      final List<String> parts = <String>[d];
+      if (log != null) {
+        parts.add(
+            '${log.weight.toStringAsFixed(1)}lb/${(log.bf * 100).toStringAsFixed(1)}%');
+      }
+      if (hasFood) {
+        final DayTotals dt = FoodMath.totals(foods, d);
+        parts.add(
+            '${dt.calories.round()}cal P${dt.protein.round()} F${dt.fat.round()} C${dt.carbs.round()} fib${(dt.nutrients['fiber'] ?? 0).round()}');
+        final List<String> names = FoodMath.forDate(foods, d)
+            .map((FoodEntry e) => e.name)
+            .take(6)
+            .toList();
+        if (names.isNotEmpty) {
+          parts.add('[${names.join(', ')}]');
+        }
+      } else if (isFast) {
+        parts.add('FASTED (0 cal)');
+      }
+      sb.writeln('- ${parts.join(' · ')}');
+    }
+
+    return sb.toString();
+  }
+}
+
 class AppStorage {
   static late File _file;
   static Future<void> init() async {
@@ -465,6 +594,23 @@ class AppStorage {
     _write(d);
   }
 
+  static List<AdvisorInsight> getInsights() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('insights')) {
+      return (d['insights'] as List<dynamic>)
+          .map((dynamic e) =>
+              AdvisorInsight.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveInsights(List<AdvisorInsight> insights) {
+    final Map<String, dynamic> d = _read();
+    d['insights'] = insights.map((AdvisorInsight i) => i.toJson()).toList();
+    _write(d);
+  }
+
   static void clearAll() {
     try {
       if (_file.existsSync()) {
@@ -547,6 +693,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<FoodEntry> _foods = [];
   List<String> _fasted = [];
   List<Meal> _meals = [];
+  List<AdvisorInsight> _insights = [];
 
   @override
   void initState() {
@@ -557,6 +704,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
+    _insights = AppStorage.getInsights();
   }
 
   void _setCal(UserCalibration c) {
@@ -601,6 +749,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveMeals(m);
   }
 
+  void _setInsights(List<AdvisorInsight> i) {
+    setState(() {
+      _insights = i;
+    });
+    AppStorage.saveInsights(i);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -610,6 +765,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _foods = [];
       _fasted = [];
       _meals = [];
+      _insights = [];
     });
   }
 
@@ -650,11 +806,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
               foods: _foods,
               fasted: _fasted,
               meals: _meals,
+              insights: _insights,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
               onSetFasted: _setFasted,
               onSetMeals: _setMeals,
+              onSetInsights: _setInsights,
               onDismiss: _dismiss,
               onReset: _resetAll),
     );
@@ -1299,11 +1457,13 @@ class HomeShell extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<Meal> meals;
+  final List<AdvisorInsight> insights;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
   final void Function(List<String>) onSetFasted;
   final void Function(List<Meal>) onSetMeals;
+  final void Function(List<AdvisorInsight>) onSetInsights;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
   const HomeShell(
@@ -1314,11 +1474,13 @@ class HomeShell extends StatefulWidget {
       required this.foods,
       required this.fasted,
       required this.meals,
+      required this.insights,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
       required this.onSetFasted,
       required this.onSetMeals,
+      required this.onSetInsights,
       required this.onDismiss,
       required this.onReset});
   @override
@@ -1344,7 +1506,9 @@ class _HomeShellState extends State<HomeShell> {
             dismissed: widget.dismissed,
             foods: widget.foods,
             fasted: widget.fasted,
+            insights: widget.insights,
             onSetLogs: widget.onSetLogs,
+            onSetInsights: widget.onSetInsights,
             onDismiss: widget.onDismiss),
         FoodScreen(
             cal: widget.cal,
@@ -1405,7 +1569,9 @@ class DashboardScreen extends StatefulWidget {
   final List<double> dismissed;
   final List<FoodEntry> foods;
   final List<String> fasted;
+  final List<AdvisorInsight> insights;
   final void Function(List<DailyLog>) onSetLogs;
+  final void Function(List<AdvisorInsight>) onSetInsights;
   final void Function(double) onDismiss;
   const DashboardScreen(
       {super.key,
@@ -1414,7 +1580,9 @@ class DashboardScreen extends StatefulWidget {
       required this.dismissed,
       required this.foods,
       required this.fasted,
+      required this.insights,
       required this.onSetLogs,
+      required this.onSetInsights,
       required this.onDismiss});
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -1606,6 +1774,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       backgroundColor: const Color(0xFF1A1A1A),
                       valueColor: AlwaysStoppedAnimation<Color>(accent))),
               const SizedBox(height: 16),
+
+              // AI coach card
+              _AdvisorCard(
+                  cal: widget.cal,
+                  logs: widget.logs,
+                  foods: widget.foods,
+                  fasted: widget.fasted,
+                  insights: widget.insights,
+                  onSetInsights: widget.onSetInsights,
+                  accent: accent),
+              const SizedBox(height: 14),
 
               // Chart card (elevated surface)
               Container(
@@ -2617,6 +2796,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ])),
           ],
           const SizedBox(height: 12),
+          _advisorCard(accent),
+          const SizedBox(height: 12),
           UpdateCard(accent: accent),
           const SizedBox(height: 12),
           _btn('📁  Export CSV to Clipboard', _csv),
@@ -2690,6 +2871,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   fontWeight: FontWeight.w700,
                   color: vc ?? const Color(0xFFEEEEEE)))
         ]));
+  }
+
+  Widget _advisorCard(Color accent) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text('AI COACH',
+            style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey[600],
+                letterSpacing: 1,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text('Model used for daily/weekly coaching. Pricier = sharper.',
+            style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+        const SizedBox(height: 10),
+        Container(
+          decoration: BoxDecoration(
+              color: const Color(0xFF111111),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF333333))),
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: widget.cal.advisorModel,
+              isExpanded: true,
+              dropdownColor: kSurface2,
+              style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 15),
+              items: kAdvisorModels
+                  .map((AdvisorModel m) => DropdownMenuItem<String>(
+                      value: m.id,
+                      child: Text('${m.label}  (${m.cost})')))
+                  .toList(),
+              onChanged: (String? v) {
+                if (v != null) {
+                  widget.onSetCal(widget.cal.copyWith(advisorModel: v));
+                }
+              },
+            ),
+          ),
+        ),
+        if (!Advisor.configured) ...<Widget>[
+          const SizedBox(height: 8),
+          Text('No API key in this build — coaching is disabled until one is added.',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+        ],
+      ]),
+    );
   }
 
   Widget _btn(String t, VoidCallback onTap, {Color? color, Color? border}) {
@@ -5252,6 +5485,300 @@ class _ScrollTimeSheetState extends State<_ScrollTimeSheet> {
                       fontSize: 20,
                       fontWeight: FontWeight.w600,
                       color: Color(0xFFEEEEEE))))),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FOOD ADVISOR UI
+// ═══════════════════════════════════════════════════════════════════════
+
+String _agoLabel(int ms) {
+  if (ms == 0) {
+    return '';
+  }
+  final int mins =
+      (DateTime.now().millisecondsSinceEpoch - ms) ~/ 60000;
+  if (mins < 1) {
+    return 'just now';
+  }
+  if (mins < 60) {
+    return '${mins}m ago';
+  }
+  final int h = mins ~/ 60;
+  if (h < 24) {
+    return '${h}h ago';
+  }
+  return '${h ~/ 24}d ago';
+}
+
+class _AdvisorCard extends StatefulWidget {
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<FoodEntry> foods;
+  final List<String> fasted;
+  final List<AdvisorInsight> insights;
+  final void Function(List<AdvisorInsight>) onSetInsights;
+  final Color accent;
+  const _AdvisorCard(
+      {required this.cal,
+      required this.logs,
+      required this.foods,
+      required this.fasted,
+      required this.insights,
+      required this.onSetInsights,
+      required this.accent});
+  @override
+  State<_AdvisorCard> createState() => _AdvisorCardState();
+}
+
+class _AdvisorCardState extends State<_AdvisorCard> {
+  String? _busyKind;
+  String? _error;
+
+  String get _todayKey => formatDate(DateTime.now());
+  String get _weekKey {
+    final DateTime n = DateTime.now();
+    return formatDate(n.subtract(Duration(days: n.weekday - 1)));
+  }
+
+  AdvisorInsight? _latest(String kind) {
+    final List<AdvisorInsight> m =
+        widget.insights.where((AdvisorInsight i) => i.kind == kind).toList();
+    return m.isEmpty ? null : m.last;
+  }
+
+  Future<void> _generate(String kind) async {
+    setState(() {
+      _busyKind = kind;
+      _error = null;
+    });
+    try {
+      final String digest = AdvisorDigest.build(widget.cal, widget.logs,
+          widget.foods, widget.fasted.toSet(), kind);
+      final String text = await Advisor.generate(
+          model: widget.cal.advisorModel, kind: kind, digest: digest);
+      if (!mounted) {
+        return;
+      }
+      final String key = kind == 'weekly' ? _weekKey : _todayKey;
+      final List<AdvisorInsight> updated = widget.insights
+          .where((AdvisorInsight i) => i.kind != kind)
+          .toList()
+        ..add(AdvisorInsight(
+            kind: kind,
+            periodKey: key,
+            text: text,
+            createdAtMs: DateTime.now().millisecondsSinceEpoch));
+      widget.onSetInsights(updated);
+    } on AdvisorException catch (e) {
+      if (mounted) {
+        setState(() => _error = e.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'Something went wrong reaching the coach.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _busyKind = null);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accent = widget.accent;
+    final AdvisorInsight? daily = _latest('daily');
+    final AdvisorInsight? weekly = _latest('weekly');
+    final bool todayDone = daily != null && daily.periodKey == _todayKey;
+    final bool weekDone = weekly != null && weekly.periodKey == _weekKey;
+    final bool configured = Advisor.configured;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: <Widget>[
+          Row(children: <Widget>[
+            Icon(Icons.psychology_rounded, size: 16, color: accent),
+            const SizedBox(width: 6),
+            Text('COACH',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[500],
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.w700)),
+          ]),
+          Text(advisorModelLabel(widget.cal.advisorModel),
+              style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+        ]),
+        const SizedBox(height: 10),
+        if (!configured)
+          Text(
+              'AI coach isn\'t set up in this build (no API key). Add one to enable coaching.',
+              style: TextStyle(
+                  fontSize: 13, color: Colors.grey[500], height: 1.4))
+        else ...<Widget>[
+          if (daily != null)
+            InkWell(
+              onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                  builder: (_) => _AdvisorDetailScreen(
+                      daily: daily, weekly: weekly, accent: accent))),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(daily.text,
+                        maxLines: 5,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontSize: 13.5,
+                            color: Color(0xFFDDDDDD),
+                            height: 1.5)),
+                    const SizedBox(height: 4),
+                    Text('tap to read in full · ${_agoLabel(daily.createdAtMs)}',
+                        style:
+                            TextStyle(fontSize: 11, color: Colors.grey[600])),
+                  ]),
+            )
+          else
+            Text('No coaching yet today. Tap below for a check-in.',
+                style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+          if (_error != null) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(_error!,
+                style: const TextStyle(fontSize: 12, color: Color(0xFFCC8855))),
+          ],
+          const SizedBox(height: 12),
+          Row(children: <Widget>[
+            Expanded(
+                child: _coachBtn(
+                    label: todayDone ? "Today's coaching ✓" : "Today's coaching",
+                    busy: _busyKind == 'daily',
+                    enabled: !todayDone && _busyKind == null,
+                    onTap: () => _generate('daily'),
+                    accent: accent,
+                    filled: true)),
+            const SizedBox(width: 10),
+            Expanded(
+                child: _coachBtn(
+                    label: weekDone ? 'Weekly ✓' : 'Weekly review',
+                    busy: _busyKind == 'weekly',
+                    enabled: !weekDone && _busyKind == null,
+                    onTap: () => _generate('weekly'),
+                    accent: accent,
+                    filled: false)),
+          ]),
+        ],
+      ]),
+    );
+  }
+
+  Widget _coachBtn(
+      {required String label,
+      required bool busy,
+      required bool enabled,
+      required VoidCallback onTap,
+      required Color accent,
+      required bool filled}) {
+    final Widget child = busy
+        ? SizedBox(
+            height: 16,
+            width: 16,
+            child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: filled ? Colors.black : accent))
+        : Text(label,
+            style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: !enabled
+                    ? Colors.grey[600]
+                    : (filled ? Colors.black : accent)));
+    return SizedBox(
+      height: 42,
+      child: filled
+          ? ElevatedButton(
+              onPressed: enabled ? onTap : null,
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: accent,
+                  disabledBackgroundColor: const Color(0xFF2A2A2A),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              child: child)
+          : OutlinedButton(
+              onPressed: enabled ? onTap : null,
+              style: OutlinedButton.styleFrom(
+                  side: BorderSide(
+                      color: enabled
+                          ? Color.fromRGBO(
+                              accent.red, accent.green, accent.blue, 0.4)
+                          : const Color(0xFF2A2A2A)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10))),
+              child: child),
+    );
+  }
+}
+
+class _AdvisorDetailScreen extends StatelessWidget {
+  final AdvisorInsight? daily;
+  final AdvisorInsight? weekly;
+  final Color accent;
+  const _AdvisorDetailScreen(
+      {required this.daily, required this.weekly, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Coach')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        children: <Widget>[
+          if (daily != null) _section('TODAY', daily!, accent),
+          if (weekly != null) _section('THIS WEEK', weekly!, accent),
+          if (daily == null && weekly == null)
+            Padding(
+                padding: const EdgeInsets.all(32),
+                child: Text('No coaching yet.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey[600]))),
+        ],
+      ),
+    );
+  }
+
+  Widget _section(String title, AdvisorInsight i, Color accent) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: <Widget>[
+          Text(title,
+              style: TextStyle(
+                  fontSize: 11,
+                  color: accent,
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w700)),
+          Text(_agoLabel(i.createdAtMs),
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+        ]),
+        const SizedBox(height: 10),
+        SelectableText(i.text,
+            style: const TextStyle(
+                fontSize: 14, color: Color(0xFFDDDDDD), height: 1.6)),
+      ]),
     );
   }
 }
