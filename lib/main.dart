@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'updater.dart';
+import 'food.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -136,6 +138,21 @@ class MathEngine {
       return 0;
     }
     return baselineTdee(rollingLbm(logs), mult);
+  }
+
+  /// Replaces each weigh-in day's calories with that date's food-log total,
+  /// but only on days that actually have food entries. Days with no scanned
+  /// food keep their manually-entered number, so old data still works.
+  static List<DailyLog> withFoodCalories(
+      List<DailyLog> logs, Map<String, double> caloriesByDate) {
+    return logs.map((DailyLog l) {
+      final double? f = caloriesByDate[l.date];
+      if (f != null && f > 0) {
+        return DailyLog(
+            date: l.date, weight: l.weight, bf: l.bf, calories: f.round());
+      }
+      return l;
+    }).toList();
   }
 
   static double rollingAvg(List<DailyLog> logs, int idx, {int window = 7}) {
@@ -296,6 +313,22 @@ class AppStorage {
     _write(d);
   }
 
+  static List<FoodEntry> getFoods() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('foods')) {
+      return (d['foods'] as List<dynamic>)
+          .map((dynamic e) => FoodEntry.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveFoods(List<FoodEntry> foods) {
+    final Map<String, dynamic> d = _read();
+    d['foods'] = foods.map((FoodEntry f) => f.toJson()).toList();
+    _write(d);
+  }
+
   static void clearAll() {
     try {
       if (_file.existsSync()) {
@@ -375,6 +408,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   UserCalibration? _cal;
   List<DailyLog> _logs = [];
   List<double> _dismissed = [];
+  List<FoodEntry> _foods = [];
 
   @override
   void initState() {
@@ -382,6 +416,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _cal = AppStorage.getCalibration();
     _logs = AppStorage.getLogs();
     _dismissed = AppStorage.getDismissedMilestones();
+    _foods = AppStorage.getFoods();
   }
 
   void _setCal(UserCalibration c) {
@@ -405,12 +440,20 @@ class _BodyCompAppState extends State<BodyCompApp> {
     }
   }
 
+  void _setFoods(List<FoodEntry> f) {
+    setState(() {
+      _foods = f;
+    });
+    AppStorage.saveFoods(f);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
       _cal = null;
       _logs = [];
       _dismissed = [];
+      _foods = [];
     });
   }
 
@@ -448,8 +491,10 @@ class _BodyCompAppState extends State<BodyCompApp> {
               cal: _cal!,
               logs: _logs,
               dismissed: _dismissed,
+              foods: _foods,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
+              onSetFoods: _setFoods,
               onDismiss: _dismiss,
               onReset: _resetAll),
     );
@@ -1091,8 +1136,10 @@ class HomeShell extends StatefulWidget {
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<double> dismissed;
+  final List<FoodEntry> foods;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
+  final void Function(List<FoodEntry>) onSetFoods;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
   const HomeShell(
@@ -1100,8 +1147,10 @@ class HomeShell extends StatefulWidget {
       required this.cal,
       required this.logs,
       required this.dismissed,
+      required this.foods,
       required this.onSetCal,
       required this.onSetLogs,
+      required this.onSetFoods,
       required this.onDismiss,
       required this.onReset});
   @override
@@ -1119,8 +1168,14 @@ class _HomeShellState extends State<HomeShell> {
             cal: widget.cal,
             logs: widget.logs,
             dismissed: widget.dismissed,
+            foods: widget.foods,
             onSetLogs: widget.onSetLogs,
             onDismiss: widget.onDismiss),
+        FoodScreen(
+            cal: widget.cal,
+            logs: widget.logs,
+            foods: widget.foods,
+            onSetFoods: widget.onSetFoods),
         LedgerScreen(
             logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
         SettingsScreen(
@@ -1141,6 +1196,8 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.dashboard_rounded), label: 'DASHBOARD'),
             BottomNavigationBarItem(
+                icon: Icon(Icons.restaurant_rounded), label: 'FOOD'),
+            BottomNavigationBarItem(
                 icon: Icon(Icons.list_alt_rounded), label: 'LEDGER'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.settings_rounded), label: 'SETTINGS'),
@@ -1157,6 +1214,7 @@ class DashboardScreen extends StatefulWidget {
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<double> dismissed;
+  final List<FoodEntry> foods;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(double) onDismiss;
   const DashboardScreen(
@@ -1164,6 +1222,7 @@ class DashboardScreen extends StatefulWidget {
       required this.cal,
       required this.logs,
       required this.dismissed,
+      required this.foods,
       required this.onSetLogs,
       required this.onDismiss});
   @override
@@ -1303,7 +1362,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     double? tdee;
     if (widget.logs.isNotEmpty) {
-      tdee = MathEngine.activeTdee(widget.logs, widget.cal.activityMult);
+      final List<DailyLog> tdeeLogs = MathEngine.withFoodCalories(
+          widget.logs, FoodMath.caloriesByDate(widget.foods));
+      tdee = MathEngine.activeTdee(tdeeLogs, widget.cal.activityMult);
     }
     double? delta;
     if (widget.logs.length >= 2) {
@@ -2448,4 +2509,837 @@ class _SettingsScreenState extends State<SettingsScreen> {
         content: Text('CSV copied to clipboard.'),
         backgroundColor: Color(0xFF2A2A2A)));
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FOOD JOURNAL UI
+// ═══════════════════════════════════════════════════════════════════════
+
+String _trim(double v, {int dp = 0}) =>
+    v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(dp);
+
+class FoodScreen extends StatefulWidget {
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<FoodEntry> foods;
+  final void Function(List<FoodEntry>) onSetFoods;
+  const FoodScreen(
+      {super.key,
+      required this.cal,
+      required this.logs,
+      required this.foods,
+      required this.onSetFoods});
+  @override
+  State<FoodScreen> createState() => _FoodScreenState();
+}
+
+class _FoodScreenState extends State<FoodScreen> {
+  late String _date;
+
+  @override
+  void initState() {
+    super.initState();
+    _date = formatDate(DateTime.now());
+  }
+
+  Color get _accent {
+    int ph = 0;
+    if (widget.logs.isNotEmpty) {
+      ph = MathEngine.phase(MathEngine.progress(
+          widget.cal.startBf, widget.logs.last.bf, widget.cal.targetBf));
+    }
+    return kPhases[ph].accent;
+  }
+
+  double? get _calorieTarget {
+    if (widget.logs.isEmpty) {
+      return null;
+    }
+    final List<DailyLog> tdeeLogs = MathEngine.withFoodCalories(
+        widget.logs, FoodMath.caloriesByDate(widget.foods));
+    return MathEngine.activeTdee(tdeeLogs, widget.cal.activityMult) -
+        widget.cal.deficit;
+  }
+
+  void _shiftDay(int delta) {
+    final DateTime d = DateTime.parse(_date).add(Duration(days: delta));
+    if (d.isAfter(DateTime.parse(formatDate(DateTime.now())))) {
+      return; // no logging into the future
+    }
+    setState(() => _date = formatDate(d));
+  }
+
+  String _dateLabel() {
+    final DateTime d = DateTime.parse(_date);
+    final DateTime today = DateTime.parse(formatDate(DateTime.now()));
+    final int diff = today.difference(DateTime(d.year, d.month, d.day)).inDays;
+    if (diff == 0) {
+      return 'Today';
+    }
+    if (diff == 1) {
+      return 'Yesterday';
+    }
+    const List<String> wd = [
+      'Mon',
+      'Tue',
+      'Wed',
+      'Thu',
+      'Fri',
+      'Sat',
+      'Sun'
+    ];
+    return '${wd[d.weekday - 1]}, ${monthName(d.month)} ${d.day}';
+  }
+
+  void _addEntry(FoodEntry e) {
+    widget.onSetFoods(List<FoodEntry>.from(widget.foods)..add(e));
+  }
+
+  void _updateEntry(FoodEntry e) {
+    widget.onSetFoods(
+        widget.foods.map((FoodEntry x) => x.id == e.id ? e : x).toList());
+  }
+
+  void _deleteEntry(String id) {
+    widget.onSetFoods(
+        widget.foods.where((FoodEntry x) => x.id != id).toList());
+  }
+
+  String _newId() => DateTime.now().microsecondsSinceEpoch.toString();
+
+  void _showAddMenu() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const SizedBox(height: 8),
+          _menuTile(Icons.qr_code_scanner_rounded, 'Scan barcode',
+              'Look up nutrition automatically', () {
+            Navigator.pop(context);
+            _scanBarcode();
+          }),
+          _menuTile(Icons.edit_rounded, 'Enter manually',
+              'Type in the food and its nutrition', () {
+            Navigator.pop(context);
+            _openEditor();
+          }),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  Widget _menuTile(
+      IconData icon, String title, String sub, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: _accent),
+      title: Text(title,
+          style: const TextStyle(
+              color: Color(0xFFEEEEEE), fontWeight: FontWeight.w600)),
+      subtitle: Text(sub, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _scanBarcode() async {
+    final String? code = await Navigator.of(context).push<String>(
+        MaterialPageRoute<String>(builder: (_) => _ScannerPage(accent: _accent)));
+    if (code == null || !mounted) {
+      return;
+    }
+    showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => Center(
+            child: CircularProgressIndicator(color: _accent)));
+    FoodTemplate? t;
+    try {
+      t = await OpenFoodFacts.fetchByBarcode(code);
+    } catch (_) {}
+    if (!mounted) {
+      return;
+    }
+    Navigator.pop(context); // dismiss the loader
+    if (t == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text('Barcode $code not found — enter it manually.')));
+      _openEditor(barcode: code);
+      return;
+    }
+    _openConfirm(t);
+  }
+
+  void _openConfirm(FoodTemplate t) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ConfirmFoodSheet(
+        template: t,
+        accent: _accent,
+        onSave: (double grams) {
+          _addEntry(t.toEntry(id: _newId(), date: _date, grams: grams));
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
+  void _openEditor({FoodEntry? existing, String? barcode}) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ManualFoodSheet(
+        accent: _accent,
+        existing: existing,
+        onSave: (FoodEntry e) {
+          if (existing != null) {
+            _updateEntry(e);
+          } else {
+            _addEntry(e);
+          }
+          Navigator.pop(context);
+        },
+        onDelete: existing == null
+            ? null
+            : () {
+                _deleteEntry(existing.id);
+                Navigator.pop(context);
+              },
+        buildEntry: (String name, String serving, double cal, double p,
+            double f, double c, Map<String, double> micros) {
+          return FoodEntry(
+            id: existing?.id ?? _newId(),
+            date: existing?.date ?? _date,
+            name: name,
+            serving: serving,
+            calories: cal,
+            protein: p,
+            fat: f,
+            carbs: c,
+            nutrients: micros,
+            source: existing?.source ?? 'manual',
+            barcode: existing?.barcode ?? barcode,
+          );
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Color accent = _accent;
+    final List<FoodEntry> dayFoods = FoodMath.forDate(widget.foods, _date);
+    final DayTotals totals = FoodMath.totals(widget.foods, _date);
+    final double? target = _calorieTarget;
+
+    return Stack(children: [
+      ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 100), children: [
+        // Date navigator
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          IconButton(
+              onPressed: () => _shiftDay(-1),
+              icon: const Icon(Icons.chevron_left_rounded, color: Color(0xFF888888))),
+          Text(_dateLabel(),
+              style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFEEEEEE))),
+          IconButton(
+              onPressed: () => _shiftDay(1),
+              icon: const Icon(Icons.chevron_right_rounded,
+                  color: Color(0xFF888888))),
+        ]),
+        const SizedBox(height: 4),
+        _DaySummary(totals: totals, target: target, accent: accent),
+        const SizedBox(height: 16),
+        if (dayFoods.isEmpty)
+          Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Text('No food logged for this day.\nTap + to scan or add.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14, color: Colors.grey[600])))
+        else
+          ...dayFoods.map((FoodEntry e) => _FoodCard(
+              entry: e, accent: accent, onTap: () => _openEditor(existing: e))),
+        if (totals.nutrients.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          _MicroPanel(nutrients: totals.nutrients),
+        ],
+      ]),
+      Positioned(
+        bottom: 16,
+        left: 16,
+        right: 16,
+        child: SizedBox(
+          height: 56,
+          child: ElevatedButton.icon(
+            onPressed: _showAddMenu,
+            icon: const Icon(Icons.add_rounded),
+            label: const Text('ADD FOOD',
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: accent,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14))),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+// ─── Day summary: calorie bar + macro chips ───
+class _DaySummary extends StatelessWidget {
+  final DayTotals totals;
+  final double? target;
+  final Color accent;
+  const _DaySummary(
+      {required this.totals, required this.target, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final double cal = totals.calories;
+    final double? remaining = target != null ? target! - cal : null;
+    final double frac =
+        target != null && target! > 0 ? (cal / target!).clamp(0.0, 1.0) : 0.0;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+          Text('${cal.round()}',
+              style: const TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFEEEEEE))),
+          const SizedBox(width: 4),
+          Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(target != null ? '/ ${target!.round()} cal' : 'cal',
+                  style: TextStyle(fontSize: 13, color: Colors.grey[600]))),
+          const Spacer(),
+          if (remaining != null)
+            Text(
+                remaining >= 0
+                    ? '${remaining.round()} left'
+                    : '${(-remaining).round()} over',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: remaining >= 0 ? accent : const Color(0xFFCC6644))),
+        ]),
+        if (target != null) ...[
+          const SizedBox(height: 8),
+          ClipRRect(
+              borderRadius: BorderRadius.circular(3),
+              child: LinearProgressIndicator(
+                  value: frac,
+                  minHeight: 6,
+                  backgroundColor: const Color(0xFF111111),
+                  valueColor: AlwaysStoppedAnimation<Color>(
+                      remaining != null && remaining < 0
+                          ? const Color(0xFFCC6644)
+                          : accent))),
+        ],
+        const SizedBox(height: 14),
+        Row(children: [
+          _macro('Protein', totals.protein, accent),
+          _macro('Fat', totals.fat, accent),
+          _macro('Carbs', totals.carbs, accent),
+          _macro('Fiber', totals.nutrients['fiber'] ?? 0, accent),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _macro(String label, double grams, Color accent) {
+    return Expanded(
+      child: Column(children: [
+        Text('${_trim(grams)} g',
+            style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFEEEEEE))),
+        const SizedBox(height: 2),
+        Text(label.toUpperCase(),
+            style: TextStyle(
+                fontSize: 10,
+                color: Colors.grey[600],
+                letterSpacing: 0.5,
+                fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
+}
+
+// ─── A single logged food row ───
+class _FoodCard extends StatelessWidget {
+  final FoodEntry entry;
+  final Color accent;
+  final VoidCallback onTap;
+  const _FoodCard(
+      {required this.entry, required this.accent, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: kSurface0,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kBorder)),
+            child: Row(children: [
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(entry.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFDDDDDD))),
+                      const SizedBox(height: 3),
+                      Text(
+                          '${entry.serving}  ·  P ${_trim(entry.protein)}  F ${_trim(entry.fat)}  C ${_trim(entry.carbs)}',
+                          style:
+                              TextStyle(fontSize: 11, color: Colors.grey[600])),
+                    ]),
+              ),
+              const SizedBox(width: 10),
+              Text('${entry.calories.round()}',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: accent)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Collapsible day micronutrient totals ───
+class _MicroPanel extends StatelessWidget {
+  final Map<String, double> nutrients;
+  const _MicroPanel({required this.nutrients});
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Nutrient> present = kNutrients
+        .where((Nutrient n) => (nutrients[n.key] ?? 0) > 0)
+        .toList();
+    if (present.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: Container(
+        decoration: BoxDecoration(
+            color: kSurface0,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: kBorder)),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 14),
+          iconColor: const Color(0xFF888888),
+          collapsedIconColor: const Color(0xFF888888),
+          title: Text('NUTRIENTS (${present.length})',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w600)),
+          children: present
+              .map((Nutrient n) => Padding(
+                    padding:
+                        const EdgeInsets.fromLTRB(14, 0, 14, 10),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(n.label,
+                              style: TextStyle(
+                                  fontSize: 13, color: Colors.grey[400])),
+                          Text(
+                              '${_trim(nutrients[n.key]!, dp: 1)} ${n.unit}',
+                              style: const TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFFDDDDDD))),
+                        ]),
+                  ))
+              .toList(),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Full-screen barcode scanner ───
+class _ScannerPage extends StatefulWidget {
+  final Color accent;
+  const _ScannerPage({required this.accent});
+  @override
+  State<_ScannerPage> createState() => _ScannerPageState();
+}
+
+class _ScannerPageState extends State<_ScannerPage> {
+  bool _handled = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Scan barcode')),
+      body: Stack(children: [
+        MobileScanner(
+          onDetect: (BarcodeCapture capture) {
+            if (_handled) {
+              return;
+            }
+            for (final Barcode b in capture.barcodes) {
+              final String? code = b.rawValue;
+              if (code != null && code.isNotEmpty) {
+                _handled = true;
+                Navigator.of(context).pop(code);
+                return;
+              }
+            }
+          },
+        ),
+        Center(
+          child: Container(
+            width: 240,
+            height: 140,
+            decoration: BoxDecoration(
+                border: Border.all(color: widget.accent, width: 3),
+                borderRadius: BorderRadius.circular(12)),
+          ),
+        ),
+        Positioned(
+          bottom: 40,
+          left: 0,
+          right: 0,
+          child: Text('Point at a barcode',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.85), fontSize: 14)),
+        ),
+      ]),
+    );
+  }
+}
+
+// ─── Confirm a scanned food + pick serving size ───
+class _ConfirmFoodSheet extends StatefulWidget {
+  final FoodTemplate template;
+  final Color accent;
+  final void Function(double grams) onSave;
+  const _ConfirmFoodSheet(
+      {required this.template, required this.accent, required this.onSave});
+  @override
+  State<_ConfirmFoodSheet> createState() => _ConfirmFoodSheetState();
+}
+
+class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
+  late TextEditingController _g;
+
+  @override
+  void initState() {
+    super.initState();
+    _g = TextEditingController(
+        text: _trim(widget.template.servingGrams ?? 100, dp: 1));
+  }
+
+  @override
+  void dispose() {
+    _g.dispose();
+    super.dispose();
+  }
+
+  double get _grams => double.tryParse(_g.text) ?? 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final FoodTemplate t = widget.template;
+    final double s = _grams / 100.0;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24, 20, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.name,
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+            const SizedBox(height: 16),
+            Text('AMOUNT (GRAMS)',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[600],
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            TextField(
+                controller: _g,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
+                decoration: _foodDec(widget.accent),
+                onChanged: (_) => setState(() {})),
+            const SizedBox(height: 16),
+            Row(children: [
+              _stat('Calories', '${(t.kcal100 * s).round()}', widget.accent),
+              _stat('Protein', '${_trim(t.protein100 * s)} g', widget.accent),
+              _stat('Fat', '${_trim(t.fat100 * s)} g', widget.accent),
+              _stat('Carbs', '${_trim(t.carbs100 * s)} g', widget.accent),
+            ]),
+            const SizedBox(height: 20),
+            SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: _grams > 0 ? () => widget.onSave(_grams) : null,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: widget.accent,
+                      foregroundColor: Colors.black,
+                      disabledBackgroundColor: const Color(0xFF333333),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  child: const Text('Log it'),
+                )),
+          ]),
+    );
+  }
+
+  Widget _stat(String label, String value, Color accent) {
+    return Expanded(
+        child: Column(children: [
+      Text(value,
+          style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFEEEEEE))),
+      const SizedBox(height: 2),
+      Text(label.toUpperCase(),
+          style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey[600],
+              letterSpacing: 0.5,
+              fontWeight: FontWeight.w600)),
+    ]));
+  }
+}
+
+// ─── Manual add / edit ───
+class _ManualFoodSheet extends StatefulWidget {
+  final Color accent;
+  final FoodEntry? existing;
+  final void Function(FoodEntry) onSave;
+  final VoidCallback? onDelete;
+  final FoodEntry Function(String name, String serving, double cal, double p,
+      double f, double c, Map<String, double> micros) buildEntry;
+  const _ManualFoodSheet(
+      {required this.accent,
+      required this.existing,
+      required this.onSave,
+      required this.onDelete,
+      required this.buildEntry});
+  @override
+  State<_ManualFoodSheet> createState() => _ManualFoodSheetState();
+}
+
+class _ManualFoodSheetState extends State<_ManualFoodSheet> {
+  late TextEditingController _name, _serving, _cal, _p, _f, _c, _fiber, _sodium;
+
+  @override
+  void initState() {
+    super.initState();
+    final FoodEntry? e = widget.existing;
+    _name = TextEditingController(text: e?.name ?? '');
+    _serving = TextEditingController(text: e?.serving ?? '');
+    _cal = TextEditingController(text: e != null ? _trim(e.calories) : '');
+    _p = TextEditingController(text: e != null ? _trim(e.protein) : '');
+    _f = TextEditingController(text: e != null ? _trim(e.fat) : '');
+    _c = TextEditingController(text: e != null ? _trim(e.carbs) : '');
+    _fiber = TextEditingController(
+        text: e != null && (e.nutrients['fiber'] ?? 0) > 0
+            ? _trim(e.nutrients['fiber']!, dp: 1)
+            : '');
+    _sodium = TextEditingController(
+        text: e != null && (e.nutrients['sodium'] ?? 0) > 0
+            ? _trim(e.nutrients['sodium']!, dp: 1)
+            : '');
+  }
+
+  @override
+  void dispose() {
+    for (final TextEditingController c in <TextEditingController>[
+      _name, _serving, _cal, _p, _f, _c, _fiber, _sodium
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  bool get _ok =>
+      _name.text.trim().isNotEmpty && (double.tryParse(_cal.text) ?? -1) >= 0;
+
+  void _save() {
+    // Preserve any micronutrients we don't expose as fields.
+    final Map<String, double> micros =
+        Map<String, double>.from(widget.existing?.nutrients ?? <String, double>{});
+    final double? fiber = double.tryParse(_fiber.text);
+    final double? sodium = double.tryParse(_sodium.text);
+    if (fiber != null && fiber > 0) {
+      micros['fiber'] = fiber;
+    } else {
+      micros.remove('fiber');
+    }
+    if (sodium != null && sodium > 0) {
+      micros['sodium'] = sodium;
+    } else {
+      micros.remove('sodium');
+    }
+    widget.onSave(widget.buildEntry(
+      _name.text.trim(),
+      _serving.text.trim().isEmpty ? '1 serving' : _serving.text.trim(),
+      double.tryParse(_cal.text) ?? 0,
+      double.tryParse(_p.text) ?? 0,
+      double.tryParse(_f.text) ?? 0,
+      double.tryParse(_c.text) ?? 0,
+      micros,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24, 20, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.existing != null ? 'Edit food' : 'Add food',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              const SizedBox(height: 16),
+              _field('NAME', _name, text: true),
+              const SizedBox(height: 12),
+              _field('SERVING (e.g. 1 cup, 100 g)', _serving, text: true),
+              const SizedBox(height: 12),
+              _field('CALORIES', _cal),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(child: _field('PROTEIN (g)', _p)),
+                const SizedBox(width: 10),
+                Expanded(child: _field('FAT (g)', _f)),
+              ]),
+              const SizedBox(height: 12),
+              Row(children: [
+                Expanded(child: _field('CARBS (g)', _c)),
+                const SizedBox(width: 10),
+                Expanded(child: _field('FIBER (g)', _fiber)),
+              ]),
+              const SizedBox(height: 12),
+              _field('SODIUM (mg)', _sodium),
+              const SizedBox(height: 20),
+              Row(children: [
+                Expanded(
+                    child: SizedBox(
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: _ok ? _save : null,
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.accent,
+                              foregroundColor: Colors.black,
+                              disabledBackgroundColor: const Color(0xFF333333),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              textStyle: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w700)),
+                          child: const Text('Save'),
+                        ))),
+                if (widget.onDelete != null) ...[
+                  const SizedBox(width: 10),
+                  IconButton(
+                      onPressed: widget.onDelete,
+                      icon: const Icon(Icons.delete_outline_rounded,
+                          color: Color(0xFFCC5555))),
+                ],
+              ]),
+            ]),
+      ),
+    );
+  }
+
+  Widget _field(String label, TextEditingController c, {bool text = false}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              letterSpacing: 1,
+              fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      TextField(
+          controller: c,
+          keyboardType: text
+              ? TextInputType.text
+              : const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+          decoration: _foodDec(widget.accent),
+          onChanged: (_) => setState(() {})),
+    ]);
+  }
+}
+
+InputDecoration _foodDec(Color accent) {
+  return InputDecoration(
+      isDense: true,
+      filled: true,
+      fillColor: const Color(0xFF111111),
+      border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: Color(0xFF333333))),
+      enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: const BorderSide(color: Color(0xFF333333))),
+      focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide(color: accent)));
 }

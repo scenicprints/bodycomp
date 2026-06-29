@@ -1,0 +1,319 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+// ═══════════════════════════════════════════════════════════════════════
+// FOOD JOURNAL — data model, nutrient registry, Open Food Facts client
+//
+// Calories + the three macros are first-class fields (the TDEE math and the
+// rings depend on them). Everything else — fiber, sugars, sodium, vitamins,
+// minerals — lives in a flexible `nutrients` map keyed by the registry below,
+// so we can capture whatever a barcode/label provides without schema changes.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// One trackable micronutrient and how to read it from Open Food Facts.
+class Nutrient {
+  final String key; // stable id used in the nutrients map + JSON
+  final String label; // shown in the UI
+  final String unit; // display unit
+  final double fromGrams; // multiply OFF's gram value to get the display unit
+  final String offField; // Open Food Facts field stem (…_100g)
+  const Nutrient(this.key, this.label, this.unit, this.fromGrams, this.offField);
+}
+
+// Order here is the display order. Label-standard nutrients first, then the
+// "extended when available" set.
+const List<Nutrient> kNutrients = <Nutrient>[
+  Nutrient('fiber', 'Fiber', 'g', 1, 'fiber'),
+  Nutrient('sugars', 'Sugars', 'g', 1, 'sugars'),
+  Nutrient('saturatedFat', 'Saturated Fat', 'g', 1, 'saturated-fat'),
+  Nutrient('sodium', 'Sodium', 'mg', 1000, 'sodium'),
+  Nutrient('cholesterol', 'Cholesterol', 'mg', 1000, 'cholesterol'),
+  Nutrient('potassium', 'Potassium', 'mg', 1000, 'potassium'),
+  Nutrient('calcium', 'Calcium', 'mg', 1000, 'calcium'),
+  Nutrient('iron', 'Iron', 'mg', 1000, 'iron'),
+  Nutrient('vitaminD', 'Vitamin D', 'µg', 1000000, 'vitamin-d'),
+  // Extended — usually blank on packaged foods, captured when present.
+  Nutrient('vitaminA', 'Vitamin A', 'µg', 1000000, 'vitamin-a'),
+  Nutrient('vitaminC', 'Vitamin C', 'mg', 1000, 'vitamin-c'),
+  Nutrient('vitaminE', 'Vitamin E', 'mg', 1000, 'vitamin-e'),
+  Nutrient('vitaminB6', 'Vitamin B6', 'mg', 1000, 'vitamin-b6'),
+  Nutrient('vitaminB12', 'Vitamin B12', 'µg', 1000000, 'vitamin-b12'),
+  Nutrient('folate', 'Folate', 'µg', 1000000, 'folates'),
+  Nutrient('magnesium', 'Magnesium', 'mg', 1000, 'magnesium'),
+  Nutrient('zinc', 'Zinc', 'mg', 1000, 'zinc'),
+];
+
+Nutrient? nutrientByKey(String key) {
+  for (final Nutrient n in kNutrients) {
+    if (n.key == key) {
+      return n;
+    }
+  }
+  return null;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// A logged food item.
+// ───────────────────────────────────────────────────────────────────────
+class FoodEntry {
+  final String id;
+  final String date; // 'YYYY-MM-DD'
+  final String name;
+  final String serving; // human description, e.g. "73 g" or "1 cup"
+  final double calories;
+  final double protein;
+  final double fat;
+  final double carbs;
+  final Map<String, double> nutrients; // display-unit values, registry keys
+  final String source; // 'barcode' | 'label' | 'manual'
+  final String? barcode;
+
+  FoodEntry({
+    required this.id,
+    required this.date,
+    required this.name,
+    required this.serving,
+    required this.calories,
+    required this.protein,
+    required this.fat,
+    required this.carbs,
+    Map<String, double>? nutrients,
+    this.source = 'manual',
+    this.barcode,
+  }) : nutrients = nutrients ?? <String, double>{};
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'date': date,
+        'name': name,
+        'serving': serving,
+        'calories': calories,
+        'protein': protein,
+        'fat': fat,
+        'carbs': carbs,
+        'nutrients': nutrients,
+        'source': source,
+        if (barcode != null) 'barcode': barcode,
+      };
+
+  factory FoodEntry.fromJson(Map<String, dynamic> j) {
+    final Map<String, double> n = <String, double>{};
+    final dynamic raw = j['nutrients'];
+    if (raw is Map) {
+      raw.forEach((dynamic k, dynamic v) {
+        if (v is num) {
+          n[k as String] = v.toDouble();
+        }
+      });
+    }
+    return FoodEntry(
+      id: j['id'] as String,
+      date: j['date'] as String,
+      name: j['name'] as String,
+      serving: (j['serving'] as String?) ?? '',
+      calories: (j['calories'] as num).toDouble(),
+      protein: (j['protein'] as num?)?.toDouble() ?? 0,
+      fat: (j['fat'] as num?)?.toDouble() ?? 0,
+      carbs: (j['carbs'] as num?)?.toDouble() ?? 0,
+      nutrients: n,
+      source: (j['source'] as String?) ?? 'manual',
+      barcode: j['barcode'] as String?,
+    );
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Per-day rollups.
+// ───────────────────────────────────────────────────────────────────────
+class DayTotals {
+  final double calories;
+  final double protein;
+  final double fat;
+  final double carbs;
+  final Map<String, double> nutrients;
+  const DayTotals(
+      this.calories, this.protein, this.fat, this.carbs, this.nutrients);
+}
+
+class FoodMath {
+  static List<FoodEntry> forDate(List<FoodEntry> foods, String date) =>
+      foods.where((FoodEntry f) => f.date == date).toList();
+
+  static DayTotals totals(List<FoodEntry> foods, String date) {
+    double cal = 0, p = 0, f = 0, c = 0;
+    final Map<String, double> n = <String, double>{};
+    for (final FoodEntry e in forDate(foods, date)) {
+      cal += e.calories;
+      p += e.protein;
+      f += e.fat;
+      c += e.carbs;
+      e.nutrients.forEach((String k, double v) {
+        n[k] = (n[k] ?? 0) + v;
+      });
+    }
+    return DayTotals(cal, p, f, c, n);
+  }
+
+  /// Total calories logged per date, for days that have any food entries.
+  /// This is what feeds the adaptive TDEE on scanned days.
+  static Map<String, double> caloriesByDate(List<FoodEntry> foods) {
+    final Map<String, double> m = <String, double>{};
+    for (final FoodEntry e in foods) {
+      m[e.date] = (m[e.date] ?? 0) + e.calories;
+    }
+    return m;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// OPEN FOOD FACTS
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Per-100g nutrition pulled from a barcode, before the user picks a serving.
+class FoodTemplate {
+  final String name;
+  final double kcal100;
+  final double protein100;
+  final double fat100;
+  final double carbs100;
+  final Map<String, double> nutrients100; // display units, per 100 g
+  final double? servingGrams; // parsed default serving, if any
+  final String? servingSizeRaw;
+  final String? barcode;
+
+  FoodTemplate({
+    required this.name,
+    required this.kcal100,
+    required this.protein100,
+    required this.fat100,
+    required this.carbs100,
+    required this.nutrients100,
+    this.servingGrams,
+    this.servingSizeRaw,
+    this.barcode,
+  });
+
+  /// Scale to [grams] and produce a loggable entry.
+  FoodEntry toEntry(
+      {required String id,
+      required String date,
+      required double grams,
+      String source = 'barcode'}) {
+    final double s = grams / 100.0;
+    return FoodEntry(
+      id: id,
+      date: date,
+      name: name,
+      serving: '${_fmt(grams)} g',
+      calories: kcal100 * s,
+      protein: protein100 * s,
+      fat: fat100 * s,
+      carbs: carbs100 * s,
+      nutrients: nutrients100
+          .map((String k, double v) => MapEntry<String, double>(k, v * s)),
+      source: source,
+      barcode: barcode,
+    );
+  }
+
+  static String _fmt(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(1);
+}
+
+class OpenFoodFacts {
+  /// Looks up a barcode. Returns null if not found / no usable nutrition.
+  static Future<FoodTemplate?> fetchByBarcode(String barcode) async {
+    final Uri uri = Uri.parse(
+        'https://world.openfoodfacts.org/api/v2/product/$barcode.json'
+        '?fields=product_name,brands,nutriments,serving_size,quantity');
+    final http.Response resp = await http.get(uri, headers: <String, String>{
+      'User-Agent': 'BodyComp/1.1 (github.com/scenicprints/bodycomp)'
+    });
+    if (resp.statusCode != 200) {
+      return null;
+    }
+    final Map<String, dynamic> data =
+        jsonDecode(resp.body) as Map<String, dynamic>;
+    if ((data['status'] as num?)?.toInt() != 1) {
+      return null;
+    }
+    return parseProduct(data['product'] as Map<String, dynamic>, barcode);
+  }
+
+  /// Parsing is split out so it can be unit-tested without a network call.
+  static FoodTemplate? parseProduct(
+      Map<String, dynamic> product, String? barcode) {
+    final Map<String, dynamic> nut =
+        (product['nutriments'] as Map<String, dynamic>?) ??
+            <String, dynamic>{};
+
+    final double? kcal = _kcalPer100(nut);
+    if (kcal == null) {
+      return null; // no calorie data → not useful for a food log
+    }
+
+    String name = (product['product_name'] as String?)?.trim() ?? '';
+    final String brand = (product['brands'] as String?)?.trim() ?? '';
+    if (name.isEmpty) {
+      name = brand.isNotEmpty ? brand : 'Unknown food';
+    } else if (brand.isNotEmpty) {
+      name = '$name ($brand)';
+    }
+
+    final Map<String, double> micros = <String, double>{};
+    for (final Nutrient n in kNutrients) {
+      final double? g = _num(nut['${n.offField}_100g']);
+      if (g != null) {
+        micros[n.key] = g * n.fromGrams;
+      }
+    }
+
+    return FoodTemplate(
+      name: name,
+      kcal100: kcal,
+      protein100: _num(nut['proteins_100g']) ?? 0,
+      fat100: _num(nut['fat_100g']) ?? 0,
+      carbs100: _num(nut['carbohydrates_100g']) ?? 0,
+      nutrients100: micros,
+      servingGrams: _parseGrams(product['serving_size'] as String?),
+      servingSizeRaw: product['serving_size'] as String?,
+      barcode: barcode,
+    );
+  }
+
+  static double? _kcalPer100(Map<String, dynamic> nut) {
+    final double? kcal = _num(nut['energy-kcal_100g']);
+    if (kcal != null) {
+      return kcal;
+    }
+    // Fall back to kJ → kcal.
+    final double? kj = _num(nut['energy_100g']) ?? _num(nut['energy-kj_100g']);
+    if (kj != null) {
+      return kj / 4.184;
+    }
+    return null;
+  }
+
+  static double? _num(dynamic v) {
+    if (v is num) {
+      return v.toDouble();
+    }
+    if (v is String) {
+      return double.tryParse(v);
+    }
+    return null;
+  }
+
+  /// Pulls a gram figure out of strings like "30 g", "1 cup (240 g)", "240g".
+  static double? _parseGrams(String? s) {
+    if (s == null) {
+      return null;
+    }
+    final RegExpMatch? m =
+        RegExp(r'(\d+(?:\.\d+)?)\s*g\b', caseSensitive: false).firstMatch(s);
+    if (m != null) {
+      return double.tryParse(m.group(1)!);
+    }
+    return null;
+  }
+}

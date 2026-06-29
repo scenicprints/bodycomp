@@ -19,7 +19,9 @@ val hasSigning = keystorePropertiesFile.exists()
 
 android {
     namespace = "com.scenicprints.bodycomp"
-    compileSdk = flutter.compileSdkVersion
+    // mobile_scanner 7.x requires compileSdk 36 / minSdk 23 — pin explicitly
+    // so the build doesn't depend on the Flutter SDK's defaults.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -31,7 +33,7 @@ android {
 
     defaultConfig {
         applicationId = "com.scenicprints.bodycomp"
-        minSdk = flutter.minSdkVersion
+        minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName

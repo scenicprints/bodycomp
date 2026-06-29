@@ -3,6 +3,8 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- Needed to launch the system installer for the downloaded APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Needed to scan food barcodes -->
+    <uses-permission android:name="android.permission.CAMERA"/>
     <application
         android:label="BodyComp"
         android:name="${applicationName}"
