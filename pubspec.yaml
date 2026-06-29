@@ -1,0 +1,30 @@
+name: bodycomp
+description: "Body recomposition tracker."
+publish_to: 'none'
+
+# Version is the single source of truth for the app's version.
+# The publish script bumps this, and the in-app updater compares it
+# against the latest GitHub Release.
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+  # In-app OTA updater
+  http: ^1.2.2              # query the GitHub Releases API
+  package_info_plus: ^8.1.0 # read the installed app version
+  ota_update: ^7.0.0        # download + install the new APK
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
