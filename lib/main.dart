@@ -448,6 +448,22 @@ class AppStorage {
     _write(d);
   }
 
+  static List<Meal> getMeals() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('meals')) {
+      return (d['meals'] as List<dynamic>)
+          .map((dynamic e) => Meal.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveMeals(List<Meal> meals) {
+    final Map<String, dynamic> d = _read();
+    d['meals'] = meals.map((Meal m) => m.toJson()).toList();
+    _write(d);
+  }
+
   static void clearAll() {
     try {
       if (_file.existsSync()) {
@@ -529,6 +545,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<double> _dismissed = [];
   List<FoodEntry> _foods = [];
   List<String> _fasted = [];
+  List<Meal> _meals = [];
 
   @override
   void initState() {
@@ -538,6 +555,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _dismissed = AppStorage.getDismissedMilestones();
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
+    _meals = AppStorage.getMeals();
   }
 
   void _setCal(UserCalibration c) {
@@ -575,6 +593,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveFastedDates(dates);
   }
 
+  void _setMeals(List<Meal> m) {
+    setState(() {
+      _meals = m;
+    });
+    AppStorage.saveMeals(m);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -583,6 +608,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _dismissed = [];
       _foods = [];
       _fasted = [];
+      _meals = [];
     });
   }
 
@@ -622,10 +648,12 @@ class _BodyCompAppState extends State<BodyCompApp> {
               dismissed: _dismissed,
               foods: _foods,
               fasted: _fasted,
+              meals: _meals,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
               onSetFasted: _setFasted,
+              onSetMeals: _setMeals,
               onDismiss: _dismiss,
               onReset: _resetAll),
     );
@@ -1269,10 +1297,12 @@ class HomeShell extends StatefulWidget {
   final List<double> dismissed;
   final List<FoodEntry> foods;
   final List<String> fasted;
+  final List<Meal> meals;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
   final void Function(List<String>) onSetFasted;
+  final void Function(List<Meal>) onSetMeals;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
   const HomeShell(
@@ -1282,10 +1312,12 @@ class HomeShell extends StatefulWidget {
       required this.dismissed,
       required this.foods,
       required this.fasted,
+      required this.meals,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
       required this.onSetFasted,
+      required this.onSetMeals,
       required this.onDismiss,
       required this.onReset});
   @override
@@ -1312,8 +1344,10 @@ class _HomeShellState extends State<HomeShell> {
             logs: widget.logs,
             foods: widget.foods,
             fasted: widget.fasted,
+            meals: widget.meals,
             onSetFoods: widget.onSetFoods,
-            onSetFasted: widget.onSetFasted),
+            onSetFasted: widget.onSetFasted,
+            onSetMeals: widget.onSetMeals),
         LedgerScreen(
             logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
         SettingsScreen(
@@ -2720,16 +2754,20 @@ class FoodScreen extends StatefulWidget {
   final List<DailyLog> logs;
   final List<FoodEntry> foods;
   final List<String> fasted;
+  final List<Meal> meals;
   final void Function(List<FoodEntry>) onSetFoods;
   final void Function(List<String>) onSetFasted;
+  final void Function(List<Meal>) onSetMeals;
   const FoodScreen(
       {super.key,
       required this.cal,
       required this.logs,
       required this.foods,
       required this.fasted,
+      required this.meals,
       required this.onSetFoods,
-      required this.onSetFasted});
+      required this.onSetFasted,
+      required this.onSetMeals});
   @override
   State<FoodScreen> createState() => _FoodScreenState();
 }
@@ -2858,6 +2896,11 @@ class _FoodScreenState extends State<FoodScreen> {
             Navigator.pop(context);
             _searchFood();
           }),
+          _menuTile(Icons.restaurant_menu_rounded, 'From a meal',
+              'Build meals from ingredients, log a portion', () {
+            Navigator.pop(context);
+            _openMeals();
+          }),
           _menuTile(Icons.edit_rounded, 'Enter manually',
               'Type in the food and its nutrition', () {
             Navigator.pop(context);
@@ -2918,6 +2961,20 @@ class _FoodScreenState extends State<FoodScreen> {
       return;
     }
     _openConfirm(t);
+  }
+
+  void _openMeals() {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => _MealsScreen(
+        accent: _accent,
+        meals: widget.meals,
+        onSetMeals: widget.onSetMeals,
+        onLogPortion: (Meal meal, MealPortion portion) {
+          _addEntry(MealMath.toEntry(meal, portion,
+              id: _newId(), date: _date, time: _nowTime()));
+        },
+      ),
+    ));
   }
 
   void _openConfirm(FoodTemplate t) {
@@ -3941,4 +3998,806 @@ InputDecoration _foodDec(Color accent) {
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide(color: accent)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MEAL MAKER UI
+// ═══════════════════════════════════════════════════════════════════════
+
+String _newMealId() => DateTime.now().microsecondsSinceEpoch.toString();
+
+// ─── List of saved meals ───
+class _MealsScreen extends StatefulWidget {
+  final Color accent;
+  final List<Meal> meals;
+  final void Function(List<Meal>) onSetMeals;
+  final void Function(Meal, MealPortion) onLogPortion;
+  const _MealsScreen(
+      {required this.accent,
+      required this.meals,
+      required this.onSetMeals,
+      required this.onLogPortion});
+  @override
+  State<_MealsScreen> createState() => _MealsScreenState();
+}
+
+class _MealsScreenState extends State<_MealsScreen> {
+  late List<Meal> _meals;
+
+  @override
+  void initState() {
+    super.initState();
+    _meals = List<Meal>.from(widget.meals);
+  }
+
+  void _persist() => widget.onSetMeals(_meals);
+
+  Future<void> _newMeal() async {
+    final Meal? m = await Navigator.of(context).push<Meal>(
+        MaterialPageRoute<Meal>(
+            builder: (_) =>
+                _MealEditScreen(accent: widget.accent, existing: null)));
+    if (m != null && m.ingredients.isNotEmpty) {
+      setState(() => _meals = <Meal>[..._meals, m]);
+      _persist();
+    }
+  }
+
+  Future<void> _editMeal(Meal meal) async {
+    final Meal? m = await Navigator.of(context).push<Meal>(
+        MaterialPageRoute<Meal>(
+            builder: (_) =>
+                _MealEditScreen(accent: widget.accent, existing: meal)));
+    if (m != null) {
+      setState(() =>
+          _meals = _meals.map((Meal x) => x.id == m.id ? m : x).toList());
+      _persist();
+    }
+  }
+
+  void _deleteMeal(Meal meal) {
+    setState(() => _meals = _meals.where((Meal x) => x.id != meal.id).toList());
+    _persist();
+  }
+
+  void _portion(Meal meal) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _MealPortionSheet(
+        meal: meal,
+        accent: widget.accent,
+        onLog: (MealPortion portion) {
+          final ScaffoldMessengerState messenger =
+              ScaffoldMessenger.of(context);
+          widget.onLogPortion(meal, portion);
+          Navigator.pop(context); // close sheet
+          Navigator.pop(context); // back to the day view
+          messenger.showSnackBar(SnackBar(
+              backgroundColor: const Color(0xFF2A2A2A),
+              content: Text(
+                  'Logged ${portion.calories.round()} cal from ${meal.name}.')));
+        },
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Meals')),
+      floatingActionButton: FloatingActionButton.extended(
+          onPressed: _newMeal,
+          backgroundColor: widget.accent,
+          foregroundColor: Colors.black,
+          icon: const Icon(Icons.add_rounded),
+          label: const Text('NEW MEAL',
+              style: TextStyle(fontWeight: FontWeight.w800))),
+      body: _meals.isEmpty
+          ? Center(
+              child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text(
+                      'No meals yet.\nTap NEW MEAL to combine ingredients into a recipe you can portion by calories.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 14, color: Colors.grey[600], height: 1.5))))
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
+              itemCount: _meals.length,
+              itemBuilder: (BuildContext ctx, int i) {
+                final Meal m = _meals[i];
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Material(
+                    color: kSurface0,
+                    borderRadius: BorderRadius.circular(12),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(12),
+                      onTap: () => _portion(m),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: kBorder)),
+                        child: Row(children: [
+                          Expanded(
+                            child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(m.name,
+                                      style: const TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w600,
+                                          color: Color(0xFFDDDDDD))),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                      '${m.ingredients.length} ingredients · ${m.calories.round()} cal · ${m.totalGrams.round()} g',
+                                      style: TextStyle(
+                                          fontSize: 11, color: Colors.grey[600])),
+                                ]),
+                          ),
+                          IconButton(
+                              onPressed: () => _editMeal(m),
+                              icon: const Icon(Icons.edit_rounded,
+                                  size: 18, color: Color(0xFF888888))),
+                          IconButton(
+                              onPressed: () => _deleteMeal(m),
+                              icon: const Icon(Icons.delete_outline_rounded,
+                                  size: 18, color: Color(0xFFCC5555))),
+                        ]),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+    );
+  }
+}
+
+// ─── Create / edit a meal ───
+class _MealEditScreen extends StatefulWidget {
+  final Color accent;
+  final Meal? existing;
+  const _MealEditScreen({required this.accent, required this.existing});
+  @override
+  State<_MealEditScreen> createState() => _MealEditScreenState();
+}
+
+class _MealEditScreenState extends State<_MealEditScreen> {
+  late TextEditingController _name;
+  late List<MealIngredient> _ings;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.existing?.name ?? '');
+    _ings = List<MealIngredient>.from(
+        widget.existing?.ingredients ?? <MealIngredient>[]);
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  bool get _ok => _name.text.trim().isNotEmpty && _ings.isNotEmpty;
+
+  Meal get _meal => Meal(
+      id: widget.existing?.id ?? _newMealId(),
+      name: _name.text.trim(),
+      ingredients: _ings);
+
+  void _addTemplate(FoodTemplate t) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ConfirmFoodSheet(
+        template: t,
+        accent: widget.accent,
+        onSave: (double grams, String _) {
+          setState(() =>
+              _ings = <MealIngredient>[..._ings, MealIngredient(food: t, rawGrams: grams)]);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
+  Future<void> _scan() async {
+    final String? code = await Navigator.of(context).push<String>(
+        MaterialPageRoute<String>(
+            builder: (_) => _ScannerPage(accent: widget.accent)));
+    if (code == null || !mounted) {
+      return;
+    }
+    showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => Center(child: CircularProgressIndicator(color: widget.accent)));
+    FoodTemplate? t;
+    try {
+      t = await FoodLookup.barcode(code);
+    } catch (_) {}
+    if (!mounted) {
+      return;
+    }
+    Navigator.pop(context);
+    if (t == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text('Not found — add it manually.')));
+      return;
+    }
+    _addTemplate(t);
+  }
+
+  Future<void> _search() async {
+    final FoodTemplate? t = await Navigator.of(context).push<FoodTemplate>(
+        MaterialPageRoute<FoodTemplate>(
+            builder: (_) => _FoodSearchPage(accent: widget.accent)));
+    if (t != null && mounted) {
+      _addTemplate(t);
+    }
+  }
+
+  void _manual() {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ManualIngredientSheet(
+        accent: widget.accent,
+        onSave: (MealIngredient ing) {
+          setState(() => _ings = <MealIngredient>[..._ings, ing]);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
+  void _addIngredient() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+          child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+        const SizedBox(height: 8),
+        _ingTile(Icons.qr_code_scanner_rounded, 'Scan barcode', () {
+          Navigator.pop(context);
+          _scan();
+        }),
+        _ingTile(Icons.search_rounded, 'Search by name', () {
+          Navigator.pop(context);
+          _search();
+        }),
+        _ingTile(Icons.edit_rounded, 'Enter manually', () {
+          Navigator.pop(context);
+          _manual();
+        }),
+        const SizedBox(height: 8),
+      ])),
+    );
+  }
+
+  Widget _ingTile(IconData icon, String title, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: widget.accent),
+      title: Text(title,
+          style: const TextStyle(
+              color: Color(0xFFEEEEEE), fontWeight: FontWeight.w600)),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _editGrams(int index) async {
+    final MealIngredient ing = _ings[index];
+    final TextEditingController c =
+        TextEditingController(text: _trim(ing.rawGrams, dp: 1));
+    final double? result = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => Padding(
+        padding: EdgeInsets.fromLTRB(24, 20, 24,
+            MediaQuery.of(context).viewInsets.bottom +
+                MediaQuery.of(context).viewPadding.bottom +
+                24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+          Text(ing.food.name,
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: widget.accent)),
+          const SizedBox(height: 12),
+          TextField(
+              controller: c,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
+              decoration: _foodDec(widget.accent).copyWith(labelText: 'Raw grams')),
+          const SizedBox(height: 16),
+          SizedBox(
+              width: double.infinity,
+              height: 48,
+              child: ElevatedButton(
+                  onPressed: () =>
+                      Navigator.pop(context, double.tryParse(c.text)),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: widget.accent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  child: const Text('Update'))),
+        ]),
+      ),
+    );
+    if (result != null && result > 0) {
+      setState(() => _ings[index] = ing.copyWith(rawGrams: result));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Meal preview = Meal(id: 'x', name: '', ingredients: _ings);
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+        backgroundColor: kBgDeep,
+        foregroundColor: const Color(0xFFEEEEEE),
+        title: Text(widget.existing != null ? 'Edit meal' : 'New meal'),
+        actions: <Widget>[
+          TextButton(
+            onPressed: _ok ? () => Navigator.pop(context, _meal) : null,
+            child: Text('Save',
+                style: TextStyle(
+                    color: _ok ? widget.accent : const Color(0xFF555555),
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15)),
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        children: <Widget>[
+          TextField(
+              controller: _name,
+              style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+              decoration: _foodDec(widget.accent)
+                  .copyWith(hintText: 'Meal name (e.g. Chili batch)'),
+              onChanged: (_) => setState(() {})),
+          const SizedBox(height: 14),
+          if (_ings.isNotEmpty)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                  color: kSurface1,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: kBorder)),
+              child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: <Widget>[
+                    _tot('Total', '${preview.calories.round()}', 'cal'),
+                    _tot('Weight', '${preview.totalGrams.round()}', 'g'),
+                    _tot('Protein', _trim(preview.protein), 'g'),
+                    _tot('Carbs', _trim(preview.carbs), 'g'),
+                  ]),
+            ),
+          const SizedBox(height: 8),
+          ..._ings.asMap().entries.map((MapEntry<int, MealIngredient> e) {
+            final MealIngredient ing = e.value;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: Material(
+                color: kSurface0,
+                borderRadius: BorderRadius.circular(10),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => _editGrams(e.key),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 11),
+                    decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: kBorder)),
+                    child: Row(children: <Widget>[
+                      Expanded(
+                          child: Text(ing.food.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 14, color: Color(0xFFDDDDDD)))),
+                      Text('${_trim(ing.rawGrams)} g',
+                          style:
+                              TextStyle(fontSize: 13, color: Colors.grey[500])),
+                      const SizedBox(width: 6),
+                      Text('${ing.calories.round()} cal',
+                          style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: widget.accent)),
+                      IconButton(
+                          visualDensity: VisualDensity.compact,
+                          onPressed: () =>
+                              setState(() => _ings.removeAt(e.key)),
+                          icon: const Icon(Icons.close_rounded,
+                              size: 16, color: Color(0xFF888888))),
+                    ]),
+                  ),
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _addIngredient,
+            icon: const Icon(Icons.add_rounded, size: 18),
+            label: const Text('Add ingredient'),
+            style: OutlinedButton.styleFrom(
+                foregroundColor: widget.accent,
+                side: BorderSide(
+                    color: Color.fromRGBO(widget.accent.red, widget.accent.green,
+                        widget.accent.blue, 0.4)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tot(String label, String value, String unit) {
+    return Column(children: <Widget>[
+      Text(value,
+          style: const TextStyle(
+              fontSize: 17,
+              fontWeight: FontWeight.w800,
+              color: Color(0xFFEEEEEE))),
+      Text('$label ($unit)',
+          style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey[600],
+              letterSpacing: 0.3,
+              fontWeight: FontWeight.w600)),
+    ]);
+  }
+}
+
+// ─── Portion a meal by calories or grams, then log it ───
+class _MealPortionSheet extends StatefulWidget {
+  final Meal meal;
+  final Color accent;
+  final void Function(MealPortion) onLog;
+  const _MealPortionSheet(
+      {required this.meal, required this.accent, required this.onLog});
+  @override
+  State<_MealPortionSheet> createState() => _MealPortionSheetState();
+}
+
+class _MealPortionSheetState extends State<_MealPortionSheet> {
+  late TextEditingController _amount;
+  bool _byCalories = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _amount =
+        TextEditingController(text: '${widget.meal.calories.round()}');
+  }
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  double get _val => double.tryParse(_amount.text) ?? 0;
+
+  MealPortion get _portion => _byCalories
+      ? MealMath.byCalories(widget.meal, _val)
+      : MealMath.byGrams(widget.meal, _val);
+
+  void _setMode(bool byCal) {
+    setState(() {
+      _byCalories = byCal;
+      _amount.text = byCal
+          ? '${widget.meal.calories.round()}'
+          : '${widget.meal.totalGrams.round()}';
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final MealPortion p = _portion;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(widget.meal.name,
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              const SizedBox(height: 4),
+              Text(
+                  'Whole meal: ${widget.meal.calories.round()} cal · ${widget.meal.totalGrams.round()} g',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              const SizedBox(height: 16),
+              Row(children: <Widget>[
+                _modeChip('By calories', _byCalories, () => _setMode(true)),
+                const SizedBox(width: 8),
+                _modeChip('By grams', !_byCalories, () => _setMode(false)),
+              ]),
+              const SizedBox(height: 12),
+              Text(_byCalories ? 'CALORIES TO EAT' : 'GRAMS TO EAT',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey[600],
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
+              TextField(
+                  controller: _amount,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
+                  decoration: _foodDec(widget.accent),
+                  onChanged: (_) => setState(() {})),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                    color: kSurface1,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kBorder)),
+                child: Column(children: <Widget>[
+                  Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: <Widget>[
+                    _stat(_byCalories ? 'Eat' : 'Calories',
+                        _byCalories ? '${p.grams.round()} g' : '${p.calories.round()}',
+                        widget.accent),
+                    _stat('Protein', '${_trim(p.protein)} g', widget.accent),
+                    _stat('Fat', '${_trim(p.fat)} g', widget.accent),
+                    _stat('Carbs', '${_trim(p.carbs)} g', widget.accent),
+                  ]),
+                  if (p.breakdown.isNotEmpty) ...<Widget>[
+                    const Divider(color: Color(0xFF262626), height: 22),
+                    Text('PER INGREDIENT (in this portion)',
+                        style: TextStyle(
+                            fontSize: 9,
+                            color: Colors.grey[600],
+                            letterSpacing: 0.5,
+                            fontWeight: FontWeight.w700)),
+                    const SizedBox(height: 8),
+                    ...p.breakdown.map((IngredientPortion ip) => Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: <Widget>[
+                                Expanded(
+                                    child: Text(ip.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            color: Colors.grey[400]))),
+                                Text('${_trim(ip.grams)} g',
+                                    style: const TextStyle(
+                                        fontSize: 13,
+                                        fontWeight: FontWeight.w600,
+                                        color: Color(0xFFDDDDDD))),
+                              ]),
+                        )),
+                  ],
+                ]),
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed:
+                        _val > 0 ? () => widget.onLog(_portion) : null,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        disabledBackgroundColor: const Color(0xFF333333),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        textStyle: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    child: const Text('Log this portion'),
+                  )),
+            ]),
+      ),
+    );
+  }
+
+  Widget _modeChip(String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+            color: active ? widget.accent : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+                color: active ? widget.accent : const Color(0xFF333333))),
+        child: Text(label,
+            style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: active ? Colors.black : Colors.grey[500])),
+      ),
+    );
+  }
+
+  Widget _stat(String label, String value, Color accent) {
+    return Column(children: <Widget>[
+      Text(value,
+          style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+              color: Color(0xFFEEEEEE))),
+      const SizedBox(height: 2),
+      Text(label.toUpperCase(),
+          style: TextStyle(
+              fontSize: 9,
+              color: Colors.grey[600],
+              letterSpacing: 0.5,
+              fontWeight: FontWeight.w600)),
+    ]);
+  }
+}
+
+// ─── Manual ingredient (nutrition entered for the raw grams) ───
+class _ManualIngredientSheet extends StatefulWidget {
+  final Color accent;
+  final void Function(MealIngredient) onSave;
+  const _ManualIngredientSheet({required this.accent, required this.onSave});
+  @override
+  State<_ManualIngredientSheet> createState() => _ManualIngredientSheetState();
+}
+
+class _ManualIngredientSheetState extends State<_ManualIngredientSheet> {
+  final TextEditingController _name = TextEditingController();
+  final TextEditingController _grams = TextEditingController();
+  final TextEditingController _cal = TextEditingController();
+  final TextEditingController _p = TextEditingController();
+  final TextEditingController _f = TextEditingController();
+  final TextEditingController _c = TextEditingController();
+
+  @override
+  void dispose() {
+    for (final TextEditingController x in <TextEditingController>[
+      _name, _grams, _cal, _p, _f, _c
+    ]) {
+      x.dispose();
+    }
+    super.dispose();
+  }
+
+  bool get _ok =>
+      _name.text.trim().isNotEmpty &&
+      (double.tryParse(_grams.text) ?? 0) > 0 &&
+      (double.tryParse(_cal.text) ?? -1) >= 0;
+
+  void _save() {
+    final double grams = double.parse(_grams.text);
+    final double per100 = 100.0 / grams; // scale absolute → per-100g
+    final FoodTemplate t = FoodTemplate(
+      name: _name.text.trim(),
+      kcal100: (double.tryParse(_cal.text) ?? 0) * per100,
+      protein100: (double.tryParse(_p.text) ?? 0) * per100,
+      fat100: (double.tryParse(_f.text) ?? 0) * per100,
+      carbs100: (double.tryParse(_c.text) ?? 0) * per100,
+      nutrients100: <String, double>{},
+    );
+    widget.onSave(MealIngredient(food: t, rawGrams: grams));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Manual ingredient',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              const SizedBox(height: 4),
+              Text('Enter the nutrition for the raw amount you\'re adding.',
+                  style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              const SizedBox(height: 16),
+              _field('NAME', _name, text: true),
+              const SizedBox(height: 12),
+              _field('RAW GRAMS', _grams),
+              const SizedBox(height: 12),
+              _field('CALORIES (for that amount)', _cal),
+              const SizedBox(height: 12),
+              Row(children: <Widget>[
+                Expanded(child: _field('PROTEIN (g)', _p)),
+                const SizedBox(width: 10),
+                Expanded(child: _field('FAT (g)', _f)),
+              ]),
+              const SizedBox(height: 12),
+              _field('CARBS (g)', _c),
+              const SizedBox(height: 18),
+              SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _ok ? _save : null,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        disabledBackgroundColor: const Color(0xFF333333),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        textStyle: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    child: const Text('Add ingredient'),
+                  )),
+            ]),
+      ),
+    );
+  }
+
+  Widget _field(String label, TextEditingController c, {bool text = false}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+      Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              letterSpacing: 1,
+              fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      TextField(
+          controller: c,
+          keyboardType: text
+              ? TextInputType.text
+              : const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+          decoration: _foodDec(widget.accent),
+          onChanged: (_) => setState(() {})),
+    ]);
+  }
 }

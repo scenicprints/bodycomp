@@ -261,6 +261,39 @@ class FoodTemplate {
 
   static String _fmt(double v) =>
       v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(1);
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'name': name,
+        'kcal100': kcal100,
+        'protein100': protein100,
+        'fat100': fat100,
+        'carbs100': carbs100,
+        'nutrients100': nutrients100,
+        if (servingGrams != null) 'servingGrams': servingGrams,
+        if (barcode != null) 'barcode': barcode,
+      };
+
+  factory FoodTemplate.fromJson(Map<String, dynamic> j) {
+    final Map<String, double> n = <String, double>{};
+    final dynamic raw = j['nutrients100'];
+    if (raw is Map) {
+      raw.forEach((dynamic k, dynamic v) {
+        if (v is num) {
+          n[k as String] = v.toDouble();
+        }
+      });
+    }
+    return FoodTemplate(
+      name: j['name'] as String,
+      kcal100: (j['kcal100'] as num).toDouble(),
+      protein100: (j['protein100'] as num?)?.toDouble() ?? 0,
+      fat100: (j['fat100'] as num?)?.toDouble() ?? 0,
+      carbs100: (j['carbs100'] as num?)?.toDouble() ?? 0,
+      nutrients100: n,
+      servingGrams: (j['servingGrams'] as num?)?.toDouble(),
+      barcode: j['barcode'] as String?,
+    );
+  }
 }
 
 class OpenFoodFacts {
@@ -659,4 +692,153 @@ class FoodLookup {
       return null;
     }
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MEAL MAKER — build a meal from raw ingredients, portion it by cal/grams
+//
+// We skip cooked-weight tracking (by design): a meal is just its ingredients
+// and their nutrition. Portioning scales the whole meal by a single fraction,
+// and per-ingredient amounts come out proportional to their raw grams.
+// ═══════════════════════════════════════════════════════════════════════
+
+class MealIngredient {
+  final FoodTemplate food; // per-100g nutrition + name
+  final double rawGrams;
+  MealIngredient({required this.food, required this.rawGrams});
+
+  double get _s => rawGrams / 100.0;
+  double get calories => food.kcal100 * _s;
+  double get protein => food.protein100 * _s;
+  double get fat => food.fat100 * _s;
+  double get carbs => food.carbs100 * _s;
+  Map<String, double> get nutrients => food.nutrients100
+      .map((String k, double v) => MapEntry<String, double>(k, v * _s));
+
+  MealIngredient copyWith({double? rawGrams}) =>
+      MealIngredient(food: food, rawGrams: rawGrams ?? this.rawGrams);
+
+  Map<String, dynamic> toJson() =>
+      <String, dynamic>{'food': food.toJson(), 'rawGrams': rawGrams};
+  factory MealIngredient.fromJson(Map<String, dynamic> j) => MealIngredient(
+      food: FoodTemplate.fromJson(j['food'] as Map<String, dynamic>),
+      rawGrams: (j['rawGrams'] as num).toDouble());
+}
+
+class Meal {
+  final String id;
+  final String name;
+  final List<MealIngredient> ingredients;
+  Meal({required this.id, required this.name, required this.ingredients});
+
+  double get totalGrams =>
+      ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.rawGrams);
+  double get calories =>
+      ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.calories);
+  double get protein =>
+      ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.protein);
+  double get fat =>
+      ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.fat);
+  double get carbs =>
+      ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.carbs);
+  Map<String, double> get nutrients {
+    final Map<String, double> m = <String, double>{};
+    for (final MealIngredient i in ingredients) {
+      i.nutrients.forEach((String k, double v) {
+        m[k] = (m[k] ?? 0) + v;
+      });
+    }
+    return m;
+  }
+
+  Meal copyWith({String? name, List<MealIngredient>? ingredients}) => Meal(
+      id: id,
+      name: name ?? this.name,
+      ingredients: ingredients ?? this.ingredients);
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'id': id,
+        'name': name,
+        'ingredients':
+            ingredients.map((MealIngredient i) => i.toJson()).toList(),
+      };
+  factory Meal.fromJson(Map<String, dynamic> j) => Meal(
+        id: j['id'] as String,
+        name: j['name'] as String,
+        ingredients: ((j['ingredients'] as List<dynamic>?) ?? <dynamic>[])
+            .map((dynamic e) =>
+                MealIngredient.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+class IngredientPortion {
+  final String name;
+  final double grams;
+  const IngredientPortion(this.name, this.grams);
+}
+
+class MealPortion {
+  final double fraction;
+  final double grams;
+  final double calories;
+  final double protein;
+  final double fat;
+  final double carbs;
+  final Map<String, double> nutrients;
+  final List<IngredientPortion> breakdown;
+  const MealPortion({
+    required this.fraction,
+    required this.grams,
+    required this.calories,
+    required this.protein,
+    required this.fat,
+    required this.carbs,
+    required this.nutrients,
+    required this.breakdown,
+  });
+}
+
+class MealMath {
+  static MealPortion byCalories(Meal m, double cal) =>
+      _scale(m, m.calories > 0 ? cal / m.calories : 0);
+
+  static MealPortion byGrams(Meal m, double grams) =>
+      _scale(m, m.totalGrams > 0 ? grams / m.totalGrams : 0);
+
+  static MealPortion _scale(Meal m, double p) => MealPortion(
+        fraction: p,
+        grams: m.totalGrams * p,
+        calories: m.calories * p,
+        protein: m.protein * p,
+        fat: m.fat * p,
+        carbs: m.carbs * p,
+        nutrients: m.nutrients
+            .map((String k, double v) => MapEntry<String, double>(k, v * p)),
+        breakdown: m.ingredients
+            .map((MealIngredient i) =>
+                IngredientPortion(i.food.name, i.rawGrams * p))
+            .toList(),
+      );
+
+  /// Turns a portion into a loggable food entry for a given day.
+  static FoodEntry toEntry(Meal meal, MealPortion portion,
+      {required String id, required String date, String time = ''}) {
+    return FoodEntry(
+      id: id,
+      date: date,
+      time: time,
+      name: meal.name,
+      serving: '${_fmtG(portion.grams)} g of meal',
+      calories: portion.calories,
+      protein: portion.protein,
+      fat: portion.fat,
+      carbs: portion.carbs,
+      nutrients: portion.nutrients,
+      source: 'meal',
+    );
+  }
+
+  static String _fmtG(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(0);
 }
