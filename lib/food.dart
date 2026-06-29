@@ -105,10 +105,10 @@ class FoodEntry {
     return 'Snacks';
   }
 
-  FoodEntry copyWith({String? id, String? date}) => FoodEntry(
+  FoodEntry copyWith({String? id, String? date, String? time}) => FoodEntry(
         id: id ?? this.id,
         date: date ?? this.date,
-        time: time,
+        time: time ?? this.time,
         name: name,
         serving: serving,
         calories: calories,
@@ -702,11 +702,57 @@ class FoodLookup {
 // and per-ingredient amounts come out proportional to their raw grams.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Approximate cooked-weight / raw-weight ratio, matched by name keyword.
+/// Used to ESTIMATE a dish's cooked weight without weighing the whole pot.
+/// Default 1.0 (assume no change) for anything unrecognized; always editable.
+double cookingYield(String name) {
+  final String n = name.toLowerCase();
+  bool has(List<String> kws) => kws.any((String k) => n.contains(k));
+  if (has(<String>['brown rice'])) return 2.5;
+  if (has(<String>['rice'])) return 2.7;
+  if (has(<String>['pasta', 'spaghetti', 'macaroni', 'penne', 'noodle'])) {
+    return 2.2;
+  }
+  if (has(<String>['oat'])) return 2.5;
+  if (has(<String>['quinoa'])) return 2.7;
+  if (has(<String>['lentil', 'dried bean', 'dry bean', 'chickpea', 'garbanzo'])) {
+    return 2.4;
+  }
+  if (has(<String>['bacon'])) return 0.45;
+  if (has(<String>['chicken breast'])) return 0.70;
+  if (has(<String>['chicken', 'thigh'])) return 0.75;
+  if (has(<String>['ground beef', 'ground turkey', 'ground pork', 'mince'])) {
+    return 0.75;
+  }
+  if (has(<String>['beef', 'steak'])) return 0.70;
+  if (has(<String>['pork'])) return 0.72;
+  if (has(<String>['turkey'])) return 0.70;
+  if (has(<String>['shrimp', 'prawn'])) return 0.85;
+  if (has(<String>['salmon', 'tuna', 'fish', 'tilapia', 'cod'])) return 0.80;
+  if (has(<String>['egg'])) return 0.90;
+  if (has(<String>['spinach', 'kale', 'chard', 'collard'])) return 0.35;
+  if (has(<String>['mushroom'])) return 0.50;
+  if (has(<String>['onion'])) return 0.85;
+  if (has(<String>['potato'])) return 0.90;
+  if (has(<String>[
+    'broccoli', 'cauliflower', 'carrot', 'pepper', 'zucchini', 'squash',
+    'green bean', 'asparagus', 'vegetable'
+  ])) {
+    return 0.80;
+  }
+  return 1.0;
+}
+
 class MealIngredient {
   final FoodTemplate food; // per-100g nutrition + name
   final double rawGrams;
-  MealIngredient({required this.food, required this.rawGrams});
+  final double yieldFactor; // cooked grams / raw grams
+  MealIngredient(
+      {required this.food, required this.rawGrams, double? yieldFactor})
+      : yieldFactor = yieldFactor ?? cookingYield(food.name);
 
+  // Cooking conserves calories/macros (only water weight changes), so all
+  // nutrition is computed from the RAW amount.
   double get _s => rawGrams / 100.0;
   double get calories => food.kcal100 * _s;
   double get protein => food.protein100 * _s;
@@ -715,24 +761,43 @@ class MealIngredient {
   Map<String, double> get nutrients => food.nutrients100
       .map((String k, double v) => MapEntry<String, double>(k, v * _s));
 
-  MealIngredient copyWith({double? rawGrams}) =>
-      MealIngredient(food: food, rawGrams: rawGrams ?? this.rawGrams);
+  // Estimated weight on the plate after cooking.
+  double get cookedGrams => rawGrams * yieldFactor;
 
-  Map<String, dynamic> toJson() =>
-      <String, dynamic>{'food': food.toJson(), 'rawGrams': rawGrams};
+  MealIngredient copyWith({double? rawGrams, double? yieldFactor}) =>
+      MealIngredient(
+          food: food,
+          rawGrams: rawGrams ?? this.rawGrams,
+          yieldFactor: yieldFactor ?? this.yieldFactor);
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'food': food.toJson(),
+        'rawGrams': rawGrams,
+        'yieldFactor': yieldFactor,
+      };
   factory MealIngredient.fromJson(Map<String, dynamic> j) => MealIngredient(
       food: FoodTemplate.fromJson(j['food'] as Map<String, dynamic>),
-      rawGrams: (j['rawGrams'] as num).toDouble());
+      rawGrams: (j['rawGrams'] as num).toDouble(),
+      yieldFactor: (j['yieldFactor'] as num?)?.toDouble());
 }
 
 class Meal {
   final String id;
   final String name;
   final List<MealIngredient> ingredients;
-  Meal({required this.id, required this.name, required this.ingredients});
+  final int createdAtMs; // for the 24h "leftovers" window
+
+  Meal(
+      {required this.id,
+      required this.name,
+      required this.ingredients,
+      this.createdAtMs = 0});
 
   double get totalGrams =>
       ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.rawGrams);
+  // Estimated combined cooked weight — the number portions are measured against.
+  double get cookedTotalGrams => ingredients.fold<double>(
+      0, (double s, MealIngredient i) => s + i.cookedGrams);
   double get calories =>
       ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.calories);
   double get protein =>
@@ -751,20 +816,29 @@ class Meal {
     return m;
   }
 
-  Meal copyWith({String? name, List<MealIngredient>? ingredients}) => Meal(
-      id: id,
-      name: name ?? this.name,
-      ingredients: ingredients ?? this.ingredients);
+  /// Still within the 24h leftovers window?
+  bool isActive(int nowMs) =>
+      createdAtMs > 0 && (nowMs - createdAtMs) < 24 * 60 * 60 * 1000;
+
+  Meal copyWith(
+          {String? name, List<MealIngredient>? ingredients, int? createdAtMs}) =>
+      Meal(
+          id: id,
+          name: name ?? this.name,
+          ingredients: ingredients ?? this.ingredients,
+          createdAtMs: createdAtMs ?? this.createdAtMs);
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
         'name': name,
+        'createdAtMs': createdAtMs,
         'ingredients':
             ingredients.map((MealIngredient i) => i.toJson()).toList(),
       };
   factory Meal.fromJson(Map<String, dynamic> j) => Meal(
         id: j['id'] as String,
         name: j['name'] as String,
+        createdAtMs: (j['createdAtMs'] as num?)?.toInt() ?? 0,
         ingredients: ((j['ingredients'] as List<dynamic>?) ?? <dynamic>[])
             .map((dynamic e) =>
                 MealIngredient.fromJson(e as Map<String, dynamic>))
@@ -803,12 +877,13 @@ class MealMath {
   static MealPortion byCalories(Meal m, double cal) =>
       _scale(m, m.calories > 0 ? cal / m.calories : 0);
 
-  static MealPortion byGrams(Meal m, double grams) =>
-      _scale(m, m.totalGrams > 0 ? grams / m.totalGrams : 0);
+  /// [cookedGrams] is what you weigh on your plate.
+  static MealPortion byCookedGrams(Meal m, double cookedGrams) =>
+      _scale(m, m.cookedTotalGrams > 0 ? cookedGrams / m.cookedTotalGrams : 0);
 
   static MealPortion _scale(Meal m, double p) => MealPortion(
         fraction: p,
-        grams: m.totalGrams * p,
+        grams: m.cookedTotalGrams * p, // cooked grams to weigh out
         calories: m.calories * p,
         protein: m.protein * p,
         fat: m.fat * p,
@@ -817,7 +892,7 @@ class MealMath {
             .map((String k, double v) => MapEntry<String, double>(k, v * p)),
         breakdown: m.ingredients
             .map((MealIngredient i) =>
-                IngredientPortion(i.food.name, i.rawGrams * p))
+                IngredientPortion(i.food.name, i.cookedGrams * p))
             .toList(),
       );
 
@@ -829,7 +904,7 @@ class MealMath {
       date: date,
       time: time,
       name: meal.name,
-      serving: '${_fmtG(portion.grams)} g of meal',
+      serving: '${_fmtG(portion.grams)} g cooked',
       calories: portion.calories,
       protein: portion.protein,
       fat: portion.fat,

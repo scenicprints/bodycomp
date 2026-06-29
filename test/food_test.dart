@@ -163,33 +163,52 @@ void main() {
           MealIngredient(food: ft('Chicken', 165, 31, 3.6, 0), rawGrams: 150),
         ]);
 
-    test('totals sum the ingredients', () {
-      final Meal m = meal();
-      expect(m.totalGrams, 350);
-      expect(m.calories, closeTo(507.5, 1e-6));
-      expect(m.protein, closeTo(51.9, 1e-6));
-      expect(m.nutrients['fiber'], closeTo(3.5, 1e-6)); // 2.0 + 1.5
+    test('cooking yields by name; default 1.0 for unknown', () {
+      expect(cookingYield('White Rice'), 2.7);
+      expect(cookingYield('Chicken Breast, raw'), 0.70);
+      expect(cookingYield('Mystery Glop'), 1.0);
     });
 
-    test('portion by calories scales the whole meal + breakdown', () {
+    test('totals: calories from raw, cooked weight from yields', () {
+      final Meal m = meal(); // rice yield 2.7, chicken 0.75
+      expect(m.totalGrams, 350); // raw
+      expect(m.cookedTotalGrams, closeTo(652.5, 1e-6)); // 540 + 112.5
+      expect(m.calories, closeTo(507.5, 1e-6)); // conserved
+      expect(m.protein, closeTo(51.9, 1e-6));
+      expect(m.nutrients['fiber'], closeTo(3.5, 1e-6));
+    });
+
+    test('portion by calories → cooked grams to weigh + cooked breakdown', () {
       final MealPortion pr = MealMath.byCalories(meal(), 253.75);
       expect(pr.fraction, closeTo(0.5, 1e-9));
-      expect(pr.grams, closeTo(175, 1e-6));
+      expect(pr.grams, closeTo(326.25, 1e-6)); // half the cooked weight
       expect(pr.protein, closeTo(25.95, 1e-6));
-      expect(pr.breakdown[0].grams, closeTo(100, 1e-6)); // rice
-      expect(pr.breakdown[1].grams, closeTo(75, 1e-6)); // chicken
+      expect(pr.breakdown[0].grams, closeTo(270, 1e-6)); // rice cooked
+      expect(pr.breakdown[1].grams, closeTo(56.25, 1e-6)); // chicken cooked
     });
 
-    test('portion by grams gives the calories', () {
-      expect(MealMath.byGrams(meal(), 175).calories, closeTo(253.75, 1e-6));
+    test('portion by cooked grams gives the calories', () {
+      expect(MealMath.byCookedGrams(meal(), 326.25).calories,
+          closeTo(253.75, 1e-6));
     });
 
-    test('round-trips through JSON', () {
+    test('editable yield changes only cooked weight, not calories', () {
+      final Meal m = meal();
+      final Meal m2 = m.copyWith(ingredients: <MealIngredient>[
+        m.ingredients[0].copyWith(yieldFactor: 1.0), // rice no longer swells
+        m.ingredients[1],
+      ]);
+      expect(m2.calories, closeTo(m.calories, 1e-6)); // unchanged
+      expect(m2.cookedTotalGrams, closeTo(312.5, 1e-6)); // 200 + 112.5
+    });
+
+    test('round-trips through JSON (yield + timestamp preserved)', () {
+      final Meal src = meal().copyWith(createdAtMs: 1700000000000);
       final Meal back = Meal.fromJson(
-          jsonDecode(jsonEncode(meal().toJson())) as Map<String, dynamic>);
-      expect(back.name, 'Rice & Chicken');
-      expect(back.calories, closeTo(507.5, 1e-6));
-      expect(back.ingredients.length, 2);
+          jsonDecode(jsonEncode(src.toJson())) as Map<String, dynamic>);
+      expect(back.cookedTotalGrams, closeTo(652.5, 1e-6));
+      expect(back.createdAtMs, 1700000000000);
+      expect(back.ingredients[0].yieldFactor, 2.7);
     });
   });
 
