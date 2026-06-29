@@ -58,6 +58,7 @@ Nutrient? nutrientByKey(String key) {
 class FoodEntry {
   final String id;
   final String date; // 'YYYY-MM-DD'
+  final String time; // 'HH:mm' (empty if unknown) — used for meal grouping
   final String name;
   final String serving; // human description, e.g. "73 g" or "1 cup"
   final double calories;
@@ -71,6 +72,7 @@ class FoodEntry {
   FoodEntry({
     required this.id,
     required this.date,
+    this.time = '',
     required this.name,
     required this.serving,
     required this.calories,
@@ -82,9 +84,46 @@ class FoodEntry {
     this.barcode,
   }) : nutrients = nutrients ?? <String, double>{};
 
+  /// Meal section from the time of day (falls back to "Other").
+  String get mealPeriod {
+    if (time.length < 2) {
+      return 'Other';
+    }
+    final int h = int.tryParse(time.split(':').first) ?? -1;
+    if (h < 0) {
+      return 'Other';
+    }
+    if (h < 11) {
+      return 'Breakfast';
+    }
+    if (h < 15) {
+      return 'Lunch';
+    }
+    if (h < 21) {
+      return 'Dinner';
+    }
+    return 'Snacks';
+  }
+
+  FoodEntry copyWith({String? id, String? date}) => FoodEntry(
+        id: id ?? this.id,
+        date: date ?? this.date,
+        time: time,
+        name: name,
+        serving: serving,
+        calories: calories,
+        protein: protein,
+        fat: fat,
+        carbs: carbs,
+        nutrients: Map<String, double>.from(nutrients),
+        source: source,
+        barcode: barcode,
+      );
+
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
         'date': date,
+        if (time.isNotEmpty) 'time': time,
         'name': name,
         'serving': serving,
         'calories': calories,
@@ -109,6 +148,7 @@ class FoodEntry {
     return FoodEntry(
       id: j['id'] as String,
       date: j['date'] as String,
+      time: (j['time'] as String?) ?? '',
       name: j['name'] as String,
       serving: (j['serving'] as String?) ?? '',
       calories: (j['calories'] as num).toDouble(),
@@ -198,13 +238,16 @@ class FoodTemplate {
       {required String id,
       required String date,
       required double grams,
+      String? servingLabel,
+      String time = '',
       String source = 'barcode'}) {
     final double s = grams / 100.0;
     return FoodEntry(
       id: id,
       date: date,
+      time: time,
       name: name,
-      serving: '${_fmt(grams)} g',
+      serving: servingLabel ?? '${_fmt(grams)} g',
       calories: kcal100 * s,
       protein: protein100 * s,
       fat: fat100 * s,
@@ -402,9 +445,29 @@ class Usda {
         jsonDecode(resp.body) as Map<String, dynamic>;
     final List<dynamic> foods =
         (data['foods'] as List<dynamic>?) ?? <dynamic>[];
+    // Whole foods (Foundation / SR Legacy) first, then everything else —
+    // keeps simple searches like "onion" from drowning in branded variants.
+    int rank(Map<String, dynamic> f) {
+      switch ((f['dataType'] as String?) ?? '') {
+        case 'Foundation':
+          return 0;
+        case 'SR Legacy':
+          return 1;
+        case 'Survey (FNDDS)':
+          return 2;
+        default:
+          return 3; // Branded
+      }
+    }
+
+    final List<Map<String, dynamic>> sorted = foods
+        .map((dynamic f) => f as Map<String, dynamic>)
+        .toList()
+      ..sort((Map<String, dynamic> a, Map<String, dynamic> b) =>
+          rank(a).compareTo(rank(b)));
     final List<FoodTemplate> out = <FoodTemplate>[];
-    for (final dynamic f in foods) {
-      final FoodTemplate? t = parseFood(f as Map<String, dynamic>);
+    for (final Map<String, dynamic> f in sorted) {
+      final FoodTemplate? t = parseFood(f);
       if (t != null) {
         out.add(t);
       }
@@ -562,7 +625,24 @@ class FoodLookup {
         r = await OpenFoodFacts.search(query);
       } catch (_) {}
     }
-    return r;
+    return dedupe(r, cap: 20);
+  }
+
+  /// Collapses near-identical names and caps the count so simple searches
+  /// return a short, relevant list instead of a wall of variants.
+  static List<FoodTemplate> dedupe(List<FoodTemplate> items, {int cap = 20}) {
+    final Set<String> seen = <String>{};
+    final List<FoodTemplate> out = <FoodTemplate>[];
+    for (final FoodTemplate t in items) {
+      final String key = t.name.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      if (seen.add(key)) {
+        out.add(t);
+      }
+      if (out.length >= cap) {
+        break;
+      }
+    }
+    return out;
   }
 
   static Future<FoodTemplate?> barcode(String code) async {

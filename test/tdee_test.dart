@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bodycomp/main.dart';
+import 'package:bodycomp/food.dart';
 
 // Builds 14 fully-logged days (weight trending down, calories present).
 List<DailyLog> _loggedDays() {
@@ -52,6 +53,49 @@ void main() {
       ];
       // Now the new day counts, so the value should move.
       expect(MathEngine.adaptiveTdee(edited), isNot(closeTo(before!, 1e-6)));
+    });
+  });
+
+  group('fasting vs. didn\'t-log', () {
+    String pad(int i) => i.toString().padLeft(2, '0');
+
+    test('a fasted day is counted (0 cal); an unlogged day is not', () {
+      final List<DailyLog> logs = <DailyLog>[];
+      for (int i = 0; i < 13; i++) {
+        logs.add(DailyLog(
+            date: '2026-03-${pad(i + 1)}', weight: 200 - i * 0.2, bf: 0.25));
+      }
+      logs.add(DailyLog(date: '2026-03-14', weight: 197, bf: 0.24)); // bare day
+      final Map<String, double> byDate = <String, double>{
+        for (int i = 0; i < 13; i++) '2026-03-${pad(i + 1)}': 2000
+      };
+
+      // Unlogged bare day → excluded (13 known days).
+      expect(MathEngine.resolveIntake(logs, byDate, <String>{}).length, 13);
+
+      // Marked fasted → included as a real 0-cal day (14 known days).
+      final List<DailyLog> withFast =
+          MathEngine.resolveIntake(logs, byDate, <String>{'2026-03-14'});
+      expect(withFast.length, 14);
+      expect(withFast.last.calories, 0);
+    });
+  });
+
+  group('macro targets', () {
+    test('derive from body composition; overrides win', () {
+      final UserCalibration cal =
+          UserCalibration(startWeight: 200, startBf: 0.25, targetBf: 0.15);
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: '2026-03-01', weight: 200, bf: 0.25) // lbm = 150
+      ];
+      final MacroTargets t =
+          MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
+      expect(t.protein, closeTo(150, 1e-6)); // 1 g / lb lean mass
+      expect(t.fat, closeTo(60, 1e-6)); // 0.3 g / lb body weight
+
+      final MacroTargets t2 = MacroTargets.compute(
+          cal.copyWith(proteinTarget: 180), logs, <FoodEntry>[], <String>{});
+      expect(t2.protein, 180);
     });
   });
 
