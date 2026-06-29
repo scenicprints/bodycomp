@@ -240,6 +240,39 @@ class OpenFoodFacts {
     return parseProduct(data['product'] as Map<String, dynamic>, barcode);
   }
 
+  /// Searches by name (for foods without a barcode, e.g. "onion").
+  /// Returns the foods that have usable calorie data, best matches first.
+  static Future<List<FoodTemplate>> search(String query) async {
+    final String q = query.trim();
+    if (q.isEmpty) {
+      return <FoodTemplate>[];
+    }
+    final Uri uri = Uri.parse(
+        'https://world.openfoodfacts.org/cgi/search.pl'
+        '?search_terms=${Uri.encodeQueryComponent(q)}'
+        '&search_simple=1&action=process&json=1&page_size=30'
+        '&fields=product_name,brands,nutriments,serving_size,code');
+    final http.Response resp = await http.get(uri, headers: <String, String>{
+      'User-Agent': 'BodyComp/1.1 (github.com/scenicprints/bodycomp)'
+    });
+    if (resp.statusCode != 200) {
+      return <FoodTemplate>[];
+    }
+    final Map<String, dynamic> data =
+        jsonDecode(resp.body) as Map<String, dynamic>;
+    final List<dynamic> products =
+        (data['products'] as List<dynamic>?) ?? <dynamic>[];
+    final List<FoodTemplate> out = <FoodTemplate>[];
+    for (final dynamic p in products) {
+      final Map<String, dynamic> m = p as Map<String, dynamic>;
+      final FoodTemplate? t = parseProduct(m, m['code'] as String?);
+      if (t != null) {
+        out.add(t);
+      }
+    }
+    return out;
+  }
+
   /// Parsing is split out so it can be unit-tested without a network call.
   static FoodTemplate? parseProduct(
       Map<String, dynamic> product, String? barcode) {

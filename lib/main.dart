@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -2621,6 +2622,11 @@ class _FoodScreenState extends State<FoodScreen> {
             Navigator.pop(context);
             _scanBarcode();
           }),
+          _menuTile(Icons.search_rounded, 'Search by name',
+              'For foods without a barcode (e.g. onion)', () {
+            Navigator.pop(context);
+            _searchFood();
+          }),
           _menuTile(Icons.edit_rounded, 'Enter manually',
               'Type in the food and its nutrition', () {
             Navigator.pop(context);
@@ -2668,6 +2674,16 @@ class _FoodScreenState extends State<FoodScreen> {
           backgroundColor: const Color(0xFF2A2A2A),
           content: Text('Barcode $code not found — enter it manually.')));
       _openEditor(barcode: code);
+      return;
+    }
+    _openConfirm(t);
+  }
+
+  Future<void> _searchFood() async {
+    final FoodTemplate? t = await Navigator.of(context).push<FoodTemplate>(
+        MaterialPageRoute<FoodTemplate>(
+            builder: (_) => _FoodSearchPage(accent: _accent)));
+    if (t == null || !mounted) {
       return;
     }
     _openConfirm(t);
@@ -3007,7 +3023,25 @@ class _ScannerPage extends StatefulWidget {
 }
 
 class _ScannerPageState extends State<_ScannerPage> {
+  // v7 requires you to own the controller's lifecycle (create → start →
+  // dispose). Relying on the widget's auto-created controller was what
+  // crashed with the ML Kit null-reference error.
+  final MobileScannerController _controller = MobileScannerController(
+    detectionSpeed: DetectionSpeed.noDuplicates,
+  );
   bool _handled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_controller.start());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3019,6 +3053,7 @@ class _ScannerPageState extends State<_ScannerPage> {
           title: const Text('Scan barcode')),
       body: Stack(children: [
         MobileScanner(
+          controller: _controller,
           onDetect: (BarcodeCapture capture) {
             if (_handled) {
               return;
@@ -3050,6 +3085,142 @@ class _ScannerPageState extends State<_ScannerPage> {
               textAlign: TextAlign.center,
               style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.85), fontSize: 14)),
+        ),
+      ]),
+    );
+  }
+}
+
+// ─── Search foods by name (Open Food Facts) ───
+class _FoodSearchPage extends StatefulWidget {
+  final Color accent;
+  const _FoodSearchPage({required this.accent});
+  @override
+  State<_FoodSearchPage> createState() => _FoodSearchPageState();
+}
+
+class _FoodSearchPageState extends State<_FoodSearchPage> {
+  final TextEditingController _q = TextEditingController();
+  Timer? _debounce;
+  bool _loading = false;
+  bool _searched = false;
+  List<FoodTemplate> _results = <FoodTemplate>[];
+  int _reqId = 0;
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _q.dispose();
+    super.dispose();
+  }
+
+  void _onChanged(String v) {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 450), () => _run(v));
+  }
+
+  Future<void> _run(String v) async {
+    if (v.trim().isEmpty) {
+      setState(() {
+        _results = <FoodTemplate>[];
+        _searched = false;
+      });
+      return;
+    }
+    final int id = ++_reqId;
+    setState(() => _loading = true);
+    List<FoodTemplate> r = <FoodTemplate>[];
+    try {
+      r = await OpenFoodFacts.search(v);
+    } catch (_) {}
+    if (!mounted || id != _reqId) {
+      return; // a newer search superseded this one
+    }
+    setState(() {
+      _results = r;
+      _loading = false;
+      _searched = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Search food')),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: TextField(
+            controller: _q,
+            autofocus: true,
+            style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+            decoration: _foodDec(widget.accent).copyWith(
+                hintText: 'e.g. onion, chicken breast, oats',
+                prefixIcon:
+                    const Icon(Icons.search_rounded, color: Color(0xFF888888))),
+            onChanged: _onChanged,
+            onSubmitted: _run,
+          ),
+        ),
+        if (_loading) LinearProgressIndicator(color: widget.accent, minHeight: 2),
+        Expanded(
+          child: _searched && _results.isEmpty && !_loading
+              ? Center(
+                  child: Text('No matches. Try a simpler term or enter it manually.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey[600], fontSize: 13)))
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                  itemCount: _results.length,
+                  itemBuilder: (BuildContext ctx, int i) {
+                    final FoodTemplate t = _results[i];
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Material(
+                        color: kSurface0,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => Navigator.of(context).pop(t),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 12),
+                            decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: kBorder)),
+                            child: Row(children: [
+                              Expanded(
+                                child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(t.name,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.w600,
+                                              color: Color(0xFFDDDDDD))),
+                                      const SizedBox(height: 3),
+                                      Text(
+                                          '${t.kcal100.round()} cal · P ${_trim(t.protein100)} F ${_trim(t.fat100)} C ${_trim(t.carbs100)}  (per 100 g)',
+                                          style: TextStyle(
+                                              fontSize: 11,
+                                              color: Colors.grey[600])),
+                                    ]),
+                              ),
+                              Icon(Icons.add_circle_outline_rounded,
+                                  color: widget.accent, size: 20),
+                            ]),
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
         ),
       ]),
     );

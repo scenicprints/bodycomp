@@ -59,6 +59,15 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Don't shrink/obfuscate — ML Kit (barcode scanner) breaks when its
+            // reflection-loaded classes are stripped. Keep rules are kept too,
+            // in case shrinking is ever turned back on.
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
