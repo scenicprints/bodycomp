@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart' show CupertinoPicker;
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'updater.dart';
@@ -2840,6 +2841,7 @@ class _FoodScreenState extends State<FoodScreen> {
   }
 
   /// Picks a date, then a time. Returns (date 'YYYY-MM-DD', time 'HH:mm').
+  // Pick a day (calendar), then a time (scroll wheels). Returns (date, time).
   Future<(String, String)?> _pickDateTime(
       String initialDate, String initialTime) async {
     final DateTime? d = await showDatePicker(
@@ -2855,35 +2857,92 @@ class _FoodScreenState extends State<FoodScreen> {
     if (d == null || !mounted) {
       return null;
     }
-    final List<String> hm =
-        initialTime.contains(':') ? initialTime.split(':') : <String>['12', '0'];
-    final TimeOfDay? t = await showTimePicker(
-        context: context,
-        initialTime: TimeOfDay(
-            hour: int.tryParse(hm[0]) ?? 12, minute: int.tryParse(hm[1]) ?? 0),
-        builder: (BuildContext ctx, Widget? child) => Theme(
-            data: ThemeData.dark().copyWith(
-                colorScheme:
-                    ColorScheme.dark(primary: _accent, surface: kSurface2)),
-            child: child!));
-    if (t == null) {
+    final String? time = await showScrollTime(
+        context, _accent, initialTime.isEmpty ? _nowTime() : initialTime);
+    if (time == null) {
       return null;
     }
-    final String time =
-        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')}';
     return (formatDate(d), time);
   }
 
-  void _moveEntry(FoodEntry e, String date, String time) {
-    widget.onSetFoods(widget.foods
-        .map((FoodEntry x) =>
-            x.id == e.id ? x.copyWith(date: date, time: time) : x)
-        .toList());
+  // ── Multi-select ──
+  final Set<String> _selected = <String>{};
+  bool get _selecting => _selected.isNotEmpty;
+
+  void _toggleSelect(String id) {
+    setState(() {
+      if (!_selected.remove(id)) {
+        _selected.add(id);
+      }
+    });
   }
 
-  void _copyEntry(FoodEntry e, String date, String time) {
-    widget.onSetFoods(List<FoodEntry>.from(widget.foods)
-      ..add(e.copyWith(id: _newId(), date: date, time: time)));
+  void _clearSelection() => setState(_selected.clear);
+
+  List<FoodEntry> _selectedEntries() =>
+      widget.foods.where((FoodEntry e) => _selected.contains(e.id)).toList();
+
+  void _editSelected() {
+    final List<FoodEntry> list = _selectedEntries();
+    if (list.length != 1) {
+      return;
+    }
+    final FoodEntry e = list.first;
+    _clearSelection();
+    _openEditor(existing: e);
+  }
+
+  // Move and Modify Timestamp both set the date+time of the whole selection.
+  Future<void> _stampSelected() async {
+    final List<FoodEntry> list = _selectedEntries();
+    if (list.isEmpty) {
+      return;
+    }
+    final (String, String)? dt =
+        await _pickDateTime(list.first.date, list.first.time);
+    if (dt == null) {
+      return;
+    }
+    final Set<String> ids = Set<String>.from(_selected);
+    widget.onSetFoods(widget.foods
+        .map((FoodEntry e) =>
+            ids.contains(e.id) ? e.copyWith(date: dt.$1, time: dt.$2) : e)
+        .toList());
+    _clearSelection();
+  }
+
+  Future<void> _copySelected() async {
+    final List<FoodEntry> list = _selectedEntries();
+    if (list.isEmpty) {
+      return;
+    }
+    final (String, String)? dt =
+        await _pickDateTime(list.first.date, list.first.time);
+    if (dt == null) {
+      return;
+    }
+    final int base = DateTime.now().microsecondsSinceEpoch;
+    final List<FoodEntry> copies = <FoodEntry>[];
+    for (int i = 0; i < list.length; i++) {
+      copies.add(list[i].copyWith(id: '${base}_$i', date: dt.$1, time: dt.$2));
+    }
+    widget.onSetFoods(<FoodEntry>[...widget.foods, ...copies]);
+    _clearSelection();
+  }
+
+  void _viewSelected() {
+    final List<FoodEntry> list = _selectedEntries();
+    if (list.isEmpty) {
+      return;
+    }
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _SelectionBreakdown(entries: list, accent: _accent),
+    );
   }
 
   String _dateLabel() {
@@ -3070,26 +3129,8 @@ class _FoodScreenState extends State<FoodScreen> {
                 _deleteEntry(existing.id);
                 Navigator.pop(context);
               },
-        onMove: existing == null
-            ? null
-            : () async {
-                Navigator.pop(context);
-                final (String, String)? dt =
-                    await _pickDateTime(existing.date, existing.time);
-                if (dt != null) {
-                  _moveEntry(existing, dt.$1, dt.$2);
-                }
-              },
-        onCopy: existing == null
-            ? null
-            : () async {
-                Navigator.pop(context);
-                final (String, String)? dt =
-                    await _pickDateTime(existing.date, existing.time);
-                if (dt != null) {
-                  _copyEntry(existing, dt.$1, dt.$2);
-                }
-              },
+        onMove: null, // move/copy now handled via long-press selection banner
+        onCopy: null,
         buildEntry: (String name, String serving, double cal, double p,
             double f, double c, Map<String, double> micros) {
           return FoodEntry(
@@ -3152,7 +3193,13 @@ class _FoodScreenState extends State<FoodScreen> {
         out.add(Padding(
           padding: const EdgeInsets.only(left: 52),
           child: _FoodCard(
-              entry: e, accent: accent, onTap: () => _openEditor(existing: e)),
+              entry: e,
+              accent: accent,
+              selected: _selected.contains(e.id),
+              onLongPress: () => _toggleSelect(e.id),
+              onTap: () => _selecting
+                  ? _toggleSelect(e.id)
+                  : _openEditor(existing: e)),
         ));
       }
     }
@@ -3198,28 +3245,82 @@ class _FoodScreenState extends State<FoodScreen> {
         bottom: 16,
         left: 16,
         right: 16,
-        child: SizedBox(
-          height: 56,
-          child: ElevatedButton.icon(
-            onPressed: () {
-              _pendingTime = null;
-              _showAddMenu();
-            },
-            icon: const Icon(Icons.add_rounded),
-            label: const Text('ADD FOOD',
-                style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.5)),
-            style: ElevatedButton.styleFrom(
-                backgroundColor: accent,
-                foregroundColor: Colors.black,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14))),
-          ),
-        ),
+        child: _selecting
+            ? _selectionBanner(accent)
+            : SizedBox(
+                height: 56,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    _pendingTime = null;
+                    _showAddMenu();
+                  },
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('ADD FOOD',
+                      style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.5)),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(14))),
+                ),
+              ),
       ),
     ]);
+  }
+
+  Widget _selectionBanner(Color accent) {
+    final int n = _selected.length;
+    final bool multi = n > 1;
+    Widget action(IconData icon, String label, VoidCallback onTap) => Expanded(
+          child: InkWell(
+            onTap: onTap,
+            borderRadius: BorderRadius.circular(10),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                Icon(icon, color: Colors.black, size: 20),
+                const SizedBox(height: 2),
+                Text(label,
+                    style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.black)),
+              ]),
+            ),
+          ),
+        );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      decoration: BoxDecoration(
+          color: accent, borderRadius: BorderRadius.circular(14)),
+      child: Row(children: <Widget>[
+        InkWell(
+          onTap: _clearSelection,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+              const Icon(Icons.close_rounded, color: Colors.black, size: 20),
+              const SizedBox(width: 4),
+              Text('$n',
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      color: Colors.black)),
+            ]),
+          ),
+        ),
+        Container(width: 1, height: 30, color: Colors.black26),
+        action(multi ? Icons.visibility_rounded : Icons.edit_rounded,
+            multi ? 'View' : 'Edit', multi ? _viewSelected : _editSelected),
+        action(Icons.copy_rounded, 'Copy', _copySelected),
+        action(Icons.drive_file_move_rounded, 'Move', _stampSelected),
+        action(Icons.schedule_rounded, 'Timestamp', _stampSelected),
+      ]),
+    );
   }
 
   Widget _fastedCard(Color accent) {
@@ -3359,25 +3460,38 @@ class _FoodCard extends StatelessWidget {
   final FoodEntry entry;
   final Color accent;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  final bool selected;
   const _FoodCard(
-      {required this.entry, required this.accent, required this.onTap});
+      {required this.entry,
+      required this.accent,
+      required this.onTap,
+      this.onLongPress,
+      this.selected = false});
 
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Material(
-        color: kSurface0,
+        color: selected ? kSurface3 : kSurface0,
         borderRadius: BorderRadius.circular(12),
         child: InkWell(
           borderRadius: BorderRadius.circular(12),
           onTap: onTap,
+          onLongPress: onLongPress,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: kBorder)),
+                border: Border.all(
+                    color: selected ? accent : kBorder,
+                    width: selected ? 1.5 : 1)),
             child: Row(children: [
+              if (selected) ...[
+                Icon(Icons.check_circle_rounded, size: 18, color: accent),
+                const SizedBox(width: 10),
+              ],
               Expanded(
                 child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -3406,6 +3520,82 @@ class _FoodCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ─── Breakdown of a multi-selection ───
+class _SelectionBreakdown extends StatelessWidget {
+  final List<FoodEntry> entries;
+  final Color accent;
+  const _SelectionBreakdown({required this.entries, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    double cal = 0, p = 0, f = 0, c = 0;
+    for (final FoodEntry e in entries) {
+      cal += e.calories;
+      p += e.protein;
+      f += e.fat;
+      c += e.carbs;
+    }
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewPadding.bottom + 20),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('${entries.length} items selected',
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: accent)),
+            const SizedBox(height: 4),
+            Text(
+                'Combined: ${cal.round()} cal · P ${_trim(p)} · F ${_trim(f)} · C ${_trim(c)}',
+                style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+            const SizedBox(height: 14),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: entries.length,
+                itemBuilder: (BuildContext ctx, int i) {
+                  final FoodEntry e = entries[i];
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: Row(children: <Widget>[
+                      Expanded(
+                        child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(e.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                      fontSize: 14,
+                                      color: Color(0xFFDDDDDD))),
+                              const SizedBox(height: 2),
+                              Text(
+                                  '${e.serving}${e.time.isNotEmpty ? ' · ${e.time}' : ''} · ${e.date}',
+                                  style: TextStyle(
+                                      fontSize: 11, color: Colors.grey[600])),
+                            ]),
+                      ),
+                      Text('${e.calories.round()}',
+                          style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              color: accent)),
+                    ]),
+                  );
+                },
+              ),
+            ),
+          ]),
     );
   }
 }
@@ -4942,5 +5132,126 @@ class _ManualIngredientSheetState extends State<_ManualIngredientSheet> {
           decoration: _foodDec(widget.accent),
           onChanged: (_) => setState(() {})),
     ]);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SCROLL TIME PICKER  (hours + minutes wheels on one page)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Shows hour + minute scroll wheels. Returns 'HH:mm' or null if cancelled.
+Future<String?> showScrollTime(
+    BuildContext context, Color accent, String initial) {
+  final List<String> hm =
+      initial.contains(':') ? initial.split(':') : <String>['12', '0'];
+  return showModalBottomSheet<String>(
+    context: context,
+    backgroundColor: kSurface2,
+    shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+    builder: (_) => _ScrollTimeSheet(
+        accent: accent,
+        initialHour: int.tryParse(hm[0]) ?? 12,
+        initialMinute: int.tryParse(hm[1]) ?? 0),
+  );
+}
+
+class _ScrollTimeSheet extends StatefulWidget {
+  final Color accent;
+  final int initialHour;
+  final int initialMinute;
+  const _ScrollTimeSheet(
+      {required this.accent,
+      required this.initialHour,
+      required this.initialMinute});
+  @override
+  State<_ScrollTimeSheet> createState() => _ScrollTimeSheetState();
+}
+
+class _ScrollTimeSheetState extends State<_ScrollTimeSheet> {
+  late int _hour;
+  late int _minute;
+
+  @override
+  void initState() {
+    super.initState();
+    _hour = widget.initialHour;
+    _minute = widget.initialMinute;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+        child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+          Text('SELECT TIME',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 180,
+            child: Row(children: <Widget>[
+              Expanded(child: _wheel(24, _hour, (int v) => _hour = v, 'h')),
+              Text(':',
+                  style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              Expanded(
+                  child: _wheel(60, _minute, (int v) => _minute = v, 'm')),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton(
+              onPressed: () => Navigator.pop(
+                  context,
+                  '${_hour.toString().padLeft(2, '0')}:${_minute.toString().padLeft(2, '0')}'),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: widget.accent,
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                  textStyle:
+                      const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+              child: const Text('Done'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _wheel(
+      int count, int initial, void Function(int) onChange, String suffix) {
+    return CupertinoPicker(
+      scrollController: FixedExtentScrollController(initialItem: initial),
+      itemExtent: 40,
+      magnification: 1.1,
+      squeeze: 1.1,
+      backgroundColor: Colors.transparent,
+      selectionOverlay: Container(
+        decoration: BoxDecoration(
+            border: Border.symmetric(
+                horizontal: BorderSide(
+                    color: Color.fromRGBO(widget.accent.red, widget.accent.green,
+                        widget.accent.blue, 0.4)))),
+      ),
+      onSelectedItemChanged: onChange,
+      children: List<Widget>.generate(
+          count,
+          (int i) => Center(
+              child: Text('${i.toString().padLeft(2, '0')}$suffix',
+                  style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFFEEEEEE))))),
+    );
   }
 }

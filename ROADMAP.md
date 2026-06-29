@@ -24,7 +24,7 @@ rebuilt into a real Flutter project with **over-the-air updates**. Core ideas:
 
 ## 2. Current status
 
-**Latest shipped version: v1.4.0** (`pubspec.yaml` `version:` is the source of truth — currently `1.4.0+9`).
+**Latest shipped version: v1.5.0** (`pubspec.yaml` `version:` is the source of truth — currently `1.5.0+10`).
 
 Release history (each is a GitHub Release with a signed APK):
 | Version | What shipped |
@@ -38,6 +38,7 @@ Release history (each is a GitHub Release with a signed APK):
 | 1.2.0 | Food Tab v2: budget bars, macro targets, future logging, per-serving, move/copy, meal grouping, fasting-vs-didn't-log |
 | 1.3.0 | Meal Maker (saved-meal library) + nav-bar bottom-sheet fix |
 | 1.4.0 | **Cook tab** (cooked-weight calculator + 24h leftovers), hourly food log, linked Grams↔Servings, date+time move/copy |
+| 1.5.0 | Multi-select food log (long-press → banner: Edit/View · Copy · Move · Modify Timestamp); scroll-wheel time picker (replaced the clock) |
 
 ---
 
