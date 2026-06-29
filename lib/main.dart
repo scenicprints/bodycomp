@@ -1943,7 +1943,9 @@ class _LogModalState extends State<LogModal> {
 
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+          24, 24, 24, MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
       child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -3625,7 +3627,9 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     final double s = _grams / 100.0;
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+          24, 20, 24, MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
       child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -3816,7 +3820,9 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
-          24, 20, 24, MediaQuery.of(context).viewInsets.bottom + 24),
+          24, 20, 24, MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
       child: SingleChildScrollView(
         child: Column(
             mainAxisSize: MainAxisSize.min,
