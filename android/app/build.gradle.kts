@@ -33,7 +33,8 @@ android {
 
     defaultConfig {
         applicationId = "com.scenicprints.bodycomp"
-        minSdk = 24
+        // Health Connect (the `health` plugin) requires minSdk 26.
+        minSdk = 26
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
