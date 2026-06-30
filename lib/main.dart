@@ -355,7 +355,9 @@ class MacroTargets {
 class AdvisorDigest {
   static String build(UserCalibration cal, List<DailyLog> logs,
       List<FoodEntry> foods, Set<String> fasted, String kind,
-      {List<SleepEntry> sleep = const <SleepEntry>[]}) {
+      {List<SleepEntry> sleep = const <SleepEntry>[],
+      List<RunRecord> runs = const <RunRecord>[],
+      int trainerLevel = 0}) {
     final DateTime now = DateTime.now();
     final String today = formatDate(now);
     final MacroTargets t = MacroTargets.compute(cal, logs, foods, fasted);
@@ -469,6 +471,38 @@ class AdvisorDigest {
     final String sleepLine = sleepDigest(sleep, now);
     if (sleepLine.isNotEmpty) {
       sb.writeln(sleepLine);
+    }
+
+    // Training — so the dashboard coach briefs across running too.
+    if (trainerLevel > 0 || runs.isNotEmpty) {
+      final int wk = runsThisWeek(runs, now);
+      if (trainerLevel > 0) {
+        sb.writeln('TRAINING: 5K plan level $trainerLevel of $kMaxLevel '
+            '("${workoutForLevel(trainerLevel).name}"); $wk run'
+            '${wk == 1 ? '' : 's'} in the last 7 days.');
+      } else {
+        sb.writeln('TRAINING: $wk run${wk == 1 ? '' : 's'} in the last 7 days.');
+      }
+      for (final RunRecord r in runs.reversed.take(4)) {
+        final String dist = r.distanceKm > 0
+            ? ', ${(r.distanceKm * 0.621371).toStringAsFixed(2)} mi'
+            : '';
+        sb.writeln('- ${r.date}: ${(r.durationSec / 60).round()} min$dist'
+            '${r.avgHr != null ? ', HR ${r.avgHr!.round()}' : ''}'
+            ', felt ${r.effort}${r.completed ? '' : ' (partial)'}');
+      }
+    }
+
+    // Readiness — the same transparent read shown on the Sleep tab.
+    final Readiness? readiness = computeReadiness(
+      lastNightHours: SleepMath.latest(sleep)?.hours,
+      baselineHours: SleepMath.baselineHours(sleep, now),
+      runsLast7: runsThisWeek(runs, now),
+      deficit: cal.deficit,
+    );
+    if (readiness != null) {
+      sb.writeln(
+          'READINESS: ${readiness.score}/100 (${readiness.label}).');
     }
 
     return sb.toString();
@@ -1709,6 +1743,8 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             sleep: widget.sleep,
+            runs: widget.runs,
+            trainer: widget.trainer,
             insights: widget.insights,
             onSetLogs: widget.onSetLogs,
             onSetInsights: widget.onSetInsights,
@@ -1791,6 +1827,8 @@ class DashboardScreen extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<SleepEntry> sleep;
+  final List<RunRecord> runs;
+  final TrainerState trainer;
   final List<AdvisorInsight> insights;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<AdvisorInsight>) onSetInsights;
@@ -1803,6 +1841,8 @@ class DashboardScreen extends StatefulWidget {
       required this.foods,
       required this.fasted,
       required this.sleep,
+      required this.runs,
+      required this.trainer,
       required this.insights,
       required this.onSetLogs,
       required this.onSetInsights,
@@ -2036,6 +2076,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   foods: widget.foods,
                   fasted: widget.fasted,
                   sleep: widget.sleep,
+                  runs: widget.runs,
+                  trainerLevel: widget.trainer.level,
                   insights: widget.insights,
                   onSetInsights: widget.onSetInsights,
                   accent: accent),
@@ -6253,6 +6295,8 @@ class _AdvisorCard extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<SleepEntry> sleep;
+  final List<RunRecord> runs;
+  final int trainerLevel;
   final List<AdvisorInsight> insights;
   final void Function(List<AdvisorInsight>) onSetInsights;
   final Color accent;
@@ -6262,6 +6306,8 @@ class _AdvisorCard extends StatefulWidget {
       required this.foods,
       required this.fasted,
       required this.sleep,
+      required this.runs,
+      required this.trainerLevel,
       required this.insights,
       required this.onSetInsights,
       required this.accent});
@@ -6291,8 +6337,11 @@ class _AdvisorCardState extends State<_AdvisorCard> {
       _error = null;
     });
     try {
-      final String digest = AdvisorDigest.build(widget.cal, widget.logs,
-          widget.foods, widget.fasted.toSet(), kind, sleep: widget.sleep);
+      final String digest = AdvisorDigest.build(
+          widget.cal, widget.logs, widget.foods, widget.fasted.toSet(), kind,
+          sleep: widget.sleep,
+          runs: widget.runs,
+          trainerLevel: widget.trainerLevel);
       final String text = await Advisor.generate(
           model: widget.cal.advisorModel, kind: kind, digest: digest);
       if (!mounted) {
