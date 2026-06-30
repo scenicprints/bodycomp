@@ -79,6 +79,29 @@ class CustomFood {
         deleted: deleted ?? this.deleted,
       );
 
+  /// True when we know the gram weight of one serving — which lets the food
+  /// be logged by grams (with live scaling) just like a barcode food.
+  bool get hasGrams => servingGrams != null && servingGrams! > 0;
+
+  /// Convert to a per-100 g FoodTemplate so the food can flow through the
+  /// same grams↔servings scaling sheet as a barcode lookup. Requires grams;
+  /// falls back to treating one serving as 100 g if absent.
+  FoodTemplate toTemplate() {
+    final double g = hasGrams ? servingGrams! : 100;
+    double per100(double v) => v / g * 100;
+    return FoodTemplate(
+      name: name,
+      kcal100: per100(calories),
+      protein100: per100(protein),
+      fat100: per100(fat),
+      carbs100: per100(carbs),
+      nutrients100: nutrients.map(
+          (String k, double v) => MapEntry<String, double>(k, per100(v))),
+      servingGrams: hasGrams ? servingGrams : null,
+      barcode: barcode,
+    );
+  }
+
   /// Build a loggable entry for [quantity] servings on [date].
   FoodEntry toEntry({
     required String id,

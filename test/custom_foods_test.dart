@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:bodycomp/custom_foods.dart';
+import 'package:bodycomp/food.dart';
 
 // A realistic OCR dump from a US Nutrition Facts panel. ML Kit usually keeps
 // rough line order but drops some "Total" prefixes and merges spacing.
@@ -94,6 +95,27 @@ void main() {
       expect(e.protein, 10);
       expect(e.nutrients['sodium'], 95 * 2.5);
       expect(e.serving, '2.5 × 1 bar');
+    });
+
+    test('converts to a per-100g template for grams-based scaling', () {
+      final FoodTemplate t = bar.toTemplate();
+      // 190 cal in 40 g  ->  475 cal / 100 g
+      expect(t.kcal100, 475);
+      expect(t.protein100, closeTo(10, 1e-9));
+      expect(t.servingGrams, 40);
+      // Logging exactly one serving's worth of grams returns the originals.
+      final e = t.toEntry(id: 'e', date: '2026-06-30', grams: 40);
+      expect(e.calories, closeTo(190, 1e-9));
+      expect(e.protein, closeTo(4, 1e-9));
+      // Double the grams doubles everything.
+      final e2 = t.toEntry(id: 'e', date: '2026-06-30', grams: 80);
+      expect(e2.calories, closeTo(380, 1e-9));
+      expect(e2.nutrients['sodium'], closeTo(190, 1e-9));
+    });
+
+    test('hasGrams reflects whether a serving weight is known', () {
+      expect(bar.hasGrams, isTrue);
+      expect(bar.copyWith(servingGrams: 0).hasGrams, isFalse);
     });
 
     test('round-trips through JSON', () {
