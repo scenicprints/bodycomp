@@ -6,8 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart' show CupertinoPicker;
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'updater.dart';
 import 'food.dart';
+import 'custom_foods.dart';
 import 'advisor.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -594,6 +597,37 @@ class AppStorage {
     _write(d);
   }
 
+  static List<CustomFood> getCustomFoods() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('customFoods')) {
+      return (d['customFoods'] as List<dynamic>)
+          .map((dynamic e) => CustomFood.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveCustomFoods(List<CustomFood> foods) {
+    final Map<String, dynamic> d = _read();
+    d['customFoods'] = foods.map((CustomFood f) => f.toJson()).toList();
+    _write(d);
+  }
+
+  static String? getCustomFoodsSha() {
+    final Map<String, dynamic> d = _read();
+    return d['customFoodsSha'] as String?;
+  }
+
+  static void saveCustomFoodsSha(String? sha) {
+    final Map<String, dynamic> d = _read();
+    if (sha == null) {
+      d.remove('customFoodsSha');
+    } else {
+      d['customFoodsSha'] = sha;
+    }
+    _write(d);
+  }
+
   static List<AdvisorInsight> getInsights() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('insights')) {
@@ -693,7 +727,9 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<FoodEntry> _foods = [];
   List<String> _fasted = [];
   List<Meal> _meals = [];
+  List<CustomFood> _customFoods = [];
   List<AdvisorInsight> _insights = [];
+  bool _syncingFoods = false;
 
   @override
   void initState() {
@@ -704,7 +740,52 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
+    _customFoods = AppStorage.getCustomFoods();
     _insights = AppStorage.getInsights();
+    // Pull the latest My Foods from the private data repo in the background.
+    _syncCustomFoods();
+  }
+
+  // A cheap fingerprint of a food list for change detection.
+  String _foodsFingerprint(List<CustomFood> f) {
+    final List<String> ids = f
+        .map((CustomFood x) => '${x.id}:${x.updatedAtMs}:${x.deleted}')
+        .toList()
+      ..sort();
+    return ids.join('|');
+  }
+
+  /// Merge the local My Foods with the remote copy, then push if we have
+  /// changes the remote doesn't. Silent + best-effort: offline or an
+  /// unconfigured token just leaves the local list untouched.
+  Future<void> _syncCustomFoods() async {
+    if (!CustomFoodStore.isConfigured || _syncingFoods) {
+      return;
+    }
+    _syncingFoods = true;
+    try {
+      final RemoteFoods? remote = await CustomFoodStore.fetchRemote();
+      if (remote == null || !mounted) {
+        return;
+      }
+      final List<CustomFood> merged =
+          CustomFoodStore.mergeFoods(_customFoods, remote.foods);
+      if (_foodsFingerprint(merged) != _foodsFingerprint(_customFoods)) {
+        setState(() => _customFoods = merged);
+        AppStorage.saveCustomFoods(merged);
+      }
+      if (_foodsFingerprint(merged) != _foodsFingerprint(remote.foods)) {
+        final String? newSha =
+            await CustomFoodStore.pushRemote(merged, remote.sha);
+        if (newSha != null) {
+          AppStorage.saveCustomFoodsSha(newSha);
+        }
+      } else if (remote.sha != null) {
+        AppStorage.saveCustomFoodsSha(remote.sha);
+      }
+    } finally {
+      _syncingFoods = false;
+    }
   }
 
   void _setCal(UserCalibration c) {
@@ -756,6 +837,15 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveInsights(i);
   }
 
+  void _setCustomFoods(List<CustomFood> f) {
+    setState(() {
+      _customFoods = f;
+    });
+    AppStorage.saveCustomFoods(f);
+    // Push the change up to the data repo (best-effort, debounced by the flag).
+    _syncCustomFoods();
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -765,6 +855,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _foods = [];
       _fasted = [];
       _meals = [];
+      _customFoods = [];
       _insights = [];
     });
   }
@@ -806,12 +897,14 @@ class _BodyCompAppState extends State<BodyCompApp> {
               foods: _foods,
               fasted: _fasted,
               meals: _meals,
+              customFoods: _customFoods,
               insights: _insights,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
               onSetFasted: _setFasted,
               onSetMeals: _setMeals,
+              onSetCustomFoods: _setCustomFoods,
               onSetInsights: _setInsights,
               onDismiss: _dismiss,
               onReset: _resetAll),
@@ -1457,12 +1550,14 @@ class HomeShell extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<Meal> meals;
+  final List<CustomFood> customFoods;
   final List<AdvisorInsight> insights;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
   final void Function(List<String>) onSetFasted;
   final void Function(List<Meal>) onSetMeals;
+  final void Function(List<CustomFood>) onSetCustomFoods;
   final void Function(List<AdvisorInsight>) onSetInsights;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
@@ -1474,12 +1569,14 @@ class HomeShell extends StatefulWidget {
       required this.foods,
       required this.fasted,
       required this.meals,
+      required this.customFoods,
       required this.insights,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
       required this.onSetFasted,
       required this.onSetMeals,
+      required this.onSetCustomFoods,
       required this.onSetInsights,
       required this.onDismiss,
       required this.onReset});
@@ -1516,9 +1613,11 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             meals: widget.meals,
+            customFoods: widget.customFoods,
             onSetFoods: widget.onSetFoods,
             onSetFasted: widget.onSetFasted,
-            onSetMeals: widget.onSetMeals),
+            onSetMeals: widget.onSetMeals,
+            onSetCustomFoods: widget.onSetCustomFoods),
         _CookScreen(
             accent: accent,
             meals: widget.meals,
@@ -3005,9 +3104,11 @@ class FoodScreen extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<Meal> meals;
+  final List<CustomFood> customFoods;
   final void Function(List<FoodEntry>) onSetFoods;
   final void Function(List<String>) onSetFasted;
   final void Function(List<Meal>) onSetMeals;
+  final void Function(List<CustomFood>) onSetCustomFoods;
   const FoodScreen(
       {super.key,
       required this.cal,
@@ -3015,9 +3116,11 @@ class FoodScreen extends StatefulWidget {
       required this.foods,
       required this.fasted,
       required this.meals,
+      required this.customFoods,
       required this.onSetFoods,
       required this.onSetFasted,
-      required this.onSetMeals});
+      required this.onSetMeals,
+      required this.onSetCustomFoods});
   @override
   State<FoodScreen> createState() => _FoodScreenState();
 }
@@ -3226,10 +3329,21 @@ class _FoodScreenState extends State<FoodScreen> {
       builder: (_) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const SizedBox(height: 8),
+          _menuTile(Icons.bookmark_rounded, 'My Foods',
+              '$_myFoodsCount saved — log one in a tap', () {
+            Navigator.pop(context);
+            _openMyFoods();
+          }),
+          const Divider(height: 1, color: Color(0xFF222222)),
           _menuTile(Icons.qr_code_scanner_rounded, 'Scan barcode',
               'Look up nutrition automatically', () {
             Navigator.pop(context);
             _scanBarcode();
+          }),
+          _menuTile(Icons.document_scanner_rounded, 'Scan label',
+              'Read a Nutrition Facts panel with the camera', () {
+            Navigator.pop(context);
+            _scanLabel();
           }),
           _menuTile(Icons.search_rounded, 'Search by name',
               'For foods without a barcode (e.g. onion)', () {
@@ -3338,7 +3452,11 @@ class _FoodScreenState extends State<FoodScreen> {
     );
   }
 
-  void _openEditor({FoodEntry? existing, String? barcode}) {
+  void _openEditor(
+      {FoodEntry? existing,
+      String? barcode,
+      LabelParse? prefill,
+      String source = 'manual'}) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -3348,11 +3466,14 @@ class _FoodScreenState extends State<FoodScreen> {
       builder: (_) => _ManualFoodSheet(
         accent: _accent,
         existing: existing,
+        prefill: prefill,
         onSave: (FoodEntry e) {
           if (existing != null) {
             _updateEntry(e);
           } else {
             _addEntry(e);
+            // Every new hand-entered / label-scanned food becomes reusable.
+            _saveTemplateFromEntry(e, source, prefill?.servingGrams);
           }
           Navigator.pop(context);
         },
@@ -3377,12 +3498,109 @@ class _FoodScreenState extends State<FoodScreen> {
             fat: f,
             carbs: c,
             nutrients: micros,
-            source: existing?.source ?? 'manual',
+            source: existing?.source ?? source,
             barcode: existing?.barcode ?? barcode,
           );
         },
       ),
     );
+  }
+
+  // ── My Foods (reusable saved foods) ──────────────────────────────────
+  int get _myFoodsCount =>
+      widget.customFoods.where((CustomFood f) => !f.deleted).length;
+
+  /// Save (or update) a logged entry as a reusable My Food. De-dupes on
+  /// name+serving+source so re-scanning the same product updates in place.
+  void _saveTemplateFromEntry(FoodEntry e, String source, double? grams) {
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final String key = '${e.name.toLowerCase().trim()}|'
+        '${e.serving.toLowerCase().trim()}|$source';
+    CustomFood? existing;
+    for (final CustomFood f in widget.customFoods) {
+      if (!f.deleted &&
+          '${f.name.toLowerCase().trim()}|'
+                  '${f.serving.toLowerCase().trim()}|${f.source}' ==
+              key) {
+        existing = f;
+        break;
+      }
+    }
+    final CustomFood food = CustomFood(
+      id: existing?.id ?? 'cf_${DateTime.now().microsecondsSinceEpoch}',
+      name: e.name,
+      serving: e.serving,
+      servingGrams: grams ?? existing?.servingGrams,
+      calories: e.calories,
+      protein: e.protein,
+      fat: e.fat,
+      carbs: e.carbs,
+      nutrients: Map<String, double>.from(e.nutrients),
+      source: source,
+      barcode: e.barcode,
+      updatedAtMs: now,
+    );
+    widget.onSetCustomFoods(
+        CustomFoodStore.mergeFoods(widget.customFoods, <CustomFood>[food]));
+  }
+
+  void _openMyFoods() {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => _MyFoodsPage(
+        accent: _accent,
+        foods: widget.customFoods,
+        onSetFoods: widget.onSetCustomFoods,
+        onLog: (CustomFood food, double quantity) {
+          _addEntry(food.toEntry(
+            id: _newId(),
+            date: _date,
+            quantity: quantity,
+            time: _timeForNew(),
+          ));
+        },
+      ),
+    ));
+  }
+
+  // ── Nutrition-label OCR ──────────────────────────────────────────────
+  Future<void> _scanLabel() async {
+    XFile? shot;
+    try {
+      shot = await ImagePicker().pickImage(
+          source: ImageSource.camera, maxWidth: 2200, imageQuality: 92);
+    } catch (_) {}
+    if (shot == null || !mounted) {
+      return;
+    }
+    showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            Center(child: CircularProgressIndicator(color: _accent)));
+    String text = '';
+    final TextRecognizer recognizer =
+        TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      final RecognizedText r =
+          await recognizer.processImage(InputImage.fromFilePath(shot.path));
+      text = r.text;
+    } catch (_) {
+    } finally {
+      await recognizer.close();
+    }
+    if (!mounted) {
+      return;
+    }
+    Navigator.pop(context); // dismiss the loader
+    final LabelParse parse = parseNutritionLabel(text);
+    if (!parse.hasAnything) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text(
+              "Couldn't read the label — fill it in (or retake the photo).")));
+    }
+    // Pre-fill the editor with whatever we read; the user confirms/corrects.
+    _openEditor(prefill: parse, source: 'label');
   }
 
   int _hourOf(FoodEntry e) =>
@@ -4277,6 +4495,7 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
 class _ManualFoodSheet extends StatefulWidget {
   final Color accent;
   final FoodEntry? existing;
+  final LabelParse? prefill; // from a scanned label, for a new entry
   final void Function(FoodEntry) onSave;
   final VoidCallback? onDelete;
   final VoidCallback? onMove;
@@ -4286,6 +4505,7 @@ class _ManualFoodSheet extends StatefulWidget {
   const _ManualFoodSheet(
       {required this.accent,
       required this.existing,
+      this.prefill,
       required this.onSave,
       required this.onDelete,
       required this.onMove,
@@ -4302,20 +4522,38 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
   void initState() {
     super.initState();
     final FoodEntry? e = widget.existing;
+    final LabelParse? pf = e == null ? widget.prefill : null;
+    String num(double? v) => v == null ? '' : _trim(v, dp: 1);
+    String servingSeed() {
+      if (e != null) {
+        return e.serving;
+      }
+      if (pf?.servingRaw != null && pf!.servingRaw!.isNotEmpty) {
+        return pf.servingRaw!;
+      }
+      if (pf?.servingGrams != null) {
+        return '${_trim(pf!.servingGrams!)} g';
+      }
+      return '';
+    }
+
     _name = TextEditingController(text: e?.name ?? '');
-    _serving = TextEditingController(text: e?.serving ?? '');
-    _cal = TextEditingController(text: e != null ? _trim(e.calories) : '');
-    _p = TextEditingController(text: e != null ? _trim(e.protein) : '');
-    _f = TextEditingController(text: e != null ? _trim(e.fat) : '');
-    _c = TextEditingController(text: e != null ? _trim(e.carbs) : '');
+    _serving = TextEditingController(text: servingSeed());
+    _cal = TextEditingController(
+        text: e != null ? _trim(e.calories) : num(pf?.calories));
+    _p = TextEditingController(
+        text: e != null ? _trim(e.protein) : num(pf?.protein));
+    _f = TextEditingController(text: e != null ? _trim(e.fat) : num(pf?.fat));
+    _c = TextEditingController(
+        text: e != null ? _trim(e.carbs) : num(pf?.carbs));
     _fiber = TextEditingController(
         text: e != null && (e.nutrients['fiber'] ?? 0) > 0
             ? _trim(e.nutrients['fiber']!, dp: 1)
-            : '');
+            : num(pf?.fiber));
     _sodium = TextEditingController(
         text: e != null && (e.nutrients['sodium'] ?? 0) > 0
             ? _trim(e.nutrients['sodium']!, dp: 1)
-            : '');
+            : num(pf?.sodium));
   }
 
   @override
@@ -4335,6 +4573,10 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
     // Preserve any micronutrients we don't expose as fields.
     final Map<String, double> micros =
         Map<String, double>.from(widget.existing?.nutrients ?? <String, double>{});
+    // Sugars has no field of its own — keep what the label gave us.
+    if (widget.existing == null && (widget.prefill?.sugars ?? 0) > 0) {
+      micros['sugars'] = widget.prefill!.sugars!;
+    }
     final double? fiber = double.tryParse(_fiber.text);
     final double? sodium = double.tryParse(_sodium.text);
     if (fiber != null && fiber > 0) {
@@ -4483,6 +4725,287 @@ InputDecoration _foodDec(Color accent) {
       focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(10),
           borderSide: BorderSide(color: accent)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MY FOODS — pick a saved food, choose a quantity, log it.
+// ═══════════════════════════════════════════════════════════════════════
+
+class _MyFoodsPage extends StatefulWidget {
+  final Color accent;
+  final List<CustomFood> foods;
+  final void Function(List<CustomFood>) onSetFoods;
+  final void Function(CustomFood food, double quantity) onLog;
+  const _MyFoodsPage(
+      {required this.accent,
+      required this.foods,
+      required this.onSetFoods,
+      required this.onLog});
+  @override
+  State<_MyFoodsPage> createState() => _MyFoodsPageState();
+}
+
+class _MyFoodsPageState extends State<_MyFoodsPage> {
+  String _query = '';
+
+  List<CustomFood> get _visible {
+    final String q = _query.toLowerCase().trim();
+    final List<CustomFood> list = widget.foods
+        .where((CustomFood f) => !f.deleted)
+        .where((CustomFood f) =>
+            q.isEmpty || f.name.toLowerCase().contains(q))
+        .toList();
+    list.sort((CustomFood a, CustomFood b) =>
+        a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    return list;
+  }
+
+  void _delete(CustomFood f) {
+    // Tombstone so the deletion syncs to other devices.
+    final CustomFood gone = f.copyWith(
+        deleted: true,
+        updatedAtMs: DateTime.now().millisecondsSinceEpoch);
+    widget.onSetFoods(
+        CustomFoodStore.mergeFoods(widget.foods, <CustomFood>[gone]));
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF2A2A2A),
+        content: Text('Removed "${f.name}" from My Foods.')));
+  }
+
+  Future<void> _pickQuantityAndLog(CustomFood f) async {
+    final double? qty = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _QuantitySheet(accent: widget.accent, food: f),
+    );
+    if (qty == null || !mounted) {
+      return;
+    }
+    widget.onLog(f, qty);
+    Navigator.pop(context); // back to the food log
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF2A2A2A),
+        content: Text('Logged ${f.name}.')));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<CustomFood> items = _visible;
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          title: const Text('My Foods'),
+          foregroundColor: const Color(0xFFEEEEEE)),
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+          child: TextField(
+            autofocus: false,
+            style: const TextStyle(color: Color(0xFFEEEEEE)),
+            onChanged: (String v) => setState(() => _query = v),
+            decoration: _foodDec(widget.accent).copyWith(
+                hintText: 'Search my foods',
+                hintStyle: const TextStyle(color: Color(0xFF666666)),
+                prefixIcon:
+                    Icon(Icons.search_rounded, color: Colors.grey[600])),
+          ),
+        ),
+        if (!CustomFoodStore.isConfigured)
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+                'Sync is off — saved foods stay on this phone until the data token is set up.',
+                style: TextStyle(color: Color(0xFF888866), fontSize: 12)),
+          ),
+        Expanded(
+          child: items.isEmpty
+              ? Center(
+                  child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: Text(
+                      widget.foods.where((CustomFood f) => !f.deleted).isEmpty
+                          ? 'No saved foods yet.\nScan a label or enter a food and it lands here automatically.'
+                          : 'No matches.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                          color: Color(0xFF777777), height: 1.5)),
+                ))
+              : ListView.separated(
+                  itemCount: items.length,
+                  separatorBuilder: (_, _) =>
+                      const Divider(height: 1, color: Color(0xFF1C1C1C)),
+                  itemBuilder: (_, int i) {
+                    final CustomFood f = items[i];
+                    return Dismissible(
+                      key: ValueKey<String>(f.id),
+                      direction: DismissDirection.endToStart,
+                      background: Container(
+                        color: const Color(0xFF3A1A1A),
+                        alignment: Alignment.centerRight,
+                        padding: const EdgeInsets.only(right: 20),
+                        child: const Icon(Icons.delete_outline_rounded,
+                            color: Color(0xFFCC5555)),
+                      ),
+                      onDismissed: (_) => _delete(f),
+                      child: ListTile(
+                        title: Text(f.name,
+                            style: const TextStyle(
+                                color: Color(0xFFEEEEEE),
+                                fontWeight: FontWeight.w600)),
+                        subtitle: Text(
+                            '${f.serving}  ·  ${_trim(f.calories)} cal  ·  '
+                            'P${_trim(f.protein)} F${_trim(f.fat)} C${_trim(f.carbs)}',
+                            style: TextStyle(
+                                color: Colors.grey[600], fontSize: 12)),
+                        trailing: Icon(Icons.add_circle_outline_rounded,
+                            color: widget.accent),
+                        onTap: () => _pickQuantityAndLog(f),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ]),
+    );
+  }
+}
+
+// Quantity chooser for logging a saved food (returns servings, or null).
+class _QuantitySheet extends StatefulWidget {
+  final Color accent;
+  final CustomFood food;
+  const _QuantitySheet({required this.accent, required this.food});
+  @override
+  State<_QuantitySheet> createState() => _QuantitySheetState();
+}
+
+class _QuantitySheetState extends State<_QuantitySheet> {
+  late TextEditingController _qty;
+  @override
+  void initState() {
+    super.initState();
+    _qty = TextEditingController(text: '1');
+  }
+
+  @override
+  void dispose() {
+    _qty.dispose();
+    super.dispose();
+  }
+
+  double get _q => double.tryParse(_qty.text) ?? 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final CustomFood f = widget.food;
+    final double q = _q;
+    final double? grams =
+        f.servingGrams == null ? null : f.servingGrams! * q;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(f.name,
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+            const SizedBox(height: 4),
+            Text('Per ${f.serving}: ${_trim(f.calories)} cal · '
+                'P${_trim(f.protein)} F${_trim(f.fat)} C${_trim(f.carbs)}',
+                style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+            const SizedBox(height: 16),
+            Text('SERVINGS',
+                style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey[600],
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 6),
+            Row(children: [
+              _stepBtn(Icons.remove_rounded, () {
+                final double v = (_q - 1).clamp(0, 9999).toDouble();
+                _qty.text = _fmtQty(v);
+                setState(() {});
+              }),
+              const SizedBox(width: 10),
+              Expanded(
+                child: TextField(
+                  controller: _qty,
+                  textAlign: TextAlign.center,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(
+                      fontSize: 18, color: Color(0xFFEEEEEE)),
+                  decoration: _foodDec(widget.accent),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
+              const SizedBox(width: 10),
+              _stepBtn(Icons.add_rounded, () {
+                _qty.text = _fmtQty(_q + 1);
+                setState(() {});
+              }),
+            ]),
+            const SizedBox(height: 10),
+            Text(
+                'Logs ${_trim(f.calories * q)} cal · '
+                'P${_trim(f.protein * q)} F${_trim(f.fat * q)} C${_trim(f.carbs * q)}'
+                '${grams != null ? ' · ${_trim(grams)} g' : ''}',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: q > 0
+                    ? () => Navigator.pop<double>(context, q)
+                    : null,
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: widget.accent,
+                    foregroundColor: Colors.black,
+                    disabledBackgroundColor: const Color(0xFF333333),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    textStyle: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700)),
+                child: const Text('Log it'),
+              ),
+            ),
+          ]),
+    );
+  }
+
+  String _fmtQty(double v) =>
+      v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(2);
+
+  Widget _stepBtn(IconData icon, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+            color: const Color(0xFF111111),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFF333333))),
+        child: Icon(icon, color: const Color(0xFFCCCCCC)),
+      ),
+    );
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════

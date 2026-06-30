@@ -5,7 +5,7 @@ publish_to: 'none'
 # Version is the single source of truth for the app's version.
 # The publish script bumps this, and the in-app updater compares it
 # against the latest GitHub Release.
-version: 1.6.0+11
+version: 1.7.0+12
 
 environment:
   sdk: ^3.12.2
@@ -23,6 +23,8 @@ dependencies:
 
   # Food journal
   mobile_scanner: ^7.2.0    # barcode scanning via the camera
+  image_picker: ^1.1.2      # capture a Nutrition Facts photo for label OCR
+  google_mlkit_text_recognition: ^0.13.0 # on-device OCR of the label
 
 dev_dependencies:
   flutter_test:
