@@ -8,9 +8,13 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:vibration/vibration.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:health/health.dart';
 import 'updater.dart';
 import 'food.dart';
 import 'custom_foods.dart';
+import 'trainer.dart';
 import 'advisor.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -628,6 +632,36 @@ class AppStorage {
     _write(d);
   }
 
+  static List<RunRecord> getRuns() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('runs')) {
+      return (d['runs'] as List<dynamic>)
+          .map((dynamic e) => RunRecord.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveRuns(List<RunRecord> runs) {
+    final Map<String, dynamic> d = _read();
+    d['runs'] = runs.map((RunRecord r) => r.toJson()).toList();
+    _write(d);
+  }
+
+  static TrainerState getTrainerState() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('trainer')) {
+      return TrainerState.fromJson(d['trainer'] as Map<String, dynamic>);
+    }
+    return const TrainerState();
+  }
+
+  static void saveTrainerState(TrainerState s) {
+    final Map<String, dynamic> d = _read();
+    d['trainer'] = s.toJson();
+    _write(d);
+  }
+
   static List<AdvisorInsight> getInsights() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('insights')) {
@@ -728,6 +762,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<String> _fasted = [];
   List<Meal> _meals = [];
   List<CustomFood> _customFoods = [];
+  List<RunRecord> _runs = [];
+  TrainerState _trainer = const TrainerState();
   List<AdvisorInsight> _insights = [];
   bool _syncingFoods = false;
 
@@ -741,6 +777,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
     _customFoods = AppStorage.getCustomFoods();
+    _runs = AppStorage.getRuns();
+    _trainer = AppStorage.getTrainerState();
     _insights = AppStorage.getInsights();
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
@@ -846,6 +884,20 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _syncCustomFoods();
   }
 
+  void _setRuns(List<RunRecord> r) {
+    setState(() {
+      _runs = r;
+    });
+    AppStorage.saveRuns(r);
+  }
+
+  void _setTrainer(TrainerState s) {
+    setState(() {
+      _trainer = s;
+    });
+    AppStorage.saveTrainerState(s);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -856,6 +908,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _fasted = [];
       _meals = [];
       _customFoods = [];
+      _runs = [];
+      _trainer = const TrainerState();
       _insights = [];
     });
   }
@@ -898,6 +952,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               fasted: _fasted,
               meals: _meals,
               customFoods: _customFoods,
+              runs: _runs,
+              trainer: _trainer,
               insights: _insights,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
@@ -905,6 +961,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               onSetFasted: _setFasted,
               onSetMeals: _setMeals,
               onSetCustomFoods: _setCustomFoods,
+              onSetRuns: _setRuns,
+              onSetTrainer: _setTrainer,
               onSetInsights: _setInsights,
               onDismiss: _dismiss,
               onReset: _resetAll),
@@ -1551,6 +1609,8 @@ class HomeShell extends StatefulWidget {
   final List<String> fasted;
   final List<Meal> meals;
   final List<CustomFood> customFoods;
+  final List<RunRecord> runs;
+  final TrainerState trainer;
   final List<AdvisorInsight> insights;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
@@ -1558,6 +1618,8 @@ class HomeShell extends StatefulWidget {
   final void Function(List<String>) onSetFasted;
   final void Function(List<Meal>) onSetMeals;
   final void Function(List<CustomFood>) onSetCustomFoods;
+  final void Function(List<RunRecord>) onSetRuns;
+  final void Function(TrainerState) onSetTrainer;
   final void Function(List<AdvisorInsight>) onSetInsights;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
@@ -1570,6 +1632,8 @@ class HomeShell extends StatefulWidget {
       required this.fasted,
       required this.meals,
       required this.customFoods,
+      required this.runs,
+      required this.trainer,
       required this.insights,
       required this.onSetCal,
       required this.onSetLogs,
@@ -1577,6 +1641,8 @@ class HomeShell extends StatefulWidget {
       required this.onSetFasted,
       required this.onSetMeals,
       required this.onSetCustomFoods,
+      required this.onSetRuns,
+      required this.onSetTrainer,
       required this.onSetInsights,
       required this.onDismiss,
       required this.onReset});
@@ -1626,6 +1692,14 @@ class _HomeShellState extends State<HomeShell> {
             embedded: true,
             onLogFood: (FoodEntry e) =>
                 widget.onSetFoods(<FoodEntry>[...widget.foods, e])),
+        TrainScreen(
+            accent: accent,
+            cal: widget.cal,
+            logs: widget.logs,
+            runs: widget.runs,
+            trainer: widget.trainer,
+            onSetRuns: widget.onSetRuns,
+            onSetTrainer: widget.onSetTrainer),
         LedgerScreen(
             logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
         SettingsScreen(
@@ -1649,6 +1723,8 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.restaurant_rounded), label: 'FOOD'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.outdoor_grill_rounded), label: 'COOK'),
+            BottomNavigationBarItem(
+                icon: Icon(Icons.directions_run_rounded), label: 'TRAIN'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.list_alt_rounded), label: 'LEDGER'),
             BottomNavigationBarItem(
@@ -6341,6 +6417,1102 @@ class _AdvisorDetailScreen extends StatelessWidget {
             style: const TextStyle(
                 fontSize: 14, color: Color(0xFFDDDDDD), height: 1.6)),
       ]),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 5K TRAINER UI
+//
+// Today's workout off the adaptive ladder, an in-run coach that cues
+// run/walk with vibration + optional speech, manual + Health Connect run
+// logging, and the run history. The plan rung advances/repeats based on how
+// each run actually went (see trainer.dart). A light fueling flag ties run
+// volume to the calorie deficit.
+// ═══════════════════════════════════════════════════════════════════════
+
+String _newRunId() => 'run_${DateTime.now().microsecondsSinceEpoch}';
+
+double _kmToMi(double km) => km * 0.621371;
+
+class TrainScreen extends StatefulWidget {
+  final Color accent;
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<RunRecord> runs;
+  final TrainerState trainer;
+  final void Function(List<RunRecord>) onSetRuns;
+  final void Function(TrainerState) onSetTrainer;
+  const TrainScreen(
+      {super.key,
+      required this.accent,
+      required this.cal,
+      required this.logs,
+      required this.runs,
+      required this.trainer,
+      required this.onSetRuns,
+      required this.onSetTrainer});
+  @override
+  State<TrainScreen> createState() => _TrainScreenState();
+}
+
+class _TrainScreenState extends State<TrainScreen> {
+  Workout get _today => workoutForLevel(widget.trainer.level);
+  String? _coachText;
+  bool _coaching = false;
+
+  // ── AI coaching (reuses the Claude client behind the Food Advisor) ───
+  String _runDigest() {
+    final StringBuffer b = StringBuffer();
+    final Workout w = _today;
+    b.writeln('Plan: Level ${w.level} of $kMaxLevel — "${w.name}".');
+    final List<RunRecord> recent = widget.runs.reversed.take(8).toList();
+    if (recent.isEmpty) {
+      b.writeln('No runs logged yet.');
+    } else {
+      b.writeln('Recent runs (newest first):');
+      for (final RunRecord r in recent) {
+        final String dist = r.distanceKm > 0
+            ? '${_kmToMi(r.distanceKm).toStringAsFixed(2)} mi, '
+                '${_paceMinPerMile(r)} /mi'
+            : 'no distance';
+        b.writeln('- ${r.date}: ${(r.durationSec / 60).round()} min, $dist'
+            '${r.avgHr != null ? ', HR ${r.avgHr!.round()}' : ''}'
+            ', felt ${r.effort}${r.completed ? '' : ', PARTIAL'}');
+      }
+    }
+    if (widget.logs.isNotEmpty) {
+      b.writeln('Latest weight: '
+          '${widget.logs.last.weight.toStringAsFixed(1)} lb.');
+    }
+    b.writeln('Planned daily calorie deficit: ${widget.cal.deficit} kcal.');
+    b.writeln('Runs in the last 7 days: '
+        '${runsThisWeek(widget.runs, DateTime.now())}.');
+    return b.toString();
+  }
+
+  Future<void> _askCoach() async {
+    setState(() => _coaching = true);
+    try {
+      final String text = await Advisor.generate(
+          model: widget.cal.advisorModel, kind: 'run', digest: _runDigest());
+      if (mounted) {
+        setState(() => _coachText = text);
+      }
+    } on AdvisorException catch (e) {
+      if (mounted) {
+        setState(() => _coachText = e.message);
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _coachText = 'Coaching is unavailable right now.');
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _coaching = false);
+      }
+    }
+  }
+
+  String _fmtMin(int seconds) {
+    final int m = seconds ~/ 60;
+    final int s = seconds % 60;
+    return s == 0 ? '${m}m' : '${m}m ${s}s';
+  }
+
+  // ── Record a finished run and adapt the ladder ──────────────────────
+  void _recordRun(RunRecord r, {required bool advance}) {
+    final int before = widget.trainer.level;
+    final int after =
+        advance ? nextLevel(before, r.outcome) : before;
+    widget.onSetRuns(<RunRecord>[...widget.runs, r]);
+    if (after != before) {
+      widget.onSetTrainer(widget.trainer.copyWith(level: after));
+    }
+    if (!mounted) {
+      return;
+    }
+    final String msg = !r.completed
+        ? 'Run saved. Same workout next time — no rush.'
+        : (after != before ? 'Nice. Leveled up to your next workout.' : 'Run logged.');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF2A2A2A), content: Text(msg)));
+  }
+
+  // ── Calibration ─────────────────────────────────────────────────────
+  Future<void> _calibrate() async {
+    final double? minutes = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _CalibrationSheet(accent: widget.accent),
+    );
+    if (minutes == null || !mounted) {
+      return;
+    }
+    final int lvl = startingLevel(minutes);
+    widget.onSetTrainer(
+        widget.trainer.copyWith(level: lvl, calibrated: true));
+  }
+
+  // ── Coached run ─────────────────────────────────────────────────────
+  Future<void> _startCoach() async {
+    final RunOutcome? outcome = await Navigator.of(context).push<RunOutcome>(
+        MaterialPageRoute<RunOutcome>(
+            fullscreenDialog: true,
+            builder: (_) => _CoachScreen(
+                workout: _today,
+                accent: widget.accent,
+                audioCues: widget.trainer.audioCues)));
+    if (outcome == null || !mounted) {
+      return; // stopped early & discarded
+    }
+    _recordRun(
+      RunRecord(
+        id: _newRunId(),
+        date: formatDate(DateTime.now()),
+        level: _today.level,
+        distanceKm: 0,
+        durationSec: _today.totalSeconds,
+        source: 'manual',
+        completed: outcome.completed,
+        effort: outcome.effort.name,
+      ),
+      advance: outcome.completed,
+    );
+  }
+
+  // ── Manual entry ────────────────────────────────────────────────────
+  Future<void> _logManual() async {
+    final RunRecord? r = await showModalBottomSheet<RunRecord>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ManualRunSheet(accent: widget.accent, level: _today.level),
+    );
+    if (r == null || !mounted) {
+      return;
+    }
+    _recordRun(r, advance: r.completed && r.level == _today.level);
+  }
+
+  // ── Health Connect import ───────────────────────────────────────────
+  Future<void> _importHealthConnect() async {
+    showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            Center(child: CircularProgressIndicator(color: widget.accent)));
+    RunRecord? imported;
+    String? error;
+    try {
+      final Health health = Health();
+      await health.configure();
+      final List<HealthDataType> types = <HealthDataType>[
+        HealthDataType.WORKOUT,
+        HealthDataType.HEART_RATE,
+      ];
+      final bool granted = await health.requestAuthorization(types,
+          permissions: <HealthDataAccess>[
+            HealthDataAccess.READ,
+            HealthDataAccess.READ,
+          ]);
+      if (!granted) {
+        error = 'Health Connect permission was denied.';
+      } else {
+        final DateTime now = DateTime.now();
+        final DateTime start = now.subtract(const Duration(days: 3));
+        final List<HealthDataPoint> workouts =
+            await health.getHealthDataFromTypes(
+                startTime: start,
+                endTime: now,
+                types: <HealthDataType>[HealthDataType.WORKOUT]);
+        HealthDataPoint? run;
+        for (final HealthDataPoint p in workouts) {
+          final HealthValue v = p.value;
+          if (v is WorkoutHealthValue &&
+              v.workoutActivityType == HealthWorkoutActivityType.RUNNING) {
+            if (run == null || p.dateFrom.isAfter(run.dateFrom)) {
+              run = p;
+            }
+          }
+        }
+        if (run == null) {
+          error = 'No running workout found in Health Connect (last 3 days).';
+        } else {
+          final WorkoutHealthValue w = run.value as WorkoutHealthValue;
+          final int dur =
+              run.dateTo.difference(run.dateFrom).inSeconds.abs();
+          final double km = (w.totalDistance ?? 0) / 1000.0;
+          final List<HealthDataPoint> hr =
+              await health.getHealthDataFromTypes(
+                  startTime: run.dateFrom,
+                  endTime: run.dateTo,
+                  types: <HealthDataType>[HealthDataType.HEART_RATE]);
+          double? avgHr;
+          if (hr.isNotEmpty) {
+            double sum = 0;
+            int n = 0;
+            for (final HealthDataPoint p in hr) {
+              final HealthValue v = p.value;
+              if (v is NumericHealthValue) {
+                sum += v.numericValue.toDouble();
+                n++;
+              }
+            }
+            if (n > 0) {
+              avgHr = sum / n;
+            }
+          }
+          imported = RunRecord(
+            id: _newRunId(),
+            date: formatDate(run.dateFrom),
+            level: _today.level,
+            distanceKm: km,
+            durationSec: dur,
+            avgHr: avgHr,
+            source: 'healthconnect',
+            completed: true,
+            effort: 'ok',
+          );
+        }
+      }
+    } catch (e) {
+      error = 'Health Connect unavailable on this device.';
+    }
+    if (!mounted) {
+      return;
+    }
+    Navigator.pop(context); // dismiss loader
+    if (imported == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text(error ?? 'Could not import a run.')));
+      return;
+    }
+    final Effort? eff = await _askEffort();
+    if (!mounted) {
+      return;
+    }
+    _recordRun(
+      RunRecord(
+        id: imported.id,
+        date: imported.date,
+        level: imported.level,
+        distanceKm: imported.distanceKm,
+        durationSec: imported.durationSec,
+        avgHr: imported.avgHr,
+        source: imported.source,
+        completed: true,
+        effort: (eff ?? Effort.ok).name,
+      ),
+      advance: true,
+    );
+  }
+
+  Future<Effort?> _askEffort() {
+    return showDialog<Effort>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: kSurface2,
+        title: const Text('How did that run feel?',
+            style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 16)),
+        content: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+          for (final Effort e in Effort.values)
+            ListTile(
+              title: Text(
+                  e == Effort.easy
+                      ? 'Easy — could have kept going'
+                      : e == Effort.ok
+                          ? 'About right'
+                          : 'Hard — a real struggle',
+                  style: const TextStyle(color: Color(0xFFDDDDDD))),
+              onTap: () => Navigator.pop<Effort>(context, e),
+            ),
+        ]),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.trainer.calibrated) {
+      return _calibratePrompt();
+    }
+    final Workout w = _today;
+    final int week = runsThisWeek(widget.runs, DateTime.now());
+    final String? fuel = fuelingFlag(week, widget.cal.deficit.toDouble());
+    final List<RunRecord> history = widget.runs.reversed.toList();
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        children: <Widget>[
+          Row(children: <Widget>[
+            Text('5K TRAINER',
+                style: TextStyle(
+                    color: widget.accent,
+                    fontSize: 13,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w800)),
+            const Spacer(),
+            Text('Level ${w.level} of $kMaxLevel',
+                style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          ]),
+          const SizedBox(height: 14),
+          _todayCard(w),
+          if (Advisor.configured) ...<Widget>[
+            const SizedBox(height: 12),
+            _coachCard(),
+          ],
+          if (fuel != null) ...<Widget>[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFF24210F),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF4A431A))),
+              child: Row(children: <Widget>[
+                const Icon(Icons.local_fire_department_rounded,
+                    color: Color(0xFFCBB047), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text(fuel,
+                        style: const TextStyle(
+                            color: Color(0xFFD9CB8A),
+                            fontSize: 12,
+                            height: 1.4))),
+              ]),
+            ),
+          ],
+          const SizedBox(height: 22),
+          Text('HISTORY',
+              style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          if (history.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Text('No runs yet. Your first one shows up here.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[700])),
+            )
+          else
+            ...history.map(_historyTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _coachCard() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF262626))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Icon(Icons.psychology_rounded, color: widget.accent, size: 18),
+          const SizedBox(width: 8),
+          Text('RUNNING COACH',
+              style: TextStyle(
+                  color: widget.accent,
+                  fontSize: 12,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700)),
+        ]),
+        if (_coachText != null) ...<Widget>[
+          const SizedBox(height: 10),
+          Text(_coachText!,
+              style: const TextStyle(
+                  color: Color(0xFFDDDDDD), fontSize: 14, height: 1.5)),
+        ],
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          height: 44,
+          child: OutlinedButton.icon(
+            onPressed: _coaching ? null : _askCoach,
+            icon: _coaching
+                ? SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: widget.accent))
+                : const Icon(Icons.auto_awesome_rounded, size: 18),
+            label: Text(_coachText == null
+                ? 'Ask your coach'
+                : 'Refresh coaching'),
+            style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFFCCCCCC),
+                side: const BorderSide(color: Color(0xFF333333)),
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12))),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _todayCard(Workout w) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF262626))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text("Today's workout",
+            style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+        const SizedBox(height: 6),
+        Text(w.name,
+            style: const TextStyle(
+                color: Color(0xFFEEEEEE),
+                fontSize: 20,
+                fontWeight: FontWeight.w700)),
+        const SizedBox(height: 6),
+        Text(
+            '5-min warmup · ${_fmtMin(w.runSeconds)} running '
+            'over ${w.runReps} ${w.runReps == 1 ? 'block' : 'blocks'} · '
+            '5-min cooldown  ·  ~${_fmtMin(w.totalSeconds)} total',
+            style: TextStyle(color: Colors.grey[500], fontSize: 12, height: 1.4)),
+        const SizedBox(height: 16),
+        SizedBox(
+          width: double.infinity,
+          height: 52,
+          child: ElevatedButton.icon(
+            onPressed: _startCoach,
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('Start coached run'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: widget.accent,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+                textStyle: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.w700)),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Row(children: <Widget>[
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _importHealthConnect,
+              icon: const Icon(Icons.watch_rounded, size: 18),
+              label: const Text('Import run'),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFCCCCCC),
+                  side: const BorderSide(color: Color(0xFF333333)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _logManual,
+              icon: const Icon(Icons.edit_rounded, size: 18),
+              label: const Text('Log manually'),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFCCCCCC),
+                  side: const BorderSide(color: Color(0xFF333333)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
+            ),
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _historyTile(RunRecord r) {
+    final String dist =
+        r.distanceKm > 0 ? '${_kmToMi(r.distanceKm).toStringAsFixed(2)} mi' : '';
+    final String dur = _fmtMin(r.durationSec);
+    final String pace = r.distanceKm > 0
+        ? '${_paceMinPerMile(r)} /mi'
+        : (r.level > 0 ? 'Level ${r.level}' : '');
+    final List<String> bits = <String>[
+      if (dist.isNotEmpty) dist,
+      dur,
+      if (pace.isNotEmpty) pace,
+      if (r.avgHr != null) '${r.avgHr!.round()} bpm',
+      if (!r.completed) 'partial',
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: <Widget>[
+        Icon(
+            r.source == 'healthconnect'
+                ? Icons.watch_rounded
+                : Icons.directions_run_rounded,
+            size: 18,
+            color: widget.accent),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+            Text(r.date,
+                style: const TextStyle(
+                    color: Color(0xFFDDDDDD),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+            Text(bits.join('  ·  '),
+                style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  String _paceMinPerMile(RunRecord r) {
+    final double mi = _kmToMi(r.distanceKm);
+    if (mi <= 0) {
+      return '—';
+    }
+    final int s = (r.durationSec / mi).round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}';
+  }
+
+  Widget _calibratePrompt() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(Icons.directions_run_rounded,
+                  color: widget.accent, size: 44),
+              const SizedBox(height: 16),
+              const Text('Couch to 5K — tailored to you',
+                  style: TextStyle(
+                      color: Color(0xFFEEEEEE),
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800)),
+              const SizedBox(height: 10),
+              Text(
+                  'A run/walk plan that climbs to a 30-minute run, and adapts '
+                  'to how each run actually goes. First, a quick question to '
+                  'pick your starting point.',
+                  style: TextStyle(
+                      color: Colors.grey[500], fontSize: 14, height: 1.5)),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: 52,
+                child: ElevatedButton(
+                  onPressed: _calibrate,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: widget.accent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  child: const Text('Set my starting point'),
+                ),
+              ),
+            ]),
+      ),
+    );
+  }
+}
+
+// ── Calibration sheet: one question → starting level ──────────────────
+class _CalibrationSheet extends StatefulWidget {
+  final Color accent;
+  const _CalibrationSheet({required this.accent});
+  @override
+  State<_CalibrationSheet> createState() => _CalibrationSheetState();
+}
+
+class _CalibrationSheetState extends State<_CalibrationSheet> {
+  double _minutes = 1;
+  @override
+  Widget build(BuildContext context) {
+    final int lvl = startingLevel(_minutes);
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Text('Where are you now?',
+                style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+            const SizedBox(height: 8),
+            const Text(
+                'Roughly how many minutes can you run without stopping today?',
+                style: TextStyle(color: Color(0xFFBBBBBB), fontSize: 14)),
+            const SizedBox(height: 18),
+            Text(
+                _minutes < 1
+                    ? "Can't run yet"
+                    : '${_minutes.round()} min continuous',
+                style: TextStyle(
+                    color: widget.accent,
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800)),
+            Slider(
+              value: _minutes,
+              min: 0,
+              max: 35,
+              divisions: 35,
+              activeColor: widget.accent,
+              label: '${_minutes.round()} min',
+              onChanged: (double v) => setState(() => _minutes = v),
+            ),
+            const SizedBox(height: 4),
+            Text("We'll start you at: ${workoutForLevel(lvl).name}",
+                style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              height: 50,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop<double>(context, _minutes),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: widget.accent,
+                    foregroundColor: Colors.black,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    textStyle: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w700)),
+                child: const Text('Start training'),
+              ),
+            ),
+          ]),
+    );
+  }
+}
+
+// ── Manual run entry: distance (mi) + time + effort ───────────────────
+class _ManualRunSheet extends StatefulWidget {
+  final Color accent;
+  final int level;
+  const _ManualRunSheet({required this.accent, required this.level});
+  @override
+  State<_ManualRunSheet> createState() => _ManualRunSheetState();
+}
+
+class _ManualRunSheetState extends State<_ManualRunSheet> {
+  final TextEditingController _miles = TextEditingController();
+  final TextEditingController _min = TextEditingController();
+  Effort _effort = Effort.ok;
+  bool _countToPlan = true;
+
+  @override
+  void dispose() {
+    _miles.dispose();
+    _min.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double mins = double.tryParse(_min.text) ?? 0;
+    final bool ok = mins > 0;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Log a run',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              const SizedBox(height: 16),
+              Row(children: <Widget>[
+                Expanded(child: _numField('DISTANCE (mi) — optional', _miles)),
+                const SizedBox(width: 12),
+                Expanded(child: _numField('TIME (min)', _min)),
+              ]),
+              const SizedBox(height: 16),
+              Text('HOW DID IT FEEL?',
+                  style: TextStyle(
+                      color: Colors.grey[600],
+                      fontSize: 11,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Row(
+                  children: Effort.values.map((Effort e) {
+                final bool sel = e == _effort;
+                return Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: GestureDetector(
+                      onTap: () => setState(() => _effort = e),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                            color: sel
+                                ? widget.accent
+                                : const Color(0xFF111111),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: sel
+                                    ? widget.accent
+                                    : const Color(0xFF333333))),
+                        child: Text(
+                            e == Effort.easy
+                                ? 'Easy'
+                                : e == Effort.ok
+                                    ? 'OK'
+                                    : 'Hard',
+                            style: TextStyle(
+                                color: sel
+                                    ? Colors.black
+                                    : const Color(0xFFCCCCCC),
+                                fontWeight: FontWeight.w700)),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList()),
+              const SizedBox(height: 8),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                activeColor: widget.accent,
+                value: _countToPlan,
+                onChanged: (bool? v) =>
+                    setState(() => _countToPlan = v ?? true),
+                title: Text("Count as today's Level ${widget.level} workout",
+                    style: const TextStyle(
+                        color: Color(0xFFCCCCCC), fontSize: 13)),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 50,
+                child: ElevatedButton(
+                  onPressed: ok
+                      ? () {
+                          final double mi =
+                              double.tryParse(_miles.text) ?? 0;
+                          Navigator.pop<RunRecord>(
+                              context,
+                              RunRecord(
+                                id: _newRunId(),
+                                date: formatDate(DateTime.now()),
+                                level: _countToPlan ? widget.level : 0,
+                                distanceKm: mi / 0.621371,
+                                durationSec: (mins * 60).round(),
+                                source: 'manual',
+                                completed: true,
+                                effort: _effort.name,
+                              ));
+                        }
+                      : null,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: widget.accent,
+                      foregroundColor: Colors.black,
+                      disabledBackgroundColor: const Color(0xFF333333),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12)),
+                      textStyle: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w700)),
+                  child: const Text('Save run'),
+                ),
+              ),
+            ]),
+      ),
+    );
+  }
+
+  Widget _numField(String label, TextEditingController c) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+      Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              letterSpacing: 1,
+              fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      TextField(
+          controller: c,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+          decoration: _foodDec(widget.accent),
+          onChanged: (_) => setState(() {})),
+    ]);
+  }
+}
+
+// ── In-run coach: counts down each interval, cues run/walk ────────────
+class _CoachScreen extends StatefulWidget {
+  final Workout workout;
+  final Color accent;
+  final bool audioCues;
+  const _CoachScreen(
+      {required this.workout, required this.accent, required this.audioCues});
+  @override
+  State<_CoachScreen> createState() => _CoachScreenState();
+}
+
+class _CoachScreenState extends State<_CoachScreen> {
+  Timer? _timer;
+  FlutterTts? _tts;
+  int _idx = 0; // current interval
+  int _left = 0; // seconds left in current interval
+  int _elapsed = 0; // total elapsed seconds
+  bool _paused = false;
+  bool _done = false;
+
+  List<RunInterval> get _ivs => widget.workout.intervals;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.audioCues) {
+      _tts = FlutterTts();
+    }
+    _left = _ivs.isNotEmpty ? _ivs.first.seconds : 0;
+    _cue(_ivs.first.kind);
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _tts?.stop();
+    super.dispose();
+  }
+
+  void _tick() {
+    if (_paused || _done) {
+      return;
+    }
+    setState(() {
+      _left--;
+      _elapsed++;
+    });
+    if (_left <= 0) {
+      _advanceInterval();
+    }
+  }
+
+  void _advanceInterval() {
+    if (_idx >= _ivs.length - 1) {
+      _finish();
+      return;
+    }
+    setState(() {
+      _idx++;
+      _left = _ivs[_idx].seconds;
+    });
+    _cue(_ivs[_idx].kind);
+  }
+
+  String _kindLabel(IntervalKind k) {
+    switch (k) {
+      case IntervalKind.warmup:
+        return 'WARM UP';
+      case IntervalKind.run:
+        return 'RUN';
+      case IntervalKind.walk:
+        return 'WALK';
+      case IntervalKind.cooldown:
+        return 'COOL DOWN';
+    }
+  }
+
+  Future<void> _cue(IntervalKind k) async {
+    try {
+      final bool has = (await Vibration.hasVibrator());
+      if (has) {
+        if (k == IntervalKind.run) {
+          Vibration.vibrate(duration: 600);
+        } else {
+          Vibration.vibrate(pattern: <int>[0, 200, 150, 200]);
+        }
+      }
+    } catch (_) {}
+    if (widget.audioCues && _tts != null) {
+      final String phrase = k == IntervalKind.run
+          ? 'Run'
+          : k == IntervalKind.walk
+              ? 'Walk'
+              : k == IntervalKind.warmup
+                  ? 'Warm up'
+                  : 'Cool down';
+      try {
+        await _tts!.speak(phrase);
+      } catch (_) {}
+    }
+  }
+
+  void _finish() {
+    setState(() => _done = true);
+    _timer?.cancel();
+  }
+
+  String _mmss(int s) =>
+      '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+
+  Color _kindColor(IntervalKind k) {
+    if (k == IntervalKind.run) {
+      return widget.accent;
+    }
+    if (k == IntervalKind.walk) {
+      return const Color(0xFF5B8DEF);
+    }
+    return const Color(0xFF888888);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_done) {
+      return _finishView();
+    }
+    final RunInterval cur = _ivs[_idx];
+    final Color c = _kindColor(cur.kind);
+    final RunInterval? next =
+        _idx < _ivs.length - 1 ? _ivs[_idx + 1] : null;
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(children: <Widget>[
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton(
+                onPressed: () => Navigator.pop<RunOutcome>(context, null),
+                child: Text('Stop',
+                    style: TextStyle(color: Colors.grey[500])),
+              ),
+            ),
+            Text('Level ${widget.workout.level}  ·  '
+                'interval ${_idx + 1} of ${_ivs.length}',
+                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+            const Spacer(),
+            Text(_kindLabel(cur.kind),
+                style: TextStyle(
+                    color: c,
+                    fontSize: 40,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 3)),
+            const SizedBox(height: 12),
+            Text(_mmss(_left),
+                style: const TextStyle(
+                    color: Color(0xFFEEEEEE),
+                    fontSize: 78,
+                    fontWeight: FontWeight.w200,
+                    fontFeatures: <FontFeature>[
+                      FontFeature.tabularFigures()
+                    ])),
+            const SizedBox(height: 8),
+            if (next != null)
+              Text('Next: ${_kindLabel(next.kind)} · ${_mmss(next.seconds)}',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+            const Spacer(),
+            Text('Elapsed ${_mmss(_elapsed)} / ${_mmss(widget.workout.totalSeconds)}',
+                style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              height: 56,
+              child: ElevatedButton.icon(
+                onPressed: () => setState(() => _paused = !_paused),
+                icon: Icon(
+                    _paused ? Icons.play_arrow_rounded : Icons.pause_rounded),
+                label: Text(_paused ? 'Resume' : 'Pause'),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        _paused ? widget.accent : const Color(0xFF1E1E1E),
+                    foregroundColor:
+                        _paused ? Colors.black : const Color(0xFFEEEEEE),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14)),
+                    textStyle: const TextStyle(
+                        fontSize: 17, fontWeight: FontWeight.w700)),
+              ),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _finishView() {
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                Icon(Icons.check_circle_rounded,
+                    color: widget.accent, size: 56),
+                const SizedBox(height: 16),
+                const Text('Run complete',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                        color: Color(0xFFEEEEEE),
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                Text('How did that feel? It tunes your next workout.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey[500], fontSize: 14)),
+                const SizedBox(height: 24),
+                for (final Effort e in Effort.values)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: SizedBox(
+                      height: 52,
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop<RunOutcome>(context,
+                            RunOutcome(completed: true, effort: e)),
+                        style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFFEEEEEE),
+                            side: BorderSide(color: widget.accent),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12))),
+                        child: Text(
+                            e == Effort.easy
+                                ? 'Easy — could have kept going'
+                                : e == Effort.ok
+                                    ? 'About right'
+                                    : 'Hard — a real struggle',
+                            style: const TextStyle(fontSize: 15)),
+                      ),
+                    ),
+                  ),
+              ]),
+        ),
+      ),
     );
   }
 }
