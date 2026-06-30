@@ -3429,7 +3429,7 @@ class _FoodScreenState extends State<FoodScreen> {
     ));
   }
 
-  void _openConfirm(FoodTemplate t) {
+  void _openConfirm(FoodTemplate t, {String source = 'barcode'}) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -3445,7 +3445,8 @@ class _FoodScreenState extends State<FoodScreen> {
               date: _date,
               grams: grams,
               servingLabel: label,
-              time: _timeForNew()));
+              time: _timeForNew(),
+              source: source));
           Navigator.pop(context);
         },
       ),
@@ -3467,15 +3468,19 @@ class _FoodScreenState extends State<FoodScreen> {
         accent: _accent,
         existing: existing,
         prefill: prefill,
-        onSave: (FoodEntry e) {
+        onSave: (FoodEntry e, double? servingGrams) {
           if (existing != null) {
+            // Editing a log entry edits that entry in place — no rescale flow.
             _updateEntry(e);
-          } else {
-            _addEntry(e);
-            // Every new hand-entered / label-scanned food becomes reusable.
-            _saveTemplateFromEntry(e, source, prefill?.servingGrams);
+            Navigator.pop(context);
+            return;
           }
-          Navigator.pop(context);
+          // A new food: save it to My Foods (per serving), then open the
+          // grams/servings scaling sheet so the amount eaten needs no math.
+          final CustomFood food =
+              _saveTemplateFromEntry(e, source, servingGrams);
+          Navigator.pop(context); // close the editor
+          _logCustomFood(food);
         },
         onDelete: existing == null
             ? null
@@ -3510,9 +3515,10 @@ class _FoodScreenState extends State<FoodScreen> {
   int get _myFoodsCount =>
       widget.customFoods.where((CustomFood f) => !f.deleted).length;
 
-  /// Save (or update) a logged entry as a reusable My Food. De-dupes on
-  /// name+serving+source so re-scanning the same product updates in place.
-  void _saveTemplateFromEntry(FoodEntry e, String source, double? grams) {
+  /// Save (or update) a food as a reusable My Food and return it. The stored
+  /// macros are PER SERVING. De-dupes on name+serving+source so re-scanning
+  /// the same product updates in place.
+  CustomFood _saveTemplateFromEntry(FoodEntry e, String source, double? grams) {
     final int now = DateTime.now().millisecondsSinceEpoch;
     final String key = '${e.name.toLowerCase().trim()}|'
         '${e.serving.toLowerCase().trim()}|$source';
@@ -3542,6 +3548,37 @@ class _FoodScreenState extends State<FoodScreen> {
     );
     widget.onSetCustomFoods(
         CustomFoodStore.mergeFoods(widget.customFoods, <CustomFood>[food]));
+    return food;
+  }
+
+  /// Log a saved food, scaling live: by grams↔servings if its weight is
+  /// known (same sheet as barcode), otherwise by servings.
+  void _logCustomFood(CustomFood food) {
+    if (food.hasGrams) {
+      _openConfirm(food.toTemplate(), source: food.source);
+    } else {
+      _openServings(food);
+    }
+  }
+
+  void _openServings(CustomFood food) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _QuantitySheet(accent: _accent, food: food),
+    ).then((dynamic qty) {
+      if (qty is double && mounted) {
+        _addEntry(food.toEntry(
+          id: _newId(),
+          date: _date,
+          quantity: qty,
+          time: _timeForNew(),
+        ));
+      }
+    });
   }
 
   void _openMyFoods() {
@@ -3550,13 +3587,9 @@ class _FoodScreenState extends State<FoodScreen> {
         accent: _accent,
         foods: widget.customFoods,
         onSetFoods: widget.onSetCustomFoods,
-        onLog: (CustomFood food, double quantity) {
-          _addEntry(food.toEntry(
-            id: _newId(),
-            date: _date,
-            quantity: quantity,
-            time: _timeForNew(),
-          ));
+        onPick: (CustomFood food) {
+          Navigator.pop(context); // close the My Foods page
+          _logCustomFood(food);
         },
       ),
     ));
@@ -4496,7 +4529,7 @@ class _ManualFoodSheet extends StatefulWidget {
   final Color accent;
   final FoodEntry? existing;
   final LabelParse? prefill; // from a scanned label, for a new entry
-  final void Function(FoodEntry) onSave;
+  final void Function(FoodEntry entry, double? servingGrams) onSave;
   final VoidCallback? onDelete;
   final VoidCallback? onMove;
   final VoidCallback? onCopy;
@@ -4517,6 +4550,7 @@ class _ManualFoodSheet extends StatefulWidget {
 
 class _ManualFoodSheetState extends State<_ManualFoodSheet> {
   late TextEditingController _name, _serving, _cal, _p, _f, _c, _fiber, _sodium;
+  late TextEditingController _servingG;
 
   @override
   void initState() {
@@ -4554,12 +4588,14 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
         text: e != null && (e.nutrients['sodium'] ?? 0) > 0
             ? _trim(e.nutrients['sodium']!, dp: 1)
             : num(pf?.sodium));
+    _servingG = TextEditingController(
+        text: pf?.servingGrams != null ? num(pf!.servingGrams) : '');
   }
 
   @override
   void dispose() {
     for (final TextEditingController c in <TextEditingController>[
-      _name, _serving, _cal, _p, _f, _c, _fiber, _sodium
+      _name, _serving, _cal, _p, _f, _c, _fiber, _sodium, _servingG
     ]) {
       c.dispose();
     }
@@ -4589,15 +4625,19 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
     } else {
       micros.remove('sodium');
     }
-    widget.onSave(widget.buildEntry(
-      _name.text.trim(),
-      _serving.text.trim().isEmpty ? '1 serving' : _serving.text.trim(),
-      double.tryParse(_cal.text) ?? 0,
-      double.tryParse(_p.text) ?? 0,
-      double.tryParse(_f.text) ?? 0,
-      double.tryParse(_c.text) ?? 0,
-      micros,
-    ));
+    final double? servingGrams = double.tryParse(_servingG.text);
+    widget.onSave(
+      widget.buildEntry(
+        _name.text.trim(),
+        _serving.text.trim().isEmpty ? '1 serving' : _serving.text.trim(),
+        double.tryParse(_cal.text) ?? 0,
+        double.tryParse(_p.text) ?? 0,
+        double.tryParse(_f.text) ?? 0,
+        double.tryParse(_c.text) ?? 0,
+        micros,
+      ),
+      (servingGrams != null && servingGrams > 0) ? servingGrams : null,
+    );
   }
 
   @override
@@ -4622,6 +4662,24 @@ class _ManualFoodSheetState extends State<_ManualFoodSheet> {
               const SizedBox(height: 12),
               _field('SERVING (e.g. 1 cup, 100 g)', _serving, text: true),
               const SizedBox(height: 12),
+              _field('WEIGHT OF ONE SERVING (g) — optional', _servingG),
+              if (widget.existing == null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(
+                      'Add the weight and you can log any amount by grams — '
+                      'calories and macros scale automatically.',
+                      style:
+                          TextStyle(color: Colors.grey[600], fontSize: 11)),
+                ),
+              const SizedBox(height: 12),
+              Text('Nutrition per serving',
+                  style: TextStyle(
+                      color: widget.accent,
+                      fontSize: 11,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w700)),
+              const SizedBox(height: 10),
               _field('CALORIES', _cal),
               const SizedBox(height: 12),
               Row(children: [
@@ -4735,12 +4793,12 @@ class _MyFoodsPage extends StatefulWidget {
   final Color accent;
   final List<CustomFood> foods;
   final void Function(List<CustomFood>) onSetFoods;
-  final void Function(CustomFood food, double quantity) onLog;
+  final void Function(CustomFood food) onPick;
   const _MyFoodsPage(
       {required this.accent,
       required this.foods,
       required this.onSetFoods,
-      required this.onLog});
+      required this.onPick});
   @override
   State<_MyFoodsPage> createState() => _MyFoodsPageState();
 }
@@ -4770,25 +4828,6 @@ class _MyFoodsPageState extends State<_MyFoodsPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         backgroundColor: const Color(0xFF2A2A2A),
         content: Text('Removed "${f.name}" from My Foods.')));
-  }
-
-  Future<void> _pickQuantityAndLog(CustomFood f) async {
-    final double? qty = await showModalBottomSheet<double>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: kSurface2,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _QuantitySheet(accent: widget.accent, food: f),
-    );
-    if (qty == null || !mounted) {
-      return;
-    }
-    widget.onLog(f, qty);
-    Navigator.pop(context); // back to the food log
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: const Color(0xFF2A2A2A),
-        content: Text('Logged ${f.name}.')));
   }
 
   @override
@@ -4863,7 +4902,7 @@ class _MyFoodsPageState extends State<_MyFoodsPage> {
                                 color: Colors.grey[600], fontSize: 12)),
                         trailing: Icon(Icons.add_circle_outline_rounded,
                             color: widget.accent),
-                        onTap: () => _pickQuantityAndLog(f),
+                        onTap: () => widget.onPick(f),
                       ),
                     );
                   },
