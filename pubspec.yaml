@@ -5,7 +5,7 @@ publish_to: 'none'
 # Version is the single source of truth for the app's version.
 # The publish script bumps this, and the in-app updater compares it
 # against the latest GitHub Release.
-version: 1.8.0+15
+version: 1.8.1+16
 
 environment:
   sdk: ^3.12.2
@@ -27,7 +27,7 @@ dependencies:
   google_mlkit_text_recognition: ^0.13.0 # on-device OCR of the label
 
   # 5K Trainer
-  vibration: ^2.0.0         # run/walk haptic cues during a coached run
+  vibration: ^3.1.0         # run/walk haptic cues during a coached run
   flutter_tts: ^4.2.0       # optional spoken "run" / "walk" cues
   health: ^11.0.0           # import runs from Android Health Connect
 
