@@ -15,6 +15,7 @@ import 'updater.dart';
 import 'food.dart';
 import 'custom_foods.dart';
 import 'trainer.dart';
+import 'sleep.dart';
 import 'advisor.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -353,7 +354,8 @@ class MacroTargets {
 
 class AdvisorDigest {
   static String build(UserCalibration cal, List<DailyLog> logs,
-      List<FoodEntry> foods, Set<String> fasted, String kind) {
+      List<FoodEntry> foods, Set<String> fasted, String kind,
+      {List<SleepEntry> sleep = const <SleepEntry>[]}) {
     final DateTime now = DateTime.now();
     final String today = formatDate(now);
     final MacroTargets t = MacroTargets.compute(cal, logs, foods, fasted);
@@ -462,6 +464,11 @@ class AdvisorDigest {
         parts.add('FASTED (0 cal)');
       }
       sb.writeln('- ${parts.join(' · ')}');
+    }
+
+    final String sleepLine = sleepDigest(sleep, now);
+    if (sleepLine.isNotEmpty) {
+      sb.writeln(sleepLine);
     }
 
     return sb.toString();
@@ -648,6 +655,22 @@ class AppStorage {
     _write(d);
   }
 
+  static List<SleepEntry> getSleep() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('sleep')) {
+      return (d['sleep'] as List<dynamic>)
+          .map((dynamic e) => SleepEntry.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveSleep(List<SleepEntry> entries) {
+    final Map<String, dynamic> d = _read();
+    d['sleep'] = entries.map((SleepEntry e) => e.toJson()).toList();
+    _write(d);
+  }
+
   static TrainerState getTrainerState() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('trainer')) {
@@ -764,6 +787,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<CustomFood> _customFoods = [];
   List<RunRecord> _runs = [];
   TrainerState _trainer = const TrainerState();
+  List<SleepEntry> _sleep = [];
   List<AdvisorInsight> _insights = [];
   bool _syncingFoods = false;
 
@@ -779,6 +803,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _customFoods = AppStorage.getCustomFoods();
     _runs = AppStorage.getRuns();
     _trainer = AppStorage.getTrainerState();
+    _sleep = AppStorage.getSleep();
     _insights = AppStorage.getInsights();
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
@@ -898,6 +923,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveTrainerState(s);
   }
 
+  void _setSleep(List<SleepEntry> s) {
+    setState(() {
+      _sleep = s;
+    });
+    AppStorage.saveSleep(s);
+  }
+
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
@@ -910,6 +942,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _customFoods = [];
       _runs = [];
       _trainer = const TrainerState();
+      _sleep = [];
       _insights = [];
     });
   }
@@ -954,6 +987,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
               customFoods: _customFoods,
               runs: _runs,
               trainer: _trainer,
+              sleep: _sleep,
               insights: _insights,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
@@ -963,6 +997,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
               onSetCustomFoods: _setCustomFoods,
               onSetRuns: _setRuns,
               onSetTrainer: _setTrainer,
+              onSetSleep: _setSleep,
               onSetInsights: _setInsights,
               onDismiss: _dismiss,
               onReset: _resetAll),
@@ -1611,6 +1646,7 @@ class HomeShell extends StatefulWidget {
   final List<CustomFood> customFoods;
   final List<RunRecord> runs;
   final TrainerState trainer;
+  final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
@@ -1620,6 +1656,7 @@ class HomeShell extends StatefulWidget {
   final void Function(List<CustomFood>) onSetCustomFoods;
   final void Function(List<RunRecord>) onSetRuns;
   final void Function(TrainerState) onSetTrainer;
+  final void Function(List<SleepEntry>) onSetSleep;
   final void Function(List<AdvisorInsight>) onSetInsights;
   final void Function(double) onDismiss;
   final VoidCallback onReset;
@@ -1634,6 +1671,7 @@ class HomeShell extends StatefulWidget {
       required this.customFoods,
       required this.runs,
       required this.trainer,
+      required this.sleep,
       required this.insights,
       required this.onSetCal,
       required this.onSetLogs,
@@ -1643,6 +1681,7 @@ class HomeShell extends StatefulWidget {
       required this.onSetCustomFoods,
       required this.onSetRuns,
       required this.onSetTrainer,
+      required this.onSetSleep,
       required this.onSetInsights,
       required this.onDismiss,
       required this.onReset});
@@ -1669,6 +1708,7 @@ class _HomeShellState extends State<HomeShell> {
             dismissed: widget.dismissed,
             foods: widget.foods,
             fasted: widget.fasted,
+            sleep: widget.sleep,
             insights: widget.insights,
             onSetLogs: widget.onSetLogs,
             onSetInsights: widget.onSetInsights,
@@ -1698,10 +1738,16 @@ class _HomeShellState extends State<HomeShell> {
             logs: widget.logs,
             runs: widget.runs,
             trainer: widget.trainer,
+            sleep: widget.sleep,
             onSetRuns: widget.onSetRuns,
             onSetTrainer: widget.onSetTrainer),
-        LedgerScreen(
-            logs: widget.logs, cal: widget.cal, onSetLogs: widget.onSetLogs),
+        SleepScreen(
+            accent: accent,
+            cal: widget.cal,
+            logs: widget.logs,
+            runs: widget.runs,
+            sleep: widget.sleep,
+            onSetSleep: widget.onSetSleep),
         SettingsScreen(
             cal: widget.cal,
             logs: widget.logs,
@@ -1726,7 +1772,7 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.directions_run_rounded), label: 'TRAIN'),
             BottomNavigationBarItem(
-                icon: Icon(Icons.list_alt_rounded), label: 'LEDGER'),
+                icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.settings_rounded), label: 'SETTINGS'),
           ]),
@@ -1744,6 +1790,7 @@ class DashboardScreen extends StatefulWidget {
   final List<double> dismissed;
   final List<FoodEntry> foods;
   final List<String> fasted;
+  final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<AdvisorInsight>) onSetInsights;
@@ -1755,6 +1802,7 @@ class DashboardScreen extends StatefulWidget {
       required this.dismissed,
       required this.foods,
       required this.fasted,
+      required this.sleep,
       required this.insights,
       required this.onSetLogs,
       required this.onSetInsights,
@@ -1766,6 +1814,16 @@ class DashboardScreen extends StatefulWidget {
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _plateauDismissed = false;
   int _chartRange = 0;
+
+  // Sleep-aware context for a weight jump (null unless it's worth saying).
+  String? get _scaleNoise {
+    if (widget.logs.length < 2) {
+      return null;
+    }
+    final double delta =
+        widget.logs.last.weight - widget.logs[widget.logs.length - 2].weight;
+    return scaleNoiseNote(delta, SleepMath.latest(widget.sleep)?.hours);
+  }
 
   double get _progress {
     return widget.logs.isEmpty
@@ -1920,6 +1978,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: ListView(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 100),
             children: [
+              if (_scaleNoise != null) ...[
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFF14181F),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF243246))),
+                  child: Row(children: [
+                    const Icon(Icons.bedtime_rounded,
+                        color: Color(0xFF7FA8E8), size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                        child: Text(_scaleNoise!,
+                            style: const TextStyle(
+                                color: Color(0xFFB8CBEA),
+                                fontSize: 12,
+                                height: 1.4))),
+                  ]),
+                ),
+              ],
               // Header
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1956,6 +2035,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   logs: widget.logs,
                   foods: widget.foods,
                   fasted: widget.fasted,
+                  sleep: widget.sleep,
                   insights: widget.insights,
                   onSetInsights: widget.onSetInsights,
                   accent: accent),
@@ -2974,6 +3054,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _advisorCard(accent),
           const SizedBox(height: 12),
           UpdateCard(accent: accent),
+          const SizedBox(height: 12),
+          _btn('📒  Weight Ledger', () {
+            Navigator.of(context).push(MaterialPageRoute<void>(
+              builder: (_) => Scaffold(
+                backgroundColor: kBgDeep,
+                appBar: AppBar(
+                    backgroundColor: kBgDeep,
+                    foregroundColor: const Color(0xFFEEEEEE),
+                    title: const Text('Weight Ledger')),
+                body: SafeArea(
+                    child: LedgerScreen(
+                        logs: widget.logs,
+                        cal: widget.cal,
+                        onSetLogs: widget.onSetLogs)),
+              ),
+            ));
+          }),
           const SizedBox(height: 12),
           _btn('📁  Export CSV to Clipboard', _csv),
           const SizedBox(height: 12),
@@ -6155,6 +6252,7 @@ class _AdvisorCard extends StatefulWidget {
   final List<DailyLog> logs;
   final List<FoodEntry> foods;
   final List<String> fasted;
+  final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
   final void Function(List<AdvisorInsight>) onSetInsights;
   final Color accent;
@@ -6163,6 +6261,7 @@ class _AdvisorCard extends StatefulWidget {
       required this.logs,
       required this.foods,
       required this.fasted,
+      required this.sleep,
       required this.insights,
       required this.onSetInsights,
       required this.accent});
@@ -6193,7 +6292,7 @@ class _AdvisorCardState extends State<_AdvisorCard> {
     });
     try {
       final String digest = AdvisorDigest.build(widget.cal, widget.logs,
-          widget.foods, widget.fasted.toSet(), kind);
+          widget.foods, widget.fasted.toSet(), kind, sleep: widget.sleep);
       final String text = await Advisor.generate(
           model: widget.cal.advisorModel, kind: kind, digest: digest);
       if (!mounted) {
@@ -6441,6 +6540,7 @@ class TrainScreen extends StatefulWidget {
   final List<DailyLog> logs;
   final List<RunRecord> runs;
   final TrainerState trainer;
+  final List<SleepEntry> sleep;
   final void Function(List<RunRecord>) onSetRuns;
   final void Function(TrainerState) onSetTrainer;
   const TrainScreen(
@@ -6450,6 +6550,7 @@ class TrainScreen extends StatefulWidget {
       required this.logs,
       required this.runs,
       required this.trainer,
+      required this.sleep,
       required this.onSetRuns,
       required this.onSetTrainer});
   @override
@@ -6488,8 +6589,16 @@ class _TrainScreenState extends State<TrainScreen> {
     b.writeln('Planned daily calorie deficit: ${widget.cal.deficit} kcal.');
     b.writeln('Runs in the last 7 days: '
         '${runsThisWeek(widget.runs, DateTime.now())}.');
+    final String sleep = sleepDigest(widget.sleep, DateTime.now());
+    if (sleep.isNotEmpty) {
+      b.writeln(sleep);
+    }
     return b.toString();
   }
+
+  double? get _lastNightHours => SleepMath.latest(widget.sleep)?.hours;
+  double? get _baselineHours =>
+      SleepMath.baselineHours(widget.sleep, DateTime.now());
 
   Future<void> _askCoach() async {
     setState(() => _coaching = true);
@@ -6764,6 +6873,28 @@ class _TrainScreenState extends State<TrainScreen> {
           ]),
           const SizedBox(height: 14),
           _todayCard(w),
+          if (trainerSleepNote(_lastNightHours, _baselineHours) != null) ...<Widget>[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: const Color(0xFF14181F),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFF243246))),
+              child: Row(children: <Widget>[
+                const Icon(Icons.bedtime_rounded,
+                    color: Color(0xFF7FA8E8), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text(
+                        trainerSleepNote(_lastNightHours, _baselineHours)!,
+                        style: const TextStyle(
+                            color: Color(0xFFB8CBEA),
+                            fontSize: 12,
+                            height: 1.4))),
+              ]),
+            ),
+          ],
           if (Advisor.configured) ...<Widget>[
             const SizedBox(height: 12),
             _coachCard(),
@@ -7512,6 +7643,426 @@ class _CoachScreenState extends State<_CoachScreen> {
                   ),
               ]),
         ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SLEEP UI — imported from Health Connect (Pixel Watch), never manual.
+//
+// When there's data: last night + stages, a transparent readiness read, the
+// 7-day average, and history. When there's none: a quiet prompt. Sleep is
+// purely additive — nothing here feeds the raw weight/TDEE numbers.
+// ═══════════════════════════════════════════════════════════════════════
+
+class SleepScreen extends StatefulWidget {
+  final Color accent;
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<RunRecord> runs;
+  final List<SleepEntry> sleep;
+  final void Function(List<SleepEntry>) onSetSleep;
+  const SleepScreen(
+      {super.key,
+      required this.accent,
+      required this.cal,
+      required this.logs,
+      required this.runs,
+      required this.sleep,
+      required this.onSetSleep});
+  @override
+  State<SleepScreen> createState() => _SleepScreenState();
+}
+
+class _SleepScreenState extends State<SleepScreen> {
+  bool _importing = false;
+
+  SleepEntry? get _last => SleepMath.latest(widget.sleep);
+  double? get _baseline => SleepMath.baselineHours(widget.sleep, DateTime.now());
+
+  String _hm(int minutes) => '${minutes ~/ 60}h ${minutes % 60}m';
+
+  void _merge(List<SleepEntry> imported) {
+    final Map<String, SleepEntry> byDate = <String, SleepEntry>{
+      for (final SleepEntry e in widget.sleep) e.date: e
+    };
+    for (final SleepEntry e in imported) {
+      byDate[e.date] = e;
+    }
+    final List<SleepEntry> list = byDate.values.toList()
+      ..sort((SleepEntry a, SleepEntry b) => b.date.compareTo(a.date));
+    widget.onSetSleep(list);
+  }
+
+  Future<void> _importSleep() async {
+    setState(() => _importing = true);
+    final List<SleepEntry> found = <SleepEntry>[];
+    String? error;
+    try {
+      final Health health = Health();
+      await health.configure();
+      final List<HealthDataType> types = <HealthDataType>[
+        HealthDataType.SLEEP_SESSION,
+        HealthDataType.SLEEP_DEEP,
+        HealthDataType.SLEEP_REM,
+        HealthDataType.SLEEP_LIGHT,
+        HealthDataType.SLEEP_AWAKE,
+        HealthDataType.HEART_RATE,
+      ];
+      final bool granted = await health.requestAuthorization(types,
+          permissions:
+              types.map((_) => HealthDataAccess.READ).toList());
+      if (!granted) {
+        error = 'Health Connect sleep permission was denied.';
+      } else {
+        final DateTime now = DateTime.now();
+        final DateTime start = now.subtract(const Duration(days: 7));
+        final List<HealthDataPoint> all = await health.getHealthDataFromTypes(
+            startTime: start, endTime: now, types: types);
+        final List<HealthDataPoint> sessions = all
+            .where((HealthDataPoint p) =>
+                p.type == HealthDataType.SLEEP_SESSION)
+            .toList();
+        for (final HealthDataPoint s in sessions) {
+          int stageMinutes(HealthDataType t) {
+            int m = 0;
+            for (final HealthDataPoint p in all) {
+              if (p.type == t &&
+                  !p.dateFrom.isBefore(s.dateFrom) &&
+                  !p.dateTo.isAfter(s.dateTo)) {
+                m += p.dateTo.difference(p.dateFrom).inMinutes;
+              }
+            }
+            return m;
+          }
+
+          final int deep = stageMinutes(HealthDataType.SLEEP_DEEP);
+          final int rem = stageMinutes(HealthDataType.SLEEP_REM);
+          final int light = stageMinutes(HealthDataType.SLEEP_LIGHT);
+          final int awake = stageMinutes(HealthDataType.SLEEP_AWAKE);
+          final int sessionMin =
+              s.dateTo.difference(s.dateFrom).inMinutes.abs();
+          final int asleep =
+              (deep + rem + light) > 0 ? (deep + rem + light) : sessionMin;
+          // Average heart rate during the session window.
+          double hrSum = 0;
+          int hrN = 0;
+          for (final HealthDataPoint p in all) {
+            if (p.type == HealthDataType.HEART_RATE &&
+                !p.dateFrom.isBefore(s.dateFrom) &&
+                !p.dateTo.isAfter(s.dateTo)) {
+              final HealthValue v = p.value;
+              if (v is NumericHealthValue) {
+                hrSum += v.numericValue.toDouble();
+                hrN++;
+              }
+            }
+          }
+          String hhmm(DateTime d) =>
+              '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+          found.add(SleepEntry(
+            id: 'sl_${s.dateFrom.millisecondsSinceEpoch}',
+            date: formatDate(s.dateTo),
+            asleepMinutes: asleep,
+            deepMin: deep > 0 ? deep : null,
+            remMin: rem > 0 ? rem : null,
+            lightMin: light > 0 ? light : null,
+            awakeMin: awake > 0 ? awake : null,
+            avgHr: hrN > 0 ? hrSum / hrN : null,
+            bedTime: hhmm(s.dateFrom),
+            wakeTime: hhmm(s.dateTo),
+          ));
+        }
+        if (found.isEmpty) {
+          error = 'No sleep found in Health Connect (last 7 days). '
+              'Did you wear the watch overnight?';
+        }
+      }
+    } catch (e) {
+      error = 'Health Connect unavailable on this device.';
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() => _importing = false);
+    if (found.isNotEmpty) {
+      _merge(found);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text('Imported ${found.length} '
+              'night${found.length == 1 ? '' : 's'} of sleep.')));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text(error ?? 'Nothing to import.')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.sleep.isEmpty) {
+      return _emptyState();
+    }
+    final SleepEntry last = _last!;
+    final double? avg7 =
+        SleepMath.averageHours(widget.sleep, DateTime.now(), 7);
+    final Readiness? readiness = computeReadiness(
+      lastNightHours: last.hours,
+      baselineHours: _baseline,
+      runsLast7: runsThisWeek(widget.runs, DateTime.now()),
+      deficit: widget.cal.deficit,
+    );
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+        children: <Widget>[
+          Row(children: <Widget>[
+            Text('SLEEP',
+                style: TextStyle(
+                    color: widget.accent,
+                    fontSize: 13,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w800)),
+            const Spacer(),
+            if (avg7 != null)
+              Text('7-day avg ${avg7.toStringAsFixed(1)}h',
+                  style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          ]),
+          const SizedBox(height: 14),
+          _lastNightCard(last),
+          if (readiness != null) ...<Widget>[
+            const SizedBox(height: 12),
+            _readinessCard(readiness),
+          ],
+          const SizedBox(height: 12),
+          _importButton(),
+          const SizedBox(height: 22),
+          Text('HISTORY',
+              style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700)),
+          const SizedBox(height: 8),
+          ...widget.sleep.map(_historyTile),
+        ],
+      ),
+    );
+  }
+
+  Widget _lastNightCard(SleepEntry e) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF262626))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text('Last night · ${e.date}',
+            style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+        const SizedBox(height: 6),
+        Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: <Widget>[
+          Text(e.hours.toStringAsFixed(1),
+              style: const TextStyle(
+                  color: Color(0xFFEEEEEE),
+                  fontSize: 40,
+                  fontWeight: FontWeight.w800)),
+          const SizedBox(width: 4),
+          const Padding(
+              padding: EdgeInsets.only(bottom: 6),
+              child: Text('hours asleep',
+                  style: TextStyle(color: Color(0xFF888888), fontSize: 13))),
+          const Spacer(),
+          if (e.bedTime.isNotEmpty)
+            Text('${e.bedTime} → ${e.wakeTime}',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+        ]),
+        if (e.hasStages) ...<Widget>[
+          const SizedBox(height: 14),
+          _stagesBar(e),
+          const SizedBox(height: 8),
+          Wrap(spacing: 14, runSpacing: 4, children: <Widget>[
+            _stageKey('Deep', e.deepMin ?? 0, const Color(0xFF3D5AFE)),
+            _stageKey('REM', e.remMin ?? 0, const Color(0xFF7C4DFF)),
+            _stageKey('Light', e.lightMin ?? 0, const Color(0xFF5B8DEF)),
+            if ((e.awakeMin ?? 0) > 0)
+              _stageKey('Awake', e.awakeMin ?? 0, const Color(0xFF555555)),
+          ]),
+        ],
+        if (e.avgHr != null) ...<Widget>[
+          const SizedBox(height: 10),
+          Row(children: <Widget>[
+            const Icon(Icons.favorite_rounded,
+                color: Color(0xFFCC5555), size: 15),
+            const SizedBox(width: 6),
+            Text('${e.avgHr!.round()} bpm overnight',
+                style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          ]),
+        ],
+      ]),
+    );
+  }
+
+  Widget _stagesBar(SleepEntry e) {
+    final int deep = e.deepMin ?? 0;
+    final int rem = e.remMin ?? 0;
+    final int light = e.lightMin ?? 0;
+    final int awake = e.awakeMin ?? 0;
+    final int total = deep + rem + light + awake;
+    if (total == 0) {
+      return const SizedBox.shrink();
+    }
+    Widget seg(int m, Color c) =>
+        m == 0 ? const SizedBox.shrink() : Expanded(flex: m, child: Container(color: c));
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: SizedBox(
+        height: 14,
+        child: Row(children: <Widget>[
+          seg(deep, const Color(0xFF3D5AFE)),
+          seg(rem, const Color(0xFF7C4DFF)),
+          seg(light, const Color(0xFF5B8DEF)),
+          seg(awake, const Color(0xFF555555)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _stageKey(String label, int minutes, Color c) {
+    return Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+      Container(width: 9, height: 9,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+      const SizedBox(width: 5),
+      Text('$label ${_hm(minutes)}',
+          style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+    ]);
+  }
+
+  Widget _readinessCard(Readiness r) {
+    final Color c = r.score >= 75
+        ? const Color(0xFF4CAF7D)
+        : (r.score >= 50 ? const Color(0xFFCBB047) : const Color(0xFFCC6B5A));
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF262626))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Text('READINESS',
+              style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Text('${r.score}',
+              style: TextStyle(
+                  color: c, fontSize: 22, fontWeight: FontWeight.w800)),
+          const SizedBox(width: 6),
+          Text(r.label,
+              style: TextStyle(
+                  color: c, fontSize: 13, fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 8),
+        ...r.factors.map((String f) => Padding(
+              padding: const EdgeInsets.only(top: 3),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                Text('· ',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                Expanded(
+                    child: Text(f,
+                        style: TextStyle(
+                            color: Colors.grey[500],
+                            fontSize: 12,
+                            height: 1.4))),
+              ]),
+            )),
+      ]),
+    );
+  }
+
+  Widget _importButton() {
+    return SizedBox(
+      width: double.infinity,
+      height: 48,
+      child: OutlinedButton.icon(
+        onPressed: _importing ? null : _importSleep,
+        icon: _importing
+            ? SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: widget.accent))
+            : const Icon(Icons.sync_rounded, size: 18),
+        label: const Text('Import sleep from Health Connect'),
+        style: OutlinedButton.styleFrom(
+            foregroundColor: const Color(0xFFCCCCCC),
+            side: const BorderSide(color: Color(0xFF333333)),
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+      ),
+    );
+  }
+
+  Widget _historyTile(SleepEntry e) {
+    final List<String> bits = <String>[
+      '${e.hours.toStringAsFixed(1)}h',
+      if (e.hasStages) 'deep ${_hm(e.deepMin ?? 0)}',
+      if (e.avgHr != null) '${e.avgHr!.round()} bpm',
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: <Widget>[
+        Icon(Icons.bedtime_rounded, size: 18, color: widget.accent),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+            Text(e.date,
+                style: const TextStyle(
+                    color: Color(0xFFDDDDDD),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600)),
+            Text(bits.join('  ·  '),
+                style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _emptyState() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Icon(Icons.bedtime_rounded, color: widget.accent, size: 44),
+              const SizedBox(height: 16),
+              const Text('Sleep',
+                  style: TextStyle(
+                      color: Color(0xFFEEEEEE),
+                      fontSize: 24,
+                      fontWeight: FontWeight.w800)),
+              const SizedBox(height: 10),
+              Text(
+                  'Wear your Pixel Watch to bed and your sleep imports here — '
+                  'duration, stages, and overnight heart rate. It feeds your '
+                  'readiness, the coach, and explains odd scale jumps.\n\n'
+                  'No watch on a given night? That night just stays blank — '
+                  'nothing else in the app is affected.',
+                  style: TextStyle(
+                      color: Colors.grey[500], fontSize: 14, height: 1.5)),
+              const SizedBox(height: 24),
+              _importButton(),
+            ]),
       ),
     );
   }

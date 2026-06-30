@@ -8,6 +8,7 @@
     <!-- Needed to import runs from Health Connect (Pixel Watch / Fitbit) -->
     <uses-permission android:name="android.permission.health.READ_EXERCISE"/>
     <uses-permission android:name="android.permission.health.READ_HEART_RATE"/>
+    <uses-permission android:name="android.permission.health.READ_SLEEP"/>
     <application
         android:label="BodyComp"
         android:name="${applicationName}"
