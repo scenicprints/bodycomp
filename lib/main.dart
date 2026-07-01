@@ -7017,6 +7017,35 @@ class _TrainScreenState extends State<TrainScreen> {
     if (chosen == null || !mounted) {
       return;
     }
+    final String date = formatDate(chosen.from);
+    // If a coached run WITHOUT stats already exists for this day, this import
+    // is the same run — enrich it instead of logging a duplicate.
+    final int existingIdx = widget.runs.indexWhere((RunRecord r) =>
+        r.date == date && r.distanceKm <= 0 && r.source != 'healthconnect');
+    if (existingIdx >= 0) {
+      final RunRecord ex = widget.runs[existingIdx];
+      final RunRecord merged = RunRecord(
+        id: ex.id,
+        date: ex.date,
+        level: ex.level,
+        distanceKm: chosen.distanceKm,
+        durationSec: chosen.durationSec > 0 ? chosen.durationSec : ex.durationSec,
+        avgHr: chosen.avgHr,
+        calories: chosen.calories,
+        source: 'healthconnect',
+        completed: ex.completed,
+        effort: ex.effort,
+      );
+      widget.onSetRuns(<RunRecord>[
+        for (final RunRecord r in widget.runs) r.id == ex.id ? merged : r
+      ]);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            backgroundColor: Color(0xFF2A2A2A),
+            content: Text('Added distance, pace & heart rate to your run.')));
+      }
+      return;
+    }
     final Effort? eff = await _askEffort();
     if (!mounted) {
       return;
@@ -7024,7 +7053,7 @@ class _TrainScreenState extends State<TrainScreen> {
     _recordRun(
       RunRecord(
         id: _newRunId(),
-        date: formatDate(chosen.from),
+        date: date,
         level: _today.level,
         distanceKm: chosen.distanceKm,
         durationSec: chosen.durationSec,
@@ -7295,28 +7324,67 @@ class _TrainScreenState extends State<TrainScreen> {
       if (r.calories != null) '${r.calories!.round()} cal',
       if (!r.completed) 'partial',
     ];
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(children: <Widget>[
-        Icon(
-            r.source == 'healthconnect'
-                ? Icons.watch_rounded
-                : Icons.directions_run_rounded,
-            size: 18,
-            color: widget.accent),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-            Text(r.date,
-                style: const TextStyle(
-                    color: Color(0xFFDDDDDD),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600)),
-            Text(bits.join('  ·  '),
-                style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+    return Dismissible(
+      key: ValueKey<String>('run_${r.id}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        color: const Color(0xFF3A1A1A),
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        child: const Icon(Icons.delete_outline_rounded,
+            color: Color(0xFFCC5555)),
+      ),
+      onDismissed: (_) => _deleteRun(r),
+      child: InkWell(
+        onTap: () => _showRunDetail(r),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(children: <Widget>[
+            Icon(
+                r.source == 'healthconnect'
+                    ? Icons.watch_rounded
+                    : Icons.directions_run_rounded,
+                size: 18,
+                color: widget.accent),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(r.date,
+                        style: const TextStyle(
+                            color: Color(0xFFDDDDDD),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                    Text(bits.join('  ·  '),
+                        style:
+                            TextStyle(color: Colors.grey[600], fontSize: 12)),
+                  ]),
+            ),
+            Icon(Icons.chevron_right_rounded,
+                size: 18, color: Colors.grey[700]),
           ]),
         ),
-      ]),
+      ),
+    );
+  }
+
+  void _deleteRun(RunRecord r) {
+    widget.onSetRuns(
+        widget.runs.where((RunRecord x) => x.id != r.id).toList());
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A), content: Text('Run deleted.')));
+    }
+  }
+
+  void _showRunDetail(RunRecord r) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _RunDetailSheet(accent: widget.accent, run: r),
     );
   }
 
@@ -8617,9 +8685,15 @@ class _WorkoutPickerSheet extends StatelessWidget {
                   const Divider(height: 1, color: Color(0xFF1C1C1C)),
               itemBuilder: (_, int i) {
                 final _WorkoutOpt o = options[i];
-                final String mi = o.distanceKm > 0
-                    ? '${(o.distanceKm * 0.621371).toStringAsFixed(2)} mi  ·  '
-                    : '';
+                final double miVal = o.distanceKm * 0.621371;
+                final String mi =
+                    miVal > 0 ? '${miVal.toStringAsFixed(2)} mi  ·  ' : '';
+                String pace = '';
+                if (miVal > 0) {
+                  final int s = (o.durationSec / miVal).round();
+                  pace =
+                      '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')}/mi  ·  ';
+                }
                 return ListTile(
                   leading:
                       Icon(Icons.directions_run_rounded, color: accent),
@@ -8628,7 +8702,7 @@ class _WorkoutPickerSheet extends StatelessWidget {
                           color: Color(0xFFEEEEEE),
                           fontWeight: FontWeight.w600)),
                   subtitle: Text(
-                      '$mi${when(o.from)}${o.avgHr != null ? "  ·  ${o.avgHr!.round()} bpm" : ""}',
+                      '$mi$pace${when(o.from)}${o.avgHr != null ? "  ·  ${o.avgHr!.round()} bpm" : ""}',
                       style: TextStyle(color: Colors.grey[600], fontSize: 12)),
                   onTap: () => Navigator.pop<_WorkoutOpt>(context, o),
                 );
@@ -8638,6 +8712,92 @@ class _WorkoutPickerSheet extends StatelessWidget {
           const SizedBox(height: 8),
         ]),
       ),
+    );
+  }
+}
+
+// ── Run detail: full stats for a logged/imported run ────────────────
+class _RunDetailSheet extends StatelessWidget {
+  final Color accent;
+  final RunRecord run;
+  const _RunDetailSheet({required this.accent, required this.run});
+
+  @override
+  Widget build(BuildContext context) {
+    final RunRecord r = run;
+    final double mi = r.distanceKm * 0.621371;
+    String pace() {
+      if (mi <= 0) {
+        return '—';
+      }
+      final int s = (r.durationSec / mi).round();
+      return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')} /mi';
+    }
+
+    final String dur =
+        '${r.durationSec ~/ 60}m ${(r.durationSec % 60).toString().padLeft(2, '0')}s';
+    final String effort = r.effort.isEmpty
+        ? '—'
+        : (r.effort == 'ok'
+            ? 'OK'
+            : '${r.effort[0].toUpperCase()}${r.effort.substring(1)}');
+    final List<List<String>> rows = <List<String>>[
+      <String>['Date', r.date],
+      if (r.level > 0) <String>['Plan level', '${r.level}'],
+      if (mi > 0) <String>['Distance', '${mi.toStringAsFixed(2)} mi'],
+      <String>['Duration', dur],
+      if (mi > 0) <String>['Pace', pace()],
+      if (r.avgHr != null) <String>['Avg heart rate', '${r.avgHr!.round()} bpm'],
+      if (r.calories != null) <String>['Calories', '${r.calories!.round()} cal'],
+      <String>['Felt', effort],
+      <String>['Source', r.source == 'healthconnect' ? 'From watch' : 'Logged'],
+    ];
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewPadding.bottom + 24),
+      child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            Row(children: <Widget>[
+              Icon(Icons.directions_run_rounded, color: accent),
+              const SizedBox(width: 8),
+              Text('Run detail',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: accent)),
+            ]),
+            const SizedBox(height: 8),
+            if (!r.completed)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('Partial — not completed',
+                    style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+              ),
+            const SizedBox(height: 8),
+            ...rows.map((List<String> kv) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 7),
+                  child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: <Widget>[
+                        Text(kv[0],
+                            style: TextStyle(
+                                color: Colors.grey[500], fontSize: 14)),
+                        Text(kv[1],
+                            style: const TextStyle(
+                                color: Color(0xFFEEEEEE),
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600)),
+                      ]),
+                )),
+            const SizedBox(height: 8),
+            Text('Swipe a run left in the list to delete it.',
+                style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+          ]),
     );
   }
 }
