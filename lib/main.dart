@@ -6812,6 +6812,7 @@ class _TrainScreenState extends State<TrainScreen> {
     bool granted = false;
     int rawWorkouts = 0;
     int usableWorkouts = 0;
+    int hrCount = 0, stepCount = 0, distCount = 0;
     String? exception;
     try {
       final Health health = Health();
@@ -6843,6 +6844,22 @@ class _TrainScreenState extends State<TrainScreen> {
             startTime: start,
             endTime: now,
             types: <HealthDataType>[HealthDataType.HEART_RATE]);
+      } catch (_) {}
+      hrCount = hrPts.length;
+      // Diagnostic probes: what OTHER exercise-adjacent data is readable?
+      try {
+        stepCount = (await health.getHealthDataFromTypes(
+                startTime: start,
+                endTime: now,
+                types: <HealthDataType>[HealthDataType.STEPS]))
+            .length;
+      } catch (_) {}
+      try {
+        distCount = (await health.getHealthDataFromTypes(
+                startTime: start,
+                endTime: now,
+                types: <HealthDataType>[HealthDataType.DISTANCE_DELTA]))
+            .length;
       } catch (_) {}
       double? avgHrIn(DateTime a, DateTime b) {
         double sum = 0;
@@ -6896,10 +6913,14 @@ class _TrainScreenState extends State<TrainScreen> {
               style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 16)),
           content: SelectableText(
             'Permission granted: ${granted ? "yes" : "no"}\n'
-            'Exercise records Health Connect returned: $rawWorkouts\n'
-            'Usable (≥60s): $usableWorkouts\n'
+            'Last 7 days, records Health Connect returned:\n'
+            '  • Workouts: $rawWorkouts\n'
+            '  • Heart rate: $hrCount\n'
+            '  • Steps: $stepCount\n'
+            '  • Distance: $distCount\n'
             '${exception != null ? "Error: $exception\n" : ""}'
-            '\n${rawWorkouts == 0 ? "Health Connect returned no exercise records. If your run shows in the Health Connect app but this says 0, it's a read bug — screenshot this. Otherwise Google Health may not be sharing Exercise yet." : "Records came back but none were usable."}',
+            '\nScreenshot this. If heart-rate/steps/distance are >0 but '
+            'workouts is 0, I can rebuild your run from those signals.',
             style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 13),
           ),
           actions: <Widget>[
