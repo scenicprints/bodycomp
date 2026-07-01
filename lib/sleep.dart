@@ -21,6 +21,11 @@ class SleepEntry {
   final int? lightMin;
   final int? awakeMin;
   final double? avgHr; // overnight average heart rate, if recorded
+  // Recovery vitals (overnight), when Health Connect has them.
+  final double? restingHr;
+  final double? hrv; // heart-rate variability (ms)
+  final double? respiratoryRate; // breaths/min
+  final double? skinTemp; // °C delta or absolute, as provided
   final String bedTime; // 'HH:mm' for display (may be empty)
   final String wakeTime; // 'HH:mm' for display (may be empty)
   final String source; // 'healthconnect'
@@ -34,6 +39,10 @@ class SleepEntry {
     this.lightMin,
     this.awakeMin,
     this.avgHr,
+    this.restingHr,
+    this.hrv,
+    this.respiratoryRate,
+    this.skinTemp,
     this.bedTime = '',
     this.wakeTime = '',
     this.source = 'healthconnect',
@@ -53,6 +62,10 @@ class SleepEntry {
         if (lightMin != null) 'lightMin': lightMin,
         if (awakeMin != null) 'awakeMin': awakeMin,
         if (avgHr != null) 'avgHr': avgHr,
+        if (restingHr != null) 'restingHr': restingHr,
+        if (hrv != null) 'hrv': hrv,
+        if (respiratoryRate != null) 'respiratoryRate': respiratoryRate,
+        if (skinTemp != null) 'skinTemp': skinTemp,
         if (bedTime.isNotEmpty) 'bedTime': bedTime,
         if (wakeTime.isNotEmpty) 'wakeTime': wakeTime,
         'source': source,
@@ -67,6 +80,10 @@ class SleepEntry {
         lightMin: (j['lightMin'] as num?)?.toInt(),
         awakeMin: (j['awakeMin'] as num?)?.toInt(),
         avgHr: (j['avgHr'] as num?)?.toDouble(),
+        restingHr: (j['restingHr'] as num?)?.toDouble(),
+        hrv: (j['hrv'] as num?)?.toDouble(),
+        respiratoryRate: (j['respiratoryRate'] as num?)?.toDouble(),
+        skinTemp: (j['skinTemp'] as num?)?.toDouble(),
         bedTime: (j['bedTime'] as String?) ?? '',
         wakeTime: (j['wakeTime'] as String?) ?? '',
         source: (j['source'] as String?) ?? 'healthconnect',
@@ -109,14 +126,30 @@ class SleepMath {
 
   /// The user's own sleep norm — a 14-day average. Needs ≥3 nights to be
   /// meaningful; returns null otherwise (so we never compare to noise).
-  static double? baselineHours(List<SleepEntry> entries, DateTime today) {
-    final List<SleepEntry> w = _within(entries, today, 14);
-    if (w.length < 3) {
+  static double? baselineHours(List<SleepEntry> entries, DateTime today) =>
+      _baseline(entries, today, (SleepEntry e) => e.hours);
+
+  /// 14-day average of restingHr, over nights that recorded it (≥3 needed).
+  static double? baselineRestingHr(List<SleepEntry> entries, DateTime today) =>
+      _baseline(entries, today, (SleepEntry e) => e.restingHr);
+
+  /// 14-day average of HRV, over nights that recorded it (≥3 needed).
+  static double? baselineHrv(List<SleepEntry> entries, DateTime today) =>
+      _baseline(entries, today, (SleepEntry e) => e.hrv);
+
+  static double? _baseline(List<SleepEntry> entries, DateTime today,
+      double? Function(SleepEntry) sel) {
+    final List<double> vals = <double>[];
+    for (final SleepEntry e in _within(entries, today, 14)) {
+      final double? v = sel(e);
+      if (v != null && v > 0) {
+        vals.add(v);
+      }
+    }
+    if (vals.length < 3) {
       return null;
     }
-    final double total =
-        w.fold(0.0, (double s, SleepEntry e) => s + e.hours);
-    return total / w.length;
+    return vals.reduce((double a, double b) => a + b) / vals.length;
   }
 }
 
@@ -140,6 +173,10 @@ Readiness? computeReadiness({
   required double? baselineHours,
   required int runsLast7,
   required int deficit,
+  double? restingHr,
+  double? baselineRestingHr,
+  double? hrv,
+  double? baselineHrv,
 }) {
   if (lastNightHours == null) {
     return null;
@@ -173,6 +210,26 @@ Readiness? computeReadiness({
   if (deficit >= 700) {
     score -= 10;
     factors.add('Steep ${deficit}-kcal deficit taxes recovery (−10)');
+  }
+  // Resting heart rate elevated vs your own norm = under-recovered.
+  if (restingHr != null && baselineRestingHr != null) {
+    final double up = restingHr - baselineRestingHr;
+    if (up >= 3) {
+      final int pen = (up * 2).round().clamp(0, 15);
+      score -= pen;
+      factors.add('Resting HR ${restingHr.round()} vs your '
+          '${baselineRestingHr.round()} norm (−$pen)');
+    }
+  }
+  // HRV below your own norm = under-recovered.
+  if (hrv != null && baselineHrv != null && baselineHrv > 0) {
+    final double drop = (baselineHrv - hrv) / baselineHrv;
+    if (drop >= 0.10) {
+      final int pen = (drop * 40).round().clamp(0, 15);
+      score -= pen;
+      factors.add('HRV ${hrv.round()}ms below your '
+          '${baselineHrv.round()}ms norm (−$pen)');
+    }
   }
 
   score = score.clamp(0, 100);
@@ -235,6 +292,24 @@ String sleepDigest(List<SleepEntry> entries, DateTime today) {
     b.write(', 7-day average ${avg.toStringAsFixed(1)}h');
   }
   b.write('.');
+  // Recovery vitals vs the user's own norm, when recorded.
+  final List<String> vitals = <String>[];
+  if (last.restingHr != null) {
+    final double? base = SleepMath.baselineRestingHr(entries, today);
+    vitals.add('resting HR ${last.restingHr!.round()}'
+        '${base != null ? " (norm ${base.round()})" : ""}');
+  }
+  if (last.hrv != null) {
+    final double? base = SleepMath.baselineHrv(entries, today);
+    vitals.add('HRV ${last.hrv!.round()}ms'
+        '${base != null ? " (norm ${base.round()})" : ""}');
+  }
+  if (last.respiratoryRate != null) {
+    vitals.add('respiratory rate ${last.respiratoryRate!.toStringAsFixed(1)}/min');
+  }
+  if (vitals.isNotEmpty) {
+    b.write(' Recovery: ${vitals.join(', ')}.');
+  }
   return b.toString();
 }
 

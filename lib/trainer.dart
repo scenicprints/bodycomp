@@ -198,6 +198,7 @@ class RunRecord {
   final double distanceKm;
   final int durationSec;
   final double? avgHr;
+  final double? calories; // kcal burned, when Health Connect provides it
   final String source; // 'healthconnect' | 'manual'
   final bool completed;
   final String effort; // Effort.name
@@ -209,6 +210,7 @@ class RunRecord {
     required this.distanceKm,
     required this.durationSec,
     this.avgHr,
+    this.calories,
     this.source = 'manual',
     this.completed = true,
     this.effort = 'ok',
@@ -239,6 +241,7 @@ class RunRecord {
         'distanceKm': distanceKm,
         'durationSec': durationSec,
         if (avgHr != null) 'avgHr': avgHr,
+        if (calories != null) 'calories': calories,
         'source': source,
         'completed': completed,
         'effort': effort,
@@ -251,6 +254,7 @@ class RunRecord {
         distanceKm: (j['distanceKm'] as num?)?.toDouble() ?? 0,
         durationSec: (j['durationSec'] as num?)?.toInt() ?? 0,
         avgHr: (j['avgHr'] as num?)?.toDouble(),
+        calories: (j['calories'] as num?)?.toDouble(),
         source: (j['source'] as String?) ?? 'manual',
         completed: j['completed'] != false,
         effort: (j['effort'] as String?) ?? 'ok',

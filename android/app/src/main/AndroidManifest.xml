@@ -13,6 +13,14 @@
          itself won't read back from Google Health via Health Connect. -->
     <uses-permission android:name="android.permission.health.READ_DISTANCE"/>
     <uses-permission android:name="android.permission.health.READ_STEPS"/>
+    <!-- Recovery vitals → readiness + AI coach. -->
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE"/>
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE_VARIABILITY"/>
+    <uses-permission android:name="android.permission.health.READ_RESPIRATORY_RATE"/>
+    <uses-permission android:name="android.permission.health.READ_SKIN_TEMPERATURE"/>
+    <!-- Activity extras → richer run detail. -->
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED"/>
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED"/>
     <application
         android:label="BodyComp"
         android:name="${applicationName}"
