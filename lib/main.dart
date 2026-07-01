@@ -6811,7 +6811,6 @@ class _TrainScreenState extends State<TrainScreen> {
     // Diagnostics so a blind failure can still be understood from the phone.
     bool granted = false;
     int rawWorkouts = 0;
-    int usableWorkouts = 0;
     int hrCount = 0, stepCount = 0, distCount = 0;
     String? exception;
     try {
@@ -6819,14 +6818,17 @@ class _TrainScreenState extends State<TrainScreen> {
       await health.configure();
       // Ask for exercise (workout) read on its own — do NOT couple it to
       // heart-rate, so a HR permission gap can't wipe the workout results.
-      granted = await health.requestAuthorization(
-          <HealthDataType>[HealthDataType.WORKOUT],
-          permissions: <HealthDataAccess>[HealthDataAccess.READ]);
-      try {
-        await health.requestAuthorization(
-            <HealthDataType>[HealthDataType.HEART_RATE],
-            permissions: <HealthDataAccess>[HealthDataAccess.READ]);
-      } catch (_) {}
+      // Request read for workouts, heart rate, distance, and steps — distance
+      // is what lets us reconstruct a run when the workout-session read fails.
+      final List<HealthDataType> reqTypes = <HealthDataType>[
+        HealthDataType.WORKOUT,
+        HealthDataType.HEART_RATE,
+        HealthDataType.DISTANCE_DELTA,
+        HealthDataType.STEPS,
+      ];
+      granted = await health.requestAuthorization(reqTypes,
+          permissions:
+              reqTypes.map((_) => HealthDataAccess.READ).toList());
 
       final DateTime now = DateTime.now();
       final DateTime start = now.subtract(const Duration(days: 7));
@@ -6854,13 +6856,14 @@ class _TrainScreenState extends State<TrainScreen> {
                 types: <HealthDataType>[HealthDataType.STEPS]))
             .length;
       } catch (_) {}
+      List<HealthDataPoint> distPts = <HealthDataPoint>[];
       try {
-        distCount = (await health.getHealthDataFromTypes(
-                startTime: start,
-                endTime: now,
-                types: <HealthDataType>[HealthDataType.DISTANCE_DELTA]))
-            .length;
+        distPts = await health.getHealthDataFromTypes(
+            startTime: start,
+            endTime: now,
+            types: <HealthDataType>[HealthDataType.DISTANCE_DELTA]);
       } catch (_) {}
+      distCount = distPts.length;
       double? avgHrIn(DateTime a, DateTime b) {
         double sum = 0;
         int n = 0;
@@ -6887,7 +6890,6 @@ class _TrainScreenState extends State<TrainScreen> {
             : 'Workout';
         final double km =
             v is WorkoutHealthValue ? (v.totalDistance ?? 0) / 1000.0 : 0;
-        usableWorkouts++;
         opts.add(_WorkoutOpt(
           from: p.dateFrom,
           label: label,
@@ -6895,6 +6897,48 @@ class _TrainScreenState extends State<TrainScreen> {
           distanceKm: km,
           avgHr: avgHrIn(p.dateFrom, p.dateTo),
         ));
+      }
+      // FALLBACK: the workout-session read is a known dead spot for Google
+      // Health data, but the raw distance stream reads fine. Rebuild activity
+      // windows from it — split on gaps > 10 min — and pull pace + HR.
+      if (opts.isEmpty && distPts.isNotEmpty) {
+        distPts.sort((HealthDataPoint a, HealthDataPoint b) =>
+            a.dateFrom.compareTo(b.dateFrom));
+        final List<List<HealthDataPoint>> groups = <List<HealthDataPoint>>[];
+        for (final HealthDataPoint p in distPts) {
+          if (groups.isEmpty ||
+              p.dateFrom.difference(groups.last.last.dateTo).inMinutes.abs() >
+                  10) {
+            groups.add(<HealthDataPoint>[p]);
+          } else {
+            groups.last.add(p);
+          }
+        }
+        for (final List<HealthDataPoint> g in groups) {
+          final DateTime from = g.first.dateFrom;
+          final DateTime to = g.last.dateTo;
+          final int durSec = to.difference(from).inSeconds.abs();
+          if (durSec < 300) {
+            continue; // ignore windows under 5 min
+          }
+          double meters = 0;
+          for (final HealthDataPoint p in g) {
+            final HealthValue v = p.value;
+            if (v is NumericHealthValue) {
+              meters += v.numericValue.toDouble();
+            }
+          }
+          if (meters < 200) {
+            continue; // ignore near-stationary windows
+          }
+          opts.add(_WorkoutOpt(
+            from: from,
+            label: 'Activity',
+            durationSec: durSec,
+            distanceKm: meters / 1000.0,
+            avgHr: avgHrIn(from, to),
+          ));
+        }
       }
       opts.sort((_WorkoutOpt a, _WorkoutOpt b) => b.from.compareTo(a.from));
     } catch (e) {
