@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.health.READ_EXERCISE"/>
     <uses-permission android:name="android.permission.health.READ_HEART_RATE"/>
     <uses-permission android:name="android.permission.health.READ_SLEEP"/>
+    <!-- Distance + steps: used to reconstruct a run when the workout session
+         itself won't read back from Google Health via Health Connect. -->
+    <uses-permission android:name="android.permission.health.READ_DISTANCE"/>
+    <uses-permission android:name="android.permission.health.READ_STEPS"/>
     <application
         android:label="BodyComp"
         android:name="${applicationName}"
