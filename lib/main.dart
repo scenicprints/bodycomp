@@ -6808,83 +6808,107 @@ class _TrainScreenState extends State<TrainScreen> {
         builder: (_) =>
             Center(child: CircularProgressIndicator(color: widget.accent)));
     final List<_WorkoutOpt> opts = <_WorkoutOpt>[];
-    String? error;
+    // Diagnostics so a blind failure can still be understood from the phone.
+    bool granted = false;
+    int rawWorkouts = 0;
+    int usableWorkouts = 0;
+    String? exception;
     try {
       final Health health = Health();
       await health.configure();
-      final List<HealthDataType> types = <HealthDataType>[
-        HealthDataType.WORKOUT,
-        HealthDataType.HEART_RATE,
-      ];
-      final bool granted = await health.requestAuthorization(types,
-          permissions: <HealthDataAccess>[
-            HealthDataAccess.READ,
-            HealthDataAccess.READ,
-          ]);
-      if (!granted) {
-        error = 'Health Connect permission was denied.';
-      } else {
-        final DateTime now = DateTime.now();
-        final DateTime start = now.subtract(const Duration(days: 7));
-        final List<HealthDataPoint> all = await health.getHealthDataFromTypes(
-            startTime: start, endTime: now, types: types);
-        final List<HealthDataPoint> workouts = all
-            .where((HealthDataPoint p) => p.type == HealthDataType.WORKOUT)
-            .toList();
-        final List<HealthDataPoint> hrPts = all
-            .where((HealthDataPoint p) => p.type == HealthDataType.HEART_RATE)
-            .toList();
-        double? avgHrIn(DateTime a, DateTime b) {
-          double sum = 0;
-          int n = 0;
-          for (final HealthDataPoint p in hrPts) {
-            if (!p.dateFrom.isBefore(a) && !p.dateTo.isAfter(b)) {
-              final HealthValue v = p.value;
-              if (v is NumericHealthValue) {
-                sum += v.numericValue.toDouble();
-                n++;
-              }
+      // Ask for exercise (workout) read on its own — do NOT couple it to
+      // heart-rate, so a HR permission gap can't wipe the workout results.
+      granted = await health.requestAuthorization(
+          <HealthDataType>[HealthDataType.WORKOUT],
+          permissions: <HealthDataAccess>[HealthDataAccess.READ]);
+      try {
+        await health.requestAuthorization(
+            <HealthDataType>[HealthDataType.HEART_RATE],
+            permissions: <HealthDataAccess>[HealthDataAccess.READ]);
+      } catch (_) {}
+
+      final DateTime now = DateTime.now();
+      final DateTime start = now.subtract(const Duration(days: 7));
+      // Query workouts ALONE.
+      final List<HealthDataPoint> workouts =
+          await health.getHealthDataFromTypes(
+              startTime: start,
+              endTime: now,
+              types: <HealthDataType>[HealthDataType.WORKOUT]);
+      rawWorkouts = workouts.length;
+      // Heart rate is best-effort and must never block the import.
+      List<HealthDataPoint> hrPts = <HealthDataPoint>[];
+      try {
+        hrPts = await health.getHealthDataFromTypes(
+            startTime: start,
+            endTime: now,
+            types: <HealthDataType>[HealthDataType.HEART_RATE]);
+      } catch (_) {}
+      double? avgHrIn(DateTime a, DateTime b) {
+        double sum = 0;
+        int n = 0;
+        for (final HealthDataPoint p in hrPts) {
+          if (!p.dateFrom.isBefore(a) && !p.dateTo.isAfter(b)) {
+            final HealthValue v = p.value;
+            if (v is NumericHealthValue) {
+              sum += v.numericValue.toDouble();
+              n++;
             }
           }
-          return n > 0 ? sum / n : null;
         }
-
-        for (final HealthDataPoint p in workouts) {
-          final HealthValue v = p.value;
-          if (v is! WorkoutHealthValue) {
-            continue;
-          }
-          final int dur = p.dateTo.difference(p.dateFrom).inSeconds.abs();
-          if (dur < 60) {
-            continue; // skip trivial blips
-          }
-          opts.add(_WorkoutOpt(
-            from: p.dateFrom,
-            label: _prettyWorkout(v.workoutActivityType),
-            durationSec: dur,
-            distanceKm: (v.totalDistance ?? 0) / 1000.0,
-            avgHr: avgHrIn(p.dateFrom, p.dateTo),
-          ));
-        }
-        opts.sort((_WorkoutOpt a, _WorkoutOpt b) => b.from.compareTo(a.from));
-        if (opts.isEmpty) {
-          error = workouts.isEmpty
-              ? 'No workouts in Health Connect (last 7 days). In Google '
-                  'Health → Health Connect, turn on Exercise sharing.'
-              : 'Found ${workouts.length} workout(s) but none with usable data.';
-        }
+        return n > 0 ? sum / n : null;
       }
+
+      for (final HealthDataPoint p in workouts) {
+        final HealthValue v = p.value;
+        final int dur = p.dateTo.difference(p.dateFrom).inSeconds.abs();
+        if (dur < 60) {
+          continue; // skip trivial blips
+        }
+        final String label = v is WorkoutHealthValue
+            ? _prettyWorkout(v.workoutActivityType)
+            : 'Workout';
+        final double km =
+            v is WorkoutHealthValue ? (v.totalDistance ?? 0) / 1000.0 : 0;
+        usableWorkouts++;
+        opts.add(_WorkoutOpt(
+          from: p.dateFrom,
+          label: label,
+          durationSec: dur,
+          distanceKm: km,
+          avgHr: avgHrIn(p.dateFrom, p.dateTo),
+        ));
+      }
+      opts.sort((_WorkoutOpt a, _WorkoutOpt b) => b.from.compareTo(a.from));
     } catch (e) {
-      error = 'Health Connect unavailable on this device.';
+      exception = e.toString();
     }
     if (!mounted) {
       return;
     }
     Navigator.pop(context); // dismiss loader
     if (opts.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          backgroundColor: const Color(0xFF2A2A2A),
-          content: Text(error ?? 'Could not import a run.')));
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: kSurface2,
+          title: const Text('Run import — diagnostics',
+              style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 16)),
+          content: SelectableText(
+            'Permission granted: ${granted ? "yes" : "no"}\n'
+            'Exercise records Health Connect returned: $rawWorkouts\n'
+            'Usable (≥60s): $usableWorkouts\n'
+            '${exception != null ? "Error: $exception\n" : ""}'
+            '\n${rawWorkouts == 0 ? "Health Connect returned no exercise records. If your run shows in the Health Connect app but this says 0, it's a read bug — screenshot this. Otherwise Google Health may not be sharing Exercise yet." : "Records came back but none were usable."}',
+            style: const TextStyle(color: Color(0xFFCCCCCC), fontSize: 13),
+          ),
+          actions: <Widget>[
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('OK')),
+          ],
+        ),
+      );
       return;
     }
     final _WorkoutOpt? chosen = await showModalBottomSheet<_WorkoutOpt>(
