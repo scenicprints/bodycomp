@@ -5,7 +5,7 @@ publish_to: 'none'
 # Version is the single source of truth for the app's version.
 # The publish script bumps this, and the in-app updater compares it
 # against the latest GitHub Release.
-version: 1.9.4+21
+version: 1.9.5+22
 
 environment:
   sdk: ^3.12.2
@@ -29,7 +29,7 @@ dependencies:
   # 5K Trainer
   vibration: ^3.1.0         # run/walk haptic cues during a coached run
   flutter_tts: ^4.2.0       # optional spoken "run" / "walk" cues
-  health: ^11.0.0           # import runs from Android Health Connect
+  health: ^13.0.0           # import runs from Android Health Connect
 
 dev_dependencies:
   flutter_test:
