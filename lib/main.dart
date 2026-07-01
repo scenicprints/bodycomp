@@ -494,11 +494,16 @@ class AdvisorDigest {
     }
 
     // Readiness — the same transparent read shown on the Sleep tab.
+    final SleepEntry? lastSleep = SleepMath.latest(sleep);
     final Readiness? readiness = computeReadiness(
-      lastNightHours: SleepMath.latest(sleep)?.hours,
+      lastNightHours: lastSleep?.hours,
       baselineHours: SleepMath.baselineHours(sleep, now),
       runsLast7: runsThisWeek(runs, now),
       deficit: cal.deficit,
+      restingHr: lastSleep?.restingHr,
+      baselineRestingHr: SleepMath.baselineRestingHr(sleep, now),
+      hrv: lastSleep?.hrv,
+      baselineHrv: SleepMath.baselineHrv(sleep, now),
     );
     if (readiness != null) {
       sb.writeln(
@@ -6825,6 +6830,7 @@ class _TrainScreenState extends State<TrainScreen> {
         HealthDataType.HEART_RATE,
         HealthDataType.DISTANCE_DELTA,
         HealthDataType.STEPS,
+        HealthDataType.ACTIVE_ENERGY_BURNED,
       ];
       granted = await health.requestAuthorization(reqTypes,
           permissions:
@@ -6864,6 +6870,28 @@ class _TrainScreenState extends State<TrainScreen> {
             types: <HealthDataType>[HealthDataType.DISTANCE_DELTA]);
       } catch (_) {}
       distCount = distPts.length;
+      List<HealthDataPoint> calPts = <HealthDataPoint>[];
+      try {
+        calPts = await health.getHealthDataFromTypes(
+            startTime: start,
+            endTime: now,
+            types: <HealthDataType>[HealthDataType.ACTIVE_ENERGY_BURNED]);
+      } catch (_) {}
+      double? caloriesIn(DateTime a, DateTime b) {
+        double sum = 0;
+        int n = 0;
+        for (final HealthDataPoint p in calPts) {
+          if (!p.dateFrom.isBefore(a) && !p.dateTo.isAfter(b)) {
+            final HealthValue v = p.value;
+            if (v is NumericHealthValue) {
+              sum += v.numericValue.toDouble();
+              n++;
+            }
+          }
+        }
+        return n > 0 ? sum : null;
+      }
+
       double? avgHrIn(DateTime a, DateTime b) {
         double sum = 0;
         int n = 0;
@@ -6896,6 +6924,7 @@ class _TrainScreenState extends State<TrainScreen> {
           durationSec: dur,
           distanceKm: km,
           avgHr: avgHrIn(p.dateFrom, p.dateTo),
+          calories: caloriesIn(p.dateFrom, p.dateTo),
         ));
       }
       // FALLBACK: the workout-session read is a known dead spot for Google
@@ -6937,6 +6966,7 @@ class _TrainScreenState extends State<TrainScreen> {
             durationSec: durSec,
             distanceKm: meters / 1000.0,
             avgHr: avgHrIn(from, to),
+            calories: caloriesIn(from, to),
           ));
         }
       }
@@ -6999,6 +7029,7 @@ class _TrainScreenState extends State<TrainScreen> {
         distanceKm: chosen.distanceKm,
         durationSec: chosen.durationSec,
         avgHr: chosen.avgHr,
+        calories: chosen.calories,
         source: 'healthconnect',
         completed: true,
         effort: (eff ?? Effort.ok).name,
@@ -7261,6 +7292,7 @@ class _TrainScreenState extends State<TrainScreen> {
       dur,
       if (pace.isNotEmpty) pace,
       if (r.avgHr != null) '${r.avgHr!.round()} bpm',
+      if (r.calories != null) '${r.calories!.round()} cal',
       if (!r.completed) 'partial',
     ];
     return Padding(
@@ -7893,6 +7925,9 @@ class _SleepScreenState extends State<SleepScreen> {
         HealthDataType.SLEEP_LIGHT,
         HealthDataType.SLEEP_AWAKE,
         HealthDataType.HEART_RATE,
+        HealthDataType.RESTING_HEART_RATE,
+        HealthDataType.HEART_RATE_VARIABILITY_RMSSD,
+        HealthDataType.RESPIRATORY_RATE,
       ];
       final bool granted = await health.requestAuthorization(types,
           permissions:
@@ -7943,6 +7978,27 @@ class _SleepScreenState extends State<SleepScreen> {
               }
             }
           }
+          // Overnight recovery vitals — averaged over the night (± a couple
+          // hours, since watches often finalise these near wake time).
+          double? avgVital(HealthDataType t) {
+            final DateTime a = s.dateFrom.subtract(const Duration(hours: 1));
+            final DateTime b = s.dateTo.add(const Duration(hours: 3));
+            double sum = 0;
+            int n = 0;
+            for (final HealthDataPoint p in all) {
+              if (p.type == t &&
+                  !p.dateFrom.isBefore(a) &&
+                  !p.dateTo.isAfter(b)) {
+                final HealthValue v = p.value;
+                if (v is NumericHealthValue) {
+                  sum += v.numericValue.toDouble();
+                  n++;
+                }
+              }
+            }
+            return n > 0 ? sum / n : null;
+          }
+
           String hhmm(DateTime d) =>
               '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
           found.add(SleepEntry(
@@ -7954,6 +8010,9 @@ class _SleepScreenState extends State<SleepScreen> {
             lightMin: light > 0 ? light : null,
             awakeMin: awake > 0 ? awake : null,
             avgHr: hrN > 0 ? hrSum / hrN : null,
+            restingHr: avgVital(HealthDataType.RESTING_HEART_RATE),
+            hrv: avgVital(HealthDataType.HEART_RATE_VARIABILITY_RMSSD),
+            respiratoryRate: avgVital(HealthDataType.RESPIRATORY_RATE),
             bedTime: hhmm(s.dateFrom),
             wakeTime: hhmm(s.dateTo),
           ));
@@ -7996,6 +8055,11 @@ class _SleepScreenState extends State<SleepScreen> {
       baselineHours: _baseline,
       runsLast7: runsThisWeek(widget.runs, DateTime.now()),
       deficit: widget.cal.deficit,
+      restingHr: last.restingHr,
+      baselineRestingHr:
+          SleepMath.baselineRestingHr(widget.sleep, DateTime.now()),
+      hrv: last.hrv,
+      baselineHrv: SleepMath.baselineHrv(widget.sleep, DateTime.now()),
     );
     return SafeArea(
       child: ListView(
@@ -8086,8 +8150,31 @@ class _SleepScreenState extends State<SleepScreen> {
                 style: TextStyle(color: Colors.grey[500], fontSize: 12)),
           ]),
         ],
+        if (e.restingHr != null || e.hrv != null || e.respiratoryRate != null)
+          ...<Widget>[
+            const SizedBox(height: 8),
+            Wrap(spacing: 14, runSpacing: 4, children: <Widget>[
+              if (e.restingHr != null)
+                _vital('Resting HR', '${e.restingHr!.round()} bpm'),
+              if (e.hrv != null) _vital('HRV', '${e.hrv!.round()} ms'),
+              if (e.respiratoryRate != null)
+                _vital('Resp', '${e.respiratoryRate!.toStringAsFixed(1)}/min'),
+            ]),
+          ],
       ]),
     );
+  }
+
+  Widget _vital(String label, String value) {
+    return Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+      Text('$label ',
+          style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+      Text(value,
+          style: const TextStyle(
+              color: Color(0xFFCCCCCC),
+              fontSize: 12,
+              fontWeight: FontWeight.w600)),
+    ]);
   }
 
   Widget _stagesBar(SleepEntry e) {
@@ -8482,12 +8569,14 @@ class _WorkoutOpt {
   final int durationSec;
   final double distanceKm;
   final double? avgHr;
+  final double? calories;
   const _WorkoutOpt(
       {required this.from,
       required this.label,
       required this.durationSec,
       required this.distanceKm,
-      this.avgHr});
+      this.avgHr,
+      this.calories});
 }
 
 String _prettyWorkout(HealthWorkoutActivityType t) {

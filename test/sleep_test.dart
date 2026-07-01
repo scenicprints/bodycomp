@@ -94,6 +94,63 @@ void main() {
     });
   });
 
+  group('Readiness — recovery vitals', () {
+    test('elevated resting HR and low HRV vs baseline lower the score', () {
+      final Readiness r = computeReadiness(
+        lastNightHours: 7.5,
+        baselineHours: 7.5,
+        runsLast7: 0,
+        deficit: 400,
+        restingHr: 60,
+        baselineRestingHr: 52, // +8 bpm → −15 (capped)
+        hrv: 40,
+        baselineHrv: 60, // 33% below → −13
+      )!;
+      expect(r.score, 72); // 100 − 15 (resting HR) − 13 (HRV)
+      expect(r.factors.any((String f) => f.contains('Resting HR')), isTrue);
+      expect(r.factors.any((String f) => f.contains('HRV')), isTrue);
+    });
+
+    test('normal resting HR and HRV do not deduct', () {
+      final Readiness r = computeReadiness(
+        lastNightHours: 7.5,
+        baselineHours: 7.5,
+        runsLast7: 0,
+        deficit: 400,
+        restingHr: 52,
+        baselineRestingHr: 52,
+        hrv: 60,
+        baselineHrv: 60,
+      )!;
+      expect(r.score, 100);
+    });
+  });
+
+  group('Recovery baselines + digest', () {
+    SleepEntry v(String date, {double? rhr, double? hrv}) => SleepEntry(
+        id: date, date: date, asleepMinutes: 450, restingHr: rhr, hrv: hrv);
+
+    test('baselineRestingHr averages recorded nights (≥3)', () {
+      final List<SleepEntry> e = <SleepEntry>[
+        v('2026-06-29', rhr: 50),
+        v('2026-06-28', rhr: 52),
+        v('2026-06-27', rhr: 54),
+      ];
+      expect(SleepMath.baselineRestingHr(e, today), 52);
+      expect(
+          SleepMath.baselineRestingHr(<SleepEntry>[v('2026-06-29', rhr: 50)],
+              today),
+          isNull);
+    });
+
+    test('digest mentions recovery vitals when present', () {
+      final String d = sleepDigest(
+          <SleepEntry>[v('2026-06-29', rhr: 51, hrv: 58)], today);
+      expect(d, contains('resting HR 51'));
+      expect(d, contains('HRV 58'));
+    });
+  });
+
   group('Trainer reaction', () {
     test('stays quiet without sleep', () {
       expect(trainerSleepNote(null, 7.5), isNull);
