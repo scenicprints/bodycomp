@@ -48,51 +48,30 @@ void main() {
     });
   });
 
-  group('Adaptive progression', () {
-    test('finishing comfortably advances one rung', () {
-      expect(nextLevel(3, const RunOutcome(completed: true, effort: Effort.ok)),
-          4);
+  group('Adaptive leveling from HR vs resting', () {
+    test('a controlled run (HR near resting) advances one rung', () {
+      // resting 55, run 120 → reserve 65 (≤70) → advance
+      expect(assessLevel(3, avgHr: 120, restingHr: 55), 4);
     });
 
-    test('an easy run with low HR skips ahead two', () {
-      expect(
-          nextLevel(
-              3,
-              const RunOutcome(
-                  completed: true,
-                  effort: Effort.easy,
-                  avgHrFraction: 0.65)),
-          5);
+    test('a grind (HR far above resting) drops one rung', () {
+      // resting 55, run 170 → reserve 115 (≥110) → drop
+      expect(assessLevel(3, avgHr: 170, restingHr: 55), 2);
     });
 
-    test('easy but high HR only advances one (not a real breeze)', () {
-      expect(
-          nextLevel(
-              3,
-              const RunOutcome(
-                  completed: true,
-                  effort: Effort.easy,
-                  avgHrFraction: 0.9)),
-          4);
+    test('a solid run in between holds', () {
+      // resting 55, run 145 → reserve 90 → hold
+      expect(assessLevel(3, avgHr: 145, restingHr: 55), 3);
     });
 
-    test('a hard run repeats the same rung', () {
-      expect(
-          nextLevel(5, const RunOutcome(completed: true, effort: Effort.hard)),
-          5);
+    test('no heart rate or no resting baseline never moves the level', () {
+      expect(assessLevel(3, avgHr: null, restingHr: 55), 3);
+      expect(assessLevel(3, avgHr: 120, restingHr: null), 3);
     });
 
-    test('an abandoned run repeats the same rung', () {
-      expect(
-          nextLevel(5, const RunOutcome(completed: false, effort: Effort.ok)),
-          5);
-    });
-
-    test('never climbs past the top rung', () {
-      expect(
-          nextLevel(kMaxLevel,
-              const RunOutcome(completed: true, effort: Effort.easy)),
-          kMaxLevel);
+    test('never climbs past the top or below 1', () {
+      expect(assessLevel(kMaxLevel, avgHr: 100, restingHr: 55), kMaxLevel);
+      expect(assessLevel(1, avgHr: 175, restingHr: 55), 1);
     });
   });
 

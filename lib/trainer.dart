@@ -154,20 +154,28 @@ class RunOutcome {
       {required this.completed, this.effort = Effort.ok, this.avgHrFraction});
 }
 
-/// Decide the next rung given the current one and how the run went.
-/// - Didn't finish, or it felt hard → **repeat** the same level.
-/// - Finished and it felt easy (and HR wasn't high) → **skip ahead** two.
-/// - Otherwise → advance one.
-/// Never climbs past the top rung.
-int nextLevel(int current, RunOutcome o) {
+/// Adapt the plan rung from a run's ACTUAL heart rate, judged against the
+/// user's own resting HR (their personal floor) — no age or max-HR needed.
+/// Effort = how far the run's average HR sat above resting:
+/// - controlled (≤ +70 bpm)  → **advance** one rung
+/// - a grind    (≥ +110 bpm) → **drop** one rung
+/// - solid (in between)      → **hold**
+/// Returns [current] unchanged when we have no HR or no resting baseline, so
+/// a coached run with no watch data never moves the level on its own — which
+/// is what stops the old "ticks up on every press" drift.
+int assessLevel(int current, {double? avgHr, double? restingHr}) {
   final int cur = current.clamp(1, kMaxLevel);
-  if (!o.completed || o.effort == Effort.hard) {
+  if (avgHr == null || restingHr == null || restingHr <= 0) {
     return cur;
   }
-  final bool breezed = o.effort == Effort.easy &&
-      (o.avgHrFraction == null || o.avgHrFraction! < 0.8);
-  final int step = breezed ? 2 : 1;
-  return (cur + step).clamp(1, kMaxLevel);
+  final double reserve = avgHr - restingHr;
+  if (reserve <= 70) {
+    return (cur + 1).clamp(1, kMaxLevel);
+  }
+  if (reserve >= 110) {
+    return (cur - 1).clamp(1, kMaxLevel);
+  }
+  return cur;
 }
 
 /// Heart-rate-derived effort, when we have it (max HR ≈ 220 − age).

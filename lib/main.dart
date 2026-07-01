@@ -365,6 +365,14 @@ class AdvisorDigest {
     final Map<String, DailyLog> logByDate = <String, DailyLog>{
       for (final DailyLog l in logs) l.date: l
     };
+    // Per-day sleep + runs, so the coach can correlate across domains.
+    final Map<String, SleepEntry> sleepByDate = <String, SleepEntry>{
+      for (final SleepEntry e in sleep) e.date: e
+    };
+    final Map<String, List<RunRecord>> runsByDate = <String, List<RunRecord>>{};
+    for (final RunRecord r in runs) {
+      (runsByDate[r.date] ??= <RunRecord>[]).add(r);
+    }
     final double tdee = logs.isEmpty
         ? 0
         : MathEngine.activeTdee(logs, cal.activityMult,
@@ -400,6 +408,26 @@ class AdvisorDigest {
         sb.writeln(
             'WEIGHT CHANGE last ~30d: ${c30 >= 0 ? '+' : ''}${c30.toStringAsFixed(1)} lb.');
       }
+      // Body-composition OUTCOME trends — lean vs fat mass — over ~30d.
+      double? metricChange(double Function(DailyLog) sel, int days) {
+        final String cutoff = formatDate(now.subtract(Duration(days: days)));
+        final List<DailyLog> older =
+            logs.where((DailyLog l) => l.date.compareTo(cutoff) <= 0).toList();
+        return older.isEmpty ? null : sel(last) - sel(older.last);
+      }
+
+      final double? leanC = metricChange((DailyLog l) => l.lbm, 30);
+      final double? fatC =
+          metricChange((DailyLog l) => l.weight * l.bf, 30);
+      if (leanC != null) {
+        sb.writeln('LEAN MASS CHANGE last ~30d: '
+            '${leanC >= 0 ? '+' : ''}${leanC.toStringAsFixed(1)} lb '
+            '(the muscle outcome — if this is holding/rising, recomp is working).');
+      }
+      if (fatC != null) {
+        sb.writeln('FAT MASS CHANGE last ~30d: '
+            '${fatC >= 0 ? '+' : ''}${fatC.toStringAsFixed(1)} lb.');
+      }
       final DateTime? goal = MathEngine.goalDate(logs, cal.targetBf);
       if (goal != null) {
         sb.writeln(
@@ -410,8 +438,9 @@ class AdvisorDigest {
       }
     }
 
-    // Adherence + deficit-vs-actual over the detail window.
-    final int detailDays = kind == 'weekly' ? 7 : 14;
+    // Adherence + deficit-vs-actual over the detail window. Daily stays tight
+    // and recent; weekly reaches back far enough to surface real patterns.
+    final int detailDays = kind == 'weekly' ? 30 : 10;
     int eaten = 0;
     double sumCal = 0, sumP = 0, sumF = 0, sumC = 0, sumFiber = 0;
     for (int i = 0; i < detailDays; i++) {
@@ -443,7 +472,9 @@ class AdvisorDigest {
       final DailyLog? log = logByDate[d];
       final bool hasFood = (byDateCal[d] ?? 0) > 0;
       final bool isFast = fasted.contains(d);
-      if (log == null && !hasFood && !isFast) {
+      final SleepEntry? slp = sleepByDate[d];
+      final List<RunRecord>? dayRuns = runsByDate[d];
+      if (log == null && !hasFood && !isFast && slp == null && dayRuns == null) {
         continue;
       }
       final List<String> parts = <String>[d];
@@ -454,16 +485,27 @@ class AdvisorDigest {
       if (hasFood) {
         final DayTotals dt = FoodMath.totals(foods, d);
         parts.add(
-            '${dt.calories.round()}cal P${dt.protein.round()} F${dt.fat.round()} C${dt.carbs.round()} fib${(dt.nutrients['fiber'] ?? 0).round()}');
+            '${dt.calories.round()}cal P${dt.protein.round()} F${dt.fat.round()} C${dt.carbs.round()} fib${(dt.nutrients['fiber'] ?? 0).round()} sug${(dt.nutrients['sugars'] ?? 0).round()}');
+        // ALL foods for the day (by name) so patterns are visible.
         final List<String> names = FoodMath.forDate(foods, d)
             .map((FoodEntry e) => e.name)
-            .take(6)
             .toList();
         if (names.isNotEmpty) {
           parts.add('[${names.join(', ')}]');
         }
       } else if (isFast) {
         parts.add('FASTED (0 cal)');
+      }
+      if (slp != null) {
+        parts.add('slept ${slp.hours.toStringAsFixed(1)}h'
+            '${slp.restingHr != null ? ' RHR${slp.restingHr!.round()}' : ''}'
+            '${slp.hrv != null ? ' HRV${slp.hrv!.round()}' : ''}');
+      }
+      if (dayRuns != null && dayRuns.isNotEmpty) {
+        final RunRecord r = dayRuns.first;
+        parts.add('RAN ${(r.durationSec / 60).round()}min'
+            '${r.distanceKm > 0 ? ' ${(r.distanceKm * 0.621371).toStringAsFixed(1)}mi' : ''}'
+            '${r.avgHr != null ? ' HR${r.avgHr!.round()}' : ''}');
       }
       sb.writeln('- ${parts.join(' · ')}');
     }
@@ -6489,18 +6531,18 @@ class _AdvisorCardState extends State<_AdvisorCard> {
           Row(children: <Widget>[
             Expanded(
                 child: _coachBtn(
-                    label: todayDone ? "Today's coaching ✓" : "Today's coaching",
+                    label: todayDone ? 'Refresh daily' : "Today's coaching",
                     busy: _busyKind == 'daily',
-                    enabled: !todayDone && _busyKind == null,
+                    enabled: _busyKind == null,
                     onTap: () => _generate('daily'),
                     accent: accent,
                     filled: true)),
             const SizedBox(width: 10),
             Expanded(
                 child: _coachBtn(
-                    label: weekDone ? 'Weekly ✓' : 'Weekly review',
+                    label: weekDone ? 'Refresh weekly' : 'Weekly review',
                     busy: _busyKind == 'weekly',
-                    enabled: !weekDone && _busyKind == null,
+                    enabled: _busyKind == null,
                     onTap: () => _generate('weekly'),
                     accent: accent,
                     filled: false)),
@@ -6726,22 +6768,97 @@ class _TrainScreenState extends State<TrainScreen> {
   }
 
   // ── Record a finished run and adapt the ladder ──────────────────────
-  void _recordRun(RunRecord r, {required bool advance}) {
-    final int before = widget.trainer.level;
-    final int after =
-        advance ? nextLevel(before, r.outcome) : before;
+  double? get _restingHrBaseline =>
+      SleepMath.baselineRestingHr(widget.sleep, DateTime.now()) ??
+      SleepMath.latest(widget.sleep)?.restingHr;
+
+  // Log a run. Leveling is NOT decided here — it's driven by vitals when a run
+  // is imported (see _applyLevelFromVitals), so a coached run with no watch
+  // data never nudges the level on its own.
+  void _recordRun(RunRecord r) {
     widget.onSetRuns(<RunRecord>[...widget.runs, r]);
-    if (after != before) {
-      widget.onSetTrainer(widget.trainer.copyWith(level: after));
-    }
     if (!mounted) {
       return;
     }
-    final String msg = !r.completed
-        ? 'Run saved. Same workout next time — no rush.'
-        : (after != before ? 'Nice. Leveled up to your next workout.' : 'Run logged.');
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        backgroundColor: Color(0xFF2A2A2A), content: Text('Run logged.')));
+  }
+
+  // Adapt the plan level from a run's heart rate vs the user's resting HR.
+  void _applyLevelFromVitals(double? avgHr) {
+    if (avgHr == null) {
+      return;
+    }
+    final int before = widget.trainer.level;
+    final int after = assessLevel(before,
+        avgHr: avgHr, restingHr: _restingHrBaseline);
+    if (after == before || !mounted) {
+      return;
+    }
+    widget.onSetTrainer(widget.trainer.copyWith(level: after));
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        backgroundColor: const Color(0xFF2A2A2A), content: Text(msg)));
+        backgroundColor: const Color(0xFF2A2A2A),
+        content: Text(after > before
+            ? 'That run was controlled — moved you up to Level $after.'
+            : 'That run was a grind — eased you to Level $after.')));
+  }
+
+  // Manually nudge the level — a correction valve (the plan otherwise adapts
+  // itself from your run heart rate).
+  Future<void> _adjustLevel() async {
+    final int? lvl = await showDialog<int>(
+      context: context,
+      builder: (BuildContext ctx) {
+        int v = widget.trainer.level;
+        return StatefulBuilder(
+          builder: (BuildContext c, void Function(void Function()) setD) {
+            return AlertDialog(
+              backgroundColor: kSurface2,
+              title: const Text('Set your level',
+                  style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 16)),
+              content: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: <Widget>[
+                      IconButton(
+                          onPressed: v > 1
+                              ? () => setD(() => v = (v - 1).clamp(1, kMaxLevel))
+                              : null,
+                          icon: const Icon(Icons.remove_circle_outline_rounded,
+                              color: Color(0xFFCCCCCC))),
+                      Text('$v',
+                          style: TextStyle(
+                              color: widget.accent,
+                              fontSize: 30,
+                              fontWeight: FontWeight.w800)),
+                      IconButton(
+                          onPressed: v < kMaxLevel
+                              ? () => setD(() => v = (v + 1).clamp(1, kMaxLevel))
+                              : null,
+                          icon: const Icon(Icons.add_circle_outline_rounded,
+                              color: Color(0xFFCCCCCC))),
+                    ]),
+                const SizedBox(height: 8),
+                Text(workoutForLevel(v).name,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              ]),
+              actions: <Widget>[
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx),
+                    child: const Text('Cancel')),
+                TextButton(
+                    onPressed: () => Navigator.pop(ctx, v),
+                    child: const Text('Set')),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (lvl != null && lvl != widget.trainer.level) {
+      widget.onSetTrainer(widget.trainer.copyWith(level: lvl));
+    }
   }
 
   // ── Calibration ─────────────────────────────────────────────────────
@@ -6774,19 +6891,21 @@ class _TrainScreenState extends State<TrainScreen> {
     if (outcome == null || !mounted) {
       return; // stopped early & discarded
     }
-    _recordRun(
-      RunRecord(
-        id: _newRunId(),
-        date: formatDate(DateTime.now()),
-        level: _today.level,
-        distanceKm: 0,
-        durationSec: _today.totalSeconds,
-        source: 'manual',
-        completed: outcome.completed,
-        effort: outcome.effort.name,
-      ),
-      advance: outcome.completed,
-    );
+    _recordRun(RunRecord(
+      id: _newRunId(),
+      date: formatDate(DateTime.now()),
+      level: _today.level,
+      distanceKm: 0,
+      durationSec: _today.totalSeconds,
+      source: 'manual',
+      completed: outcome.completed,
+      effort: 'ok',
+    ));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text('Import this run to pull your pace + heart rate.')));
+    }
   }
 
   // ── Manual entry ────────────────────────────────────────────────────
@@ -6802,7 +6921,8 @@ class _TrainScreenState extends State<TrainScreen> {
     if (r == null || !mounted) {
       return;
     }
-    _recordRun(r, advance: r.completed && r.level == _today.level);
+    _recordRun(r);
+    _applyLevelFromVitals(r.avgHr);
   }
 
   // ── Health Connect import ───────────────────────────────────────────
@@ -7044,51 +7164,22 @@ class _TrainScreenState extends State<TrainScreen> {
             backgroundColor: Color(0xFF2A2A2A),
             content: Text('Added distance, pace & heart rate to your run.')));
       }
+      _applyLevelFromVitals(chosen.avgHr);
       return;
     }
-    final Effort? eff = await _askEffort();
-    if (!mounted) {
-      return;
-    }
-    _recordRun(
-      RunRecord(
-        id: _newRunId(),
-        date: date,
-        level: _today.level,
-        distanceKm: chosen.distanceKm,
-        durationSec: chosen.durationSec,
-        avgHr: chosen.avgHr,
-        calories: chosen.calories,
-        source: 'healthconnect',
-        completed: true,
-        effort: (eff ?? Effort.ok).name,
-      ),
-      advance: true,
-    );
-  }
-
-  Future<Effort?> _askEffort() {
-    return showDialog<Effort>(
-      context: context,
-      builder: (_) => AlertDialog(
-        backgroundColor: kSurface2,
-        title: const Text('How did that run feel?',
-            style: TextStyle(color: Color(0xFFEEEEEE), fontSize: 16)),
-        content: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
-          for (final Effort e in Effort.values)
-            ListTile(
-              title: Text(
-                  e == Effort.easy
-                      ? 'Easy — could have kept going'
-                      : e == Effort.ok
-                          ? 'About right'
-                          : 'Hard — a real struggle',
-                  style: const TextStyle(color: Color(0xFFDDDDDD))),
-              onTap: () => Navigator.pop<Effort>(context, e),
-            ),
-        ]),
-      ),
-    );
+    _recordRun(RunRecord(
+      id: _newRunId(),
+      date: date,
+      level: _today.level,
+      distanceKm: chosen.distanceKm,
+      durationSec: chosen.durationSec,
+      avgHr: chosen.avgHr,
+      calories: chosen.calories,
+      source: 'healthconnect',
+      completed: true,
+      effort: 'ok',
+    ));
+    _applyLevelFromVitals(chosen.avgHr);
   }
 
   @override
@@ -7112,8 +7203,19 @@ class _TrainScreenState extends State<TrainScreen> {
                     letterSpacing: 2,
                     fontWeight: FontWeight.w800)),
             const Spacer(),
-            Text('Level ${w.level} of $kMaxLevel',
-                style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+            InkWell(
+              onTap: _adjustLevel,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                child: Row(children: <Widget>[
+                  Text('Level ${w.level} of $kMaxLevel',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                  const SizedBox(width: 3),
+                  Icon(Icons.tune_rounded, size: 13, color: Colors.grey[600]),
+                ]),
+              ),
+            ),
           ]),
           const SizedBox(height: 14),
           _todayCard(w),
@@ -7898,33 +8000,27 @@ class _CoachScreenState extends State<_CoachScreen> {
                         fontSize: 24,
                         fontWeight: FontWeight.w800)),
                 const SizedBox(height: 8),
-                Text('How did that feel? It tunes your next workout.',
+                Text(
+                    'Import this run and your heart rate sets the effort and your '
+                    'next level — no guessing.',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey[500], fontSize: 14)),
                 const SizedBox(height: 24),
-                for (final Effort e in Effort.values)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: SizedBox(
-                      height: 52,
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop<RunOutcome>(context,
-                            RunOutcome(completed: true, effort: e)),
-                        style: OutlinedButton.styleFrom(
-                            foregroundColor: const Color(0xFFEEEEEE),
-                            side: BorderSide(color: widget.accent),
-                            shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(12))),
-                        child: Text(
-                            e == Effort.easy
-                                ? 'Easy — could have kept going'
-                                : e == Effort.ok
-                                    ? 'About right'
-                                    : 'Hard — a real struggle',
-                            style: const TextStyle(fontSize: 15)),
-                      ),
-                    ),
+                SizedBox(
+                  height: 52,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop<RunOutcome>(
+                        context, const RunOutcome(completed: true)),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12)),
+                        textStyle: const TextStyle(
+                            fontSize: 16, fontWeight: FontWeight.w700)),
+                    child: const Text('Done'),
                   ),
+                ),
               ]),
         ),
       ),
