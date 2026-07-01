@@ -68,6 +68,10 @@ class FoodEntry {
   final Map<String, double> nutrients; // display-unit values, registry keys
   final String source; // 'barcode' | 'label' | 'manual'
   final String? barcode;
+  // Grams this logged amount represents, when known — lets the editor
+  // re-scale every macro by weight instead of making the user redo the math.
+  // Null for servings-based / legacy entries (editor falls back to a ×amount).
+  final double? baseGrams;
 
   FoodEntry({
     required this.id,
@@ -82,6 +86,7 @@ class FoodEntry {
     Map<String, double>? nutrients,
     this.source = 'manual',
     this.barcode,
+    this.baseGrams,
   }) : nutrients = nutrients ?? <String, double>{};
 
   /// Meal section from the time of day (falls back to "Other").
@@ -118,6 +123,7 @@ class FoodEntry {
         nutrients: Map<String, double>.from(nutrients),
         source: source,
         barcode: barcode,
+        baseGrams: baseGrams,
       );
 
   Map<String, dynamic> toJson() => <String, dynamic>{
@@ -133,6 +139,7 @@ class FoodEntry {
         'nutrients': nutrients,
         'source': source,
         if (barcode != null) 'barcode': barcode,
+        if (baseGrams != null) 'baseGrams': baseGrams,
       };
 
   factory FoodEntry.fromJson(Map<String, dynamic> j) {
@@ -158,6 +165,7 @@ class FoodEntry {
       nutrients: n,
       source: (j['source'] as String?) ?? 'manual',
       barcode: j['barcode'] as String?,
+      baseGrams: (j['baseGrams'] as num?)?.toDouble(),
     );
   }
 }
@@ -256,6 +264,7 @@ class FoodTemplate {
           .map((String k, double v) => MapEntry<String, double>(k, v * s)),
       source: source,
       barcode: barcode,
+      baseGrams: grams,
     );
   }
 

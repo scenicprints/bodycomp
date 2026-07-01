@@ -1938,6 +1938,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
       existing = widget.logs.last;
     }
 
+    // For a brand-new weigh-in, pre-fill calories with yesterday's count
+    // (food-log total if food was logged, else the number entered that day),
+    // still fully editable.
+    int? prefillCal;
+    if (existing == null) {
+      final String yDate =
+          formatDate(DateTime.now().subtract(const Duration(days: 1)));
+      final double foodCal = FoodMath.caloriesByDate(widget.foods)[yDate] ?? 0;
+      if (foodCal > 0) {
+        prefillCal = foodCal.round();
+      } else {
+        final int yi = widget.logs.indexWhere((DailyLog l) => l.date == yDate);
+        if (yi >= 0 && widget.logs[yi].calories > 0) {
+          prefillCal = widget.logs[yi].calories;
+        }
+      }
+    }
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1951,7 +1969,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           initDate: existing?.date,
           initW: existing?.weight,
           initBf: existing != null ? existing.bf * 100 : null,
-          initCal: existing?.calories,
+          initCal: existing?.calories ?? prefillCal,
           onSave: (String date, double w, double bf, int cal) {
             final DailyLog newLog =
                 DailyLog(date: date, weight: w, bf: bf, calories: cal);
@@ -3440,7 +3458,7 @@ class _FoodScreenState extends State<FoodScreen> {
     }
     final FoodEntry e = list.first;
     _clearSelection();
-    _openEditor(existing: e);
+    _openEntryEditor(e);
   }
 
   // Move and Modify Timestamp both set the date+time of the whole selection.
@@ -3726,6 +3744,30 @@ class _FoodScreenState extends State<FoodScreen> {
     );
   }
 
+  // Edit an already-logged food: change grams/servings and every macro
+  // re-scales automatically (no manual math), with fine-tune still possible.
+  void _openEntryEditor(FoodEntry entry) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: kSurface2,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _EditEntrySheet(
+        accent: _accent,
+        entry: entry,
+        onSave: (FoodEntry e) {
+          _updateEntry(e);
+          Navigator.pop(context);
+        },
+        onDelete: () {
+          _deleteEntry(entry.id);
+          Navigator.pop(context);
+        },
+      ),
+    );
+  }
+
   // ── My Foods (reusable saved foods) ──────────────────────────────────
   int get _myFoodsCount =>
       widget.customFoods.where((CustomFood f) => !f.deleted).length;
@@ -3898,7 +3940,7 @@ class _FoodScreenState extends State<FoodScreen> {
               onLongPress: () => _toggleSelect(e.id),
               onTap: () => _selecting
                   ? _toggleSelect(e.id)
-                  : _openEditor(existing: e)),
+                  : _openEntryEditor(e)),
         ));
       }
     }
@@ -6765,7 +6807,7 @@ class _TrainScreenState extends State<TrainScreen> {
         barrierDismissible: false,
         builder: (_) =>
             Center(child: CircularProgressIndicator(color: widget.accent)));
-    RunRecord? imported;
+    final List<_WorkoutOpt> opts = <_WorkoutOpt>[];
     String? error;
     try {
       final Health health = Health();
@@ -6783,60 +6825,53 @@ class _TrainScreenState extends State<TrainScreen> {
         error = 'Health Connect permission was denied.';
       } else {
         final DateTime now = DateTime.now();
-        final DateTime start = now.subtract(const Duration(days: 3));
-        final List<HealthDataPoint> workouts =
-            await health.getHealthDataFromTypes(
-                startTime: start,
-                endTime: now,
-                types: <HealthDataType>[HealthDataType.WORKOUT]);
-        HealthDataPoint? run;
-        for (final HealthDataPoint p in workouts) {
-          final HealthValue v = p.value;
-          if (v is WorkoutHealthValue &&
-              v.workoutActivityType == HealthWorkoutActivityType.RUNNING) {
-            if (run == null || p.dateFrom.isAfter(run.dateFrom)) {
-              run = p;
-            }
-          }
-        }
-        if (run == null) {
-          error = 'No running workout found in Health Connect (last 3 days).';
-        } else {
-          final WorkoutHealthValue w = run.value as WorkoutHealthValue;
-          final int dur =
-              run.dateTo.difference(run.dateFrom).inSeconds.abs();
-          final double km = (w.totalDistance ?? 0) / 1000.0;
-          final List<HealthDataPoint> hr =
-              await health.getHealthDataFromTypes(
-                  startTime: run.dateFrom,
-                  endTime: run.dateTo,
-                  types: <HealthDataType>[HealthDataType.HEART_RATE]);
-          double? avgHr;
-          if (hr.isNotEmpty) {
-            double sum = 0;
-            int n = 0;
-            for (final HealthDataPoint p in hr) {
+        final DateTime start = now.subtract(const Duration(days: 7));
+        final List<HealthDataPoint> all = await health.getHealthDataFromTypes(
+            startTime: start, endTime: now, types: types);
+        final List<HealthDataPoint> workouts = all
+            .where((HealthDataPoint p) => p.type == HealthDataType.WORKOUT)
+            .toList();
+        final List<HealthDataPoint> hrPts = all
+            .where((HealthDataPoint p) => p.type == HealthDataType.HEART_RATE)
+            .toList();
+        double? avgHrIn(DateTime a, DateTime b) {
+          double sum = 0;
+          int n = 0;
+          for (final HealthDataPoint p in hrPts) {
+            if (!p.dateFrom.isBefore(a) && !p.dateTo.isAfter(b)) {
               final HealthValue v = p.value;
               if (v is NumericHealthValue) {
                 sum += v.numericValue.toDouble();
                 n++;
               }
             }
-            if (n > 0) {
-              avgHr = sum / n;
-            }
           }
-          imported = RunRecord(
-            id: _newRunId(),
-            date: formatDate(run.dateFrom),
-            level: _today.level,
-            distanceKm: km,
+          return n > 0 ? sum / n : null;
+        }
+
+        for (final HealthDataPoint p in workouts) {
+          final HealthValue v = p.value;
+          if (v is! WorkoutHealthValue) {
+            continue;
+          }
+          final int dur = p.dateTo.difference(p.dateFrom).inSeconds.abs();
+          if (dur < 60) {
+            continue; // skip trivial blips
+          }
+          opts.add(_WorkoutOpt(
+            from: p.dateFrom,
+            label: _prettyWorkout(v.workoutActivityType),
             durationSec: dur,
-            avgHr: avgHr,
-            source: 'healthconnect',
-            completed: true,
-            effort: 'ok',
-          );
+            distanceKm: (v.totalDistance ?? 0) / 1000.0,
+            avgHr: avgHrIn(p.dateFrom, p.dateTo),
+          ));
+        }
+        opts.sort((_WorkoutOpt a, _WorkoutOpt b) => b.from.compareTo(a.from));
+        if (opts.isEmpty) {
+          error = workouts.isEmpty
+              ? 'No workouts in Health Connect (last 7 days). In Google '
+                  'Health → Health Connect, turn on Exercise sharing.'
+              : 'Found ${workouts.length} workout(s) but none with usable data.';
         }
       }
     } catch (e) {
@@ -6846,10 +6881,21 @@ class _TrainScreenState extends State<TrainScreen> {
       return;
     }
     Navigator.pop(context); // dismiss loader
-    if (imported == null) {
+    if (opts.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           backgroundColor: const Color(0xFF2A2A2A),
           content: Text(error ?? 'Could not import a run.')));
+      return;
+    }
+    final _WorkoutOpt? chosen = await showModalBottomSheet<_WorkoutOpt>(
+      context: context,
+      backgroundColor: kSurface2,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _WorkoutPickerSheet(accent: widget.accent, options: opts),
+    );
+    if (chosen == null || !mounted) {
       return;
     }
     final Effort? eff = await _askEffort();
@@ -6858,13 +6904,13 @@ class _TrainScreenState extends State<TrainScreen> {
     }
     _recordRun(
       RunRecord(
-        id: imported.id,
-        date: imported.date,
-        level: imported.level,
-        distanceKm: imported.distanceKm,
-        durationSec: imported.durationSec,
-        avgHr: imported.avgHr,
-        source: imported.source,
+        id: _newRunId(),
+        date: formatDate(chosen.from),
+        level: _today.level,
+        distanceKm: chosen.distanceKm,
+        durationSec: chosen.durationSec,
+        avgHr: chosen.avgHr,
+        source: 'healthconnect',
         completed: true,
         effort: (eff ?? Effort.ok).name,
       ),
@@ -8112,6 +8158,307 @@ class _SleepScreenState extends State<SleepScreen> {
               const SizedBox(height: 24),
               _importButton(),
             ]),
+      ),
+    );
+  }
+}
+
+// ── Edit a logged food: scale by grams/servings, all macros auto-recompute ──
+class _EditEntrySheet extends StatefulWidget {
+  final Color accent;
+  final FoodEntry entry;
+  final void Function(FoodEntry) onSave;
+  final VoidCallback onDelete;
+  const _EditEntrySheet(
+      {required this.accent,
+      required this.entry,
+      required this.onSave,
+      required this.onDelete});
+  @override
+  State<_EditEntrySheet> createState() => _EditEntrySheetState();
+}
+
+class _EditEntrySheetState extends State<_EditEntrySheet> {
+  late final TextEditingController _name, _amount, _cal, _p, _f, _c, _fiber, _sodium;
+  late final bool _gramsMode;
+  late final double _baseCal, _baseP, _baseF, _baseC, _baseFiber, _baseSodium, _baseGrams;
+
+  @override
+  void initState() {
+    super.initState();
+    final FoodEntry e = widget.entry;
+    _gramsMode = e.baseGrams != null && e.baseGrams! > 0;
+    _baseGrams = e.baseGrams ?? 0;
+    _baseCal = e.calories;
+    _baseP = e.protein;
+    _baseF = e.fat;
+    _baseC = e.carbs;
+    _baseFiber = e.nutrients['fiber'] ?? 0;
+    _baseSodium = e.nutrients['sodium'] ?? 0;
+    _name = TextEditingController(text: e.name);
+    _amount = TextEditingController(
+        text: _gramsMode ? _trim(_baseGrams, dp: 1) : '1');
+    _cal = TextEditingController(text: _trim(_baseCal));
+    _p = TextEditingController(text: _trim(_baseP));
+    _f = TextEditingController(text: _trim(_baseF));
+    _c = TextEditingController(text: _trim(_baseC));
+    _fiber = TextEditingController(
+        text: _baseFiber > 0 ? _trim(_baseFiber, dp: 1) : '');
+    _sodium = TextEditingController(
+        text: _baseSodium > 0 ? _trim(_baseSodium, dp: 1) : '');
+  }
+
+  @override
+  void dispose() {
+    for (final TextEditingController c in <TextEditingController>[
+      _name, _amount, _cal, _p, _f, _c, _fiber, _sodium
+    ]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  double get _factor {
+    final double v = double.tryParse(_amount.text) ?? 0;
+    if (v <= 0) {
+      return 0;
+    }
+    return _gramsMode ? (_baseGrams > 0 ? v / _baseGrams : 0) : v;
+  }
+
+  // Changing the amount refills every macro field from the original values.
+  void _rescale() {
+    final double f = _factor;
+    _cal.text = _trim(_baseCal * f);
+    _p.text = _trim(_baseP * f);
+    _f.text = _trim(_baseF * f);
+    _c.text = _trim(_baseC * f);
+    _fiber.text = _baseFiber > 0 ? _trim(_baseFiber * f, dp: 1) : '';
+    _sodium.text = _baseSodium > 0 ? _trim(_baseSodium * f, dp: 1) : '';
+    setState(() {});
+  }
+
+  String get _servingLabel {
+    if (_gramsMode) {
+      final double g = double.tryParse(_amount.text) ?? _baseGrams;
+      return '${_trim(g, dp: 1)} g';
+    }
+    final double a = double.tryParse(_amount.text) ?? 1;
+    if (a == 1) {
+      return widget.entry.serving;
+    }
+    return '${_trim(a, dp: 2)}× ${widget.entry.serving}';
+  }
+
+  void _save() {
+    final double f = _factor;
+    // Scale every stored micronutrient, then let the visible fields win.
+    final Map<String, double> micros = widget.entry.nutrients
+        .map((String k, double v) => MapEntry<String, double>(k, v * f));
+    final double? fiber = double.tryParse(_fiber.text);
+    final double? sodium = double.tryParse(_sodium.text);
+    if (fiber != null && fiber > 0) {
+      micros['fiber'] = fiber;
+    } else {
+      micros.remove('fiber');
+    }
+    if (sodium != null && sodium > 0) {
+      micros['sodium'] = sodium;
+    } else {
+      micros.remove('sodium');
+    }
+    widget.onSave(FoodEntry(
+      id: widget.entry.id,
+      date: widget.entry.date,
+      time: widget.entry.time,
+      name: _name.text.trim().isEmpty ? widget.entry.name : _name.text.trim(),
+      serving: _servingLabel,
+      calories: double.tryParse(_cal.text) ?? _baseCal * f,
+      protein: double.tryParse(_p.text) ?? _baseP * f,
+      fat: double.tryParse(_f.text) ?? _baseF * f,
+      carbs: double.tryParse(_c.text) ?? _baseC * f,
+      nutrients: micros,
+      source: widget.entry.source,
+      barcode: widget.entry.barcode,
+      baseGrams:
+          _gramsMode ? (double.tryParse(_amount.text) ?? _baseGrams) : widget.entry.baseGrams,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool ok = (double.tryParse(_cal.text) ?? -1) >= 0 &&
+        (double.tryParse(_amount.text) ?? 0) > 0;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+          24,
+          20,
+          24,
+          MediaQuery.of(context).viewInsets.bottom +
+              MediaQuery.of(context).viewPadding.bottom +
+              24),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('Edit food',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: widget.accent)),
+              const SizedBox(height: 16),
+              _field('NAME', _name, text: true),
+              const SizedBox(height: 12),
+              _field(
+                  _gramsMode ? 'AMOUNT (grams)' : 'AMOUNT (× servings)',
+                  _amount,
+                  onChanged: (_) => _rescale()),
+              const SizedBox(height: 6),
+              Text(
+                  _gramsMode
+                      ? 'Change the grams — calories and macros re-scale automatically.'
+                      : 'Change the multiplier — everything re-scales. (No weight stored for this item.)',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+              const SizedBox(height: 14),
+              _field('CALORIES', _cal),
+              const SizedBox(height: 12),
+              Row(children: <Widget>[
+                Expanded(child: _field('PROTEIN (g)', _p)),
+                const SizedBox(width: 10),
+                Expanded(child: _field('FAT (g)', _f)),
+              ]),
+              const SizedBox(height: 12),
+              Row(children: <Widget>[
+                Expanded(child: _field('CARBS (g)', _c)),
+                const SizedBox(width: 10),
+                Expanded(child: _field('FIBER (g)', _fiber)),
+              ]),
+              const SizedBox(height: 12),
+              _field('SODIUM (mg)', _sodium),
+              const SizedBox(height: 20),
+              Row(children: <Widget>[
+                Expanded(
+                    child: SizedBox(
+                        height: 50,
+                        child: ElevatedButton(
+                          onPressed: ok ? _save : null,
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: widget.accent,
+                              foregroundColor: Colors.black,
+                              disabledBackgroundColor: const Color(0xFF333333),
+                              shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(12)),
+                              textStyle: const TextStyle(
+                                  fontSize: 16, fontWeight: FontWeight.w700)),
+                          child: const Text('Save'),
+                        ))),
+                const SizedBox(width: 10),
+                IconButton(
+                    onPressed: widget.onDelete,
+                    icon: const Icon(Icons.delete_outline_rounded,
+                        color: Color(0xFFCC5555))),
+              ]),
+            ]),
+      ),
+    );
+  }
+
+  Widget _field(String label, TextEditingController c,
+      {bool text = false, void Function(String)? onChanged}) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+      Text(label,
+          style: TextStyle(
+              fontSize: 11,
+              color: Colors.grey[600],
+              letterSpacing: 1,
+              fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      TextField(
+          controller: c,
+          keyboardType: text
+              ? TextInputType.text
+              : const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(fontSize: 16, color: Color(0xFFEEEEEE)),
+          decoration: _foodDec(widget.accent),
+          onChanged: onChanged ?? (_) => setState(() {})),
+    ]);
+  }
+}
+
+// ── Health Connect workout candidates + picker (run import) ──────────
+class _WorkoutOpt {
+  final DateTime from;
+  final String label;
+  final int durationSec;
+  final double distanceKm;
+  final double? avgHr;
+  const _WorkoutOpt(
+      {required this.from,
+      required this.label,
+      required this.durationSec,
+      required this.distanceKm,
+      this.avgHr});
+}
+
+String _prettyWorkout(HealthWorkoutActivityType t) {
+  final String s = t.name.replaceAll('_', ' ').toLowerCase();
+  return s.isEmpty ? 'Workout' : '${s[0].toUpperCase()}${s.substring(1)}';
+}
+
+class _WorkoutPickerSheet extends StatelessWidget {
+  final Color accent;
+  final List<_WorkoutOpt> options;
+  const _WorkoutPickerSheet({required this.accent, required this.options});
+  @override
+  Widget build(BuildContext context) {
+    String when(DateTime d) =>
+        '${formatDate(d)}  ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    final int n = options.length > 20 ? 20 : options.length;
+    return SafeArea(
+      child: Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.of(context).viewPadding.bottom),
+        child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text('Pick a workout to log',
+                  style: TextStyle(
+                      color: accent,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700)),
+            ),
+          ),
+          Flexible(
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: n,
+              separatorBuilder: (_, _) =>
+                  const Divider(height: 1, color: Color(0xFF1C1C1C)),
+              itemBuilder: (_, int i) {
+                final _WorkoutOpt o = options[i];
+                final String mi = o.distanceKm > 0
+                    ? '${(o.distanceKm * 0.621371).toStringAsFixed(2)} mi  ·  '
+                    : '';
+                return ListTile(
+                  leading:
+                      Icon(Icons.directions_run_rounded, color: accent),
+                  title: Text('${o.label}  ·  ${(o.durationSec / 60).round()} min',
+                      style: const TextStyle(
+                          color: Color(0xFFEEEEEE),
+                          fontWeight: FontWeight.w600)),
+                  subtitle: Text(
+                      '$mi${when(o.from)}${o.avgHr != null ? "  ·  ${o.avgHr!.round()} bpm" : ""}',
+                      style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                  onTap: () => Navigator.pop<_WorkoutOpt>(context, o),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }

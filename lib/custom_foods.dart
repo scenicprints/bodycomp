@@ -126,6 +126,7 @@ class CustomFood {
           (String k, double v) => MapEntry<String, double>(k, v * quantity)),
       source: source,
       barcode: barcode,
+      baseGrams: hasGrams ? servingGrams! * quantity : null,
     );
   }
 

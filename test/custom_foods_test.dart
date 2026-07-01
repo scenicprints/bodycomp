@@ -118,6 +118,18 @@ void main() {
       expect(bar.copyWith(servingGrams: 0).hasGrams, isFalse);
     });
 
+    test('logged entry carries a gram basis so the editor can re-scale it', () {
+      // With grams: baseGrams = servingGrams × quantity.
+      final e = bar.toEntry(id: 'e', date: '2026-06-30', quantity: 2);
+      expect(e.baseGrams, 80);
+      // Grams flow through JSON so editing survives a reload.
+      expect(FoodEntry.fromJson(e.toJson()).baseGrams, 80);
+      // Without a serving weight → no gram basis (editor falls back to ×amount).
+      final noG = bar.copyWith(servingGrams: 0);
+      expect(noG.toEntry(id: 'e', date: '2026-06-30', quantity: 2).baseGrams,
+          isNull);
+    });
+
     test('round-trips through JSON', () {
       final CustomFood back = CustomFood.fromJson(bar.toJson());
       expect(back.name, 'Protein Bar');
