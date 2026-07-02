@@ -52,7 +52,8 @@ jobs:
           USDA_API_KEY: ${{ secrets.USDA_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_DATA_TOKEN: ${{ secrets.BODYCOMP_DATA_TOKEN }}
-        run: flutter build apk --release --dart-define=USDA_API_KEY=$USDA_API_KEY --dart-define=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY --dart-define=GITHUB_DATA_TOKEN=$GITHUB_DATA_TOKEN
+          PANTRY_DATA_TOKEN: ${{ secrets.PANTRY_DATA_TOKEN }}
+        run: flutter build apk --release --dart-define=USDA_API_KEY=$USDA_API_KEY --dart-define=ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY --dart-define=GITHUB_DATA_TOKEN=$GITHUB_DATA_TOKEN --dart-define=PANTRY_DATA_TOKEN=$PANTRY_DATA_TOKEN
 
       - name: Rename APK to versioned name
         run: |

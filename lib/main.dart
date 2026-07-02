@@ -14,6 +14,7 @@ import 'package:health/health.dart';
 import 'updater.dart';
 import 'food.dart';
 import 'custom_foods.dart';
+import 'pantry_bridge.dart';
 import 'trainer.dart';
 import 'sleep.dart';
 import 'advisor.dart';
@@ -5786,6 +5787,19 @@ class _MealEditScreenState extends State<_MealEditScreen> {
     }
   }
 
+  // Deduct this meal's raw ingredient weights from the shared Pantry.
+  // Opens an always-confirm review screen before anything is written.
+  void _subtractFromPantry() {
+    final List<IngredientDeduction> deductions = _ings
+        .map((MealIngredient i) => IngredientDeduction(
+              name: i.food.name,
+              barcode: i.food.barcode,
+              grams: i.rawGrams,
+            ))
+        .toList();
+    subtractMealFromPantry(context, widget.accent, deductions);
+  }
+
   @override
   Widget build(BuildContext context) {
     final Meal preview = Meal(id: 'x', name: '', ingredients: _ings);
@@ -5796,6 +5810,12 @@ class _MealEditScreenState extends State<_MealEditScreen> {
         foregroundColor: const Color(0xFFEEEEEE),
         title: Text(widget.existing != null ? 'Edit meal' : 'New meal'),
         actions: <Widget>[
+          IconButton(
+            tooltip: 'Subtract from Pantry',
+            onPressed: _ings.isEmpty ? null : _subtractFromPantry,
+            icon: Icon(Icons.kitchen_rounded,
+                color: _ings.isEmpty ? const Color(0xFF555555) : widget.accent),
+          ),
           TextButton(
             onPressed: _ok ? () => Navigator.pop(context, _meal) : null,
             child: Text('Save',
