@@ -17,6 +17,7 @@ import 'custom_foods.dart';
 import 'trainer.dart';
 import 'sleep.dart';
 import 'advisor.dart';
+import 'insights.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -1822,8 +1823,10 @@ class _HomeShellState extends State<HomeShell> {
             runs: widget.runs,
             trainer: widget.trainer,
             sleep: widget.sleep,
+            insights: widget.insights,
             onSetRuns: widget.onSetRuns,
-            onSetTrainer: widget.onSetTrainer),
+            onSetTrainer: widget.onSetTrainer,
+            onSetInsights: widget.onSetInsights),
         SleepScreen(
             accent: accent,
             cal: widget.cal,
@@ -6531,22 +6534,33 @@ class _AdvisorCardState extends State<_AdvisorCard> {
           Row(children: <Widget>[
             Expanded(
                 child: _coachBtn(
-                    label: todayDone ? 'Refresh daily' : "Today's coaching",
+                    label: todayDone ? 'Today ✓' : "Today's coaching",
                     busy: _busyKind == 'daily',
-                    enabled: _busyKind == null,
+                    enabled: _busyKind == null && !todayDone,
                     onTap: () => _generate('daily'),
                     accent: accent,
                     filled: true)),
             const SizedBox(width: 10),
             Expanded(
                 child: _coachBtn(
-                    label: weekDone ? 'Refresh weekly' : 'Weekly review',
+                    label: weekDone ? 'This week ✓' : 'Weekly review',
                     busy: _busyKind == 'weekly',
-                    enabled: _busyKind == null,
+                    enabled: _busyKind == null && !weekDone,
                     onTap: () => _generate('weekly'),
                     accent: accent,
                     filled: false)),
           ]),
+          if (todayDone || weekDone) ...<Widget>[
+            const SizedBox(height: 8),
+            Text(
+                todayDone && weekDone
+                    ? 'Your coach checks in once a day and once a week — fresh reads roll in tomorrow.'
+                    : (todayDone
+                        ? 'Daily coaching is a once-a-day check-in — a fresh read tomorrow.'
+                        : 'Weekly review runs once a week — a fresh one next week.'),
+                style: TextStyle(
+                    fontSize: 11, color: Colors.grey[600], height: 1.4)),
+          ],
         ],
       ]),
     );
@@ -6679,8 +6693,10 @@ class TrainScreen extends StatefulWidget {
   final List<RunRecord> runs;
   final TrainerState trainer;
   final List<SleepEntry> sleep;
+  final List<AdvisorInsight> insights;
   final void Function(List<RunRecord>) onSetRuns;
   final void Function(TrainerState) onSetTrainer;
+  final void Function(List<AdvisorInsight>) onSetInsights;
   const TrainScreen(
       {super.key,
       required this.accent,
@@ -6689,15 +6705,17 @@ class TrainScreen extends StatefulWidget {
       required this.runs,
       required this.trainer,
       required this.sleep,
+      required this.insights,
       required this.onSetRuns,
-      required this.onSetTrainer});
+      required this.onSetTrainer,
+      required this.onSetInsights});
   @override
   State<TrainScreen> createState() => _TrainScreenState();
 }
 
 class _TrainScreenState extends State<TrainScreen> {
   Workout get _today => workoutForLevel(widget.trainer.level);
-  String? _coachText;
+  String? _coachError;
   bool _coaching = false;
 
   // ── AI coaching (reuses the Claude client behind the Food Advisor) ───
@@ -6738,21 +6756,53 @@ class _TrainScreenState extends State<TrainScreen> {
   double? get _baselineHours =>
       SleepMath.baselineHours(widget.sleep, DateTime.now());
 
+  // The run the coach speaks to — the most recent one. Coaching is saved
+  // against this key so it's a one-per-run read, not a refreshable spend:
+  // once this run is coached the button locks until a newer run comes in.
+  String get _latestRunKey {
+    String? key;
+    for (final RunRecord r in widget.runs) {
+      if (key == null || r.date.compareTo(key.split('|').first) > 0) {
+        key = '${r.date}|${r.id}';
+      }
+    }
+    return key ?? 'none';
+  }
+
+  AdvisorInsight? get _runInsight {
+    final List<AdvisorInsight> m = widget.insights
+        .where((AdvisorInsight i) =>
+            i.kind == 'run' && i.periodKey == _latestRunKey)
+        .toList();
+    return m.isEmpty ? null : m.last;
+  }
+
   Future<void> _askCoach() async {
-    setState(() => _coaching = true);
+    setState(() {
+      _coaching = true;
+      _coachError = null;
+    });
     try {
       final String text = await Advisor.generate(
           model: widget.cal.advisorModel, kind: 'run', digest: _runDigest());
-      if (mounted) {
-        setState(() => _coachText = text);
-      }
+      // Persist against this run so it survives tab switches and can't be
+      // re-spent — a fresh read only unlocks when a newer run is logged.
+      final List<AdvisorInsight> updated = widget.insights
+          .where((AdvisorInsight i) => i.kind != 'run')
+          .toList()
+        ..add(AdvisorInsight(
+            kind: 'run',
+            periodKey: _latestRunKey,
+            text: text,
+            createdAtMs: DateTime.now().millisecondsSinceEpoch));
+      widget.onSetInsights(updated);
     } on AdvisorException catch (e) {
       if (mounted) {
-        setState(() => _coachText = e.message);
+        setState(() => _coachError = e.message);
       }
     } catch (_) {
       if (mounted) {
-        setState(() => _coachText = 'Coaching is unavailable right now.');
+        setState(() => _coachError = 'Coaching is unavailable right now.');
       }
     } finally {
       if (mounted) {
@@ -7307,35 +7357,62 @@ class _TrainScreenState extends State<TrainScreen> {
                   letterSpacing: 1.5,
                   fontWeight: FontWeight.w700)),
         ]),
-        if (_coachText != null) ...<Widget>[
-          const SizedBox(height: 10),
-          Text(_coachText!,
-              style: const TextStyle(
-                  color: Color(0xFFDDDDDD), fontSize: 14, height: 1.5)),
-        ],
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          height: 44,
-          child: OutlinedButton.icon(
-            onPressed: _coaching ? null : _askCoach,
-            icon: _coaching
-                ? SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                        strokeWidth: 2, color: widget.accent))
-                : const Icon(Icons.auto_awesome_rounded, size: 18),
-            label: Text(_coachText == null
-                ? 'Ask your coach'
-                : 'Refresh coaching'),
-            style: OutlinedButton.styleFrom(
-                foregroundColor: const Color(0xFFCCCCCC),
-                side: const BorderSide(color: Color(0xFF333333)),
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12))),
-          ),
-        ),
+        Builder(builder: (BuildContext ctx) {
+          final AdvisorInsight? coached = _runInsight;
+          final bool locked = coached != null;
+          return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                if (coached != null) ...<Widget>[
+                  const SizedBox(height: 10),
+                  Text(coached.text,
+                      style: const TextStyle(
+                          color: Color(0xFFDDDDDD),
+                          fontSize: 14,
+                          height: 1.5)),
+                ],
+                if (_coachError != null) ...<Widget>[
+                  const SizedBox(height: 10),
+                  Text(_coachError!,
+                      style: const TextStyle(
+                          color: Color(0xFFCC8855), fontSize: 13)),
+                ],
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  height: 44,
+                  child: OutlinedButton.icon(
+                    onPressed: (_coaching || locked) ? null : _askCoach,
+                    icon: _coaching
+                        ? SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: widget.accent))
+                        : Icon(
+                            locked
+                                ? Icons.check_rounded
+                                : Icons.auto_awesome_rounded,
+                            size: 18),
+                    label: Text(locked ? 'Coached ✓' : 'Ask your coach'),
+                    style: OutlinedButton.styleFrom(
+                        foregroundColor: const Color(0xFFCCCCCC),
+                        disabledForegroundColor: Colors.grey[600],
+                        side: const BorderSide(color: Color(0xFF333333)),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12))),
+                  ),
+                ),
+                if (locked)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                        'One read per run — log another run for a fresh take.',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.grey[600])),
+                  ),
+              ]);
+        }),
       ]),
     );
   }
@@ -7481,13 +7558,13 @@ class _TrainScreenState extends State<TrainScreen> {
   }
 
   void _showRunDetail(RunRecord r) {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: kSurface2,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (_) => _RunDetailSheet(accent: widget.accent, run: r),
-    );
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (_) => _RunDetailScreen(
+          accent: widget.accent,
+          run: r,
+          runs: widget.runs,
+          sleep: widget.sleep),
+    ));
   }
 
   String _paceMinPerMile(RunRecord r) {
@@ -8242,7 +8319,13 @@ class _SleepScreenState extends State<SleepScreen> {
                   style: TextStyle(color: Colors.grey[500], fontSize: 12)),
           ]),
           const SizedBox(height: 14),
-          _lastNightCard(last),
+          InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+                builder: (_) => _SleepDetailScreen(
+                    accent: widget.accent, entry: last, all: widget.sleep))),
+            child: _lastNightCard(last),
+          ),
           if (readiness != null) ...<Widget>[
             const SizedBox(height: 12),
             _readinessCard(readiness),
@@ -8451,23 +8534,29 @@ class _SleepScreenState extends State<SleepScreen> {
       if (e.hasStages) 'deep ${_hm(e.deepMin ?? 0)}',
       if (e.avgHr != null) '${e.avgHr!.round()} bpm',
     ];
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Row(children: <Widget>[
-        Icon(Icons.bedtime_rounded, size: 18, color: widget.accent),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-            Text(e.date,
-                style: const TextStyle(
-                    color: Color(0xFFDDDDDD),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600)),
-            Text(bits.join('  ·  '),
-                style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-          ]),
-        ),
-      ]),
+    return InkWell(
+      onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => _SleepDetailScreen(
+              accent: widget.accent, entry: e, all: widget.sleep))),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(children: <Widget>[
+          Icon(Icons.bedtime_rounded, size: 18, color: widget.accent),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              Text(e.date,
+                  style: const TextStyle(
+                      color: Color(0xFFDDDDDD),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+              Text(bits.join('  ·  '),
+                  style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+            ]),
+          ),
+          Icon(Icons.chevron_right_rounded, size: 18, color: Colors.grey[700]),
+        ]),
+      ),
     );
   }
 
@@ -8813,22 +8902,437 @@ class _WorkoutPickerSheet extends StatelessWidget {
 }
 
 // ── Run detail: full stats for a logged/imported run ────────────────
-class _RunDetailSheet extends StatelessWidget {
+// ═══════════════════════════════════════════════════════════════════════
+// STAT DEEP-DIVE — shared visuals for the sleep-night and run detail screens.
+// Everything reads the user's OWN history: each metric is shown against their
+// personal baseline, drawn as a trend, and summed up in a plain-language read
+// (see insights.dart). No API, no network.
+// ═══════════════════════════════════════════════════════════════════════
+
+const Color _kGood = Color(0xFF4CAF7D);
+const Color _kBad = Color(0xFFCC6B5A);
+
+/// A compact line chart of a numeric series (oldest→newest). The final point
+/// is tinted green/red by whether the recent direction is good, given whether
+/// lower values are better for this metric.
+class _Sparkline extends StatelessWidget {
+  final List<double> values;
+  final Color accent;
+  final bool lowerIsBetter;
+  static const double height = 60;
+  const _Sparkline(this.values,
+      {required this.accent, this.lowerIsBetter = false});
+
+  @override
+  Widget build(BuildContext context) {
+    if (values.length < 2) {
+      return SizedBox(
+        height: height,
+        child: Center(
+            child: Text('Not enough history yet',
+                style: TextStyle(color: Colors.grey[700], fontSize: 11))),
+      );
+    }
+    return SizedBox(
+      height: height,
+      width: double.infinity,
+      child: CustomPaint(
+          painter: _SparkPainter(values, accent, lowerIsBetter)),
+    );
+  }
+}
+
+class _SparkPainter extends CustomPainter {
+  final List<double> v;
+  final Color accent;
+  final bool lowerIsBetter;
+  _SparkPainter(this.v, this.accent, this.lowerIsBetter);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final int n = v.length;
+    double minY = v.reduce(min), maxY = v.reduce(max);
+    if (maxY - minY < 1e-9) {
+      maxY += 1;
+      minY -= 1;
+    }
+    const double pad = 6;
+    final double h = size.height - pad * 2, w = size.width - pad * 2;
+    double toX(int i) => pad + (i / (n - 1)) * w;
+    double toY(double val) => pad + h - ((val - minY) / (maxY - minY)) * h;
+
+    // Personal average, dashed.
+    final double mean = v.reduce((double a, double b) => a + b) / n;
+    final Paint baseP = Paint()
+      ..color = const Color(0xFF2A2A2A)
+      ..strokeWidth = 1;
+    final double by = toY(mean);
+    for (double x = pad; x < size.width - pad; x += 6) {
+      canvas.drawLine(Offset(x, by), Offset(x + 3, by), baseP);
+    }
+
+    // Trend line.
+    final Path line = Path()..moveTo(toX(0), toY(v[0]));
+    for (int i = 1; i < n; i++) {
+      line.lineTo(toX(i), toY(v[i]));
+    }
+    // Soft fill under the line.
+    final Path fill = Path.from(line)
+      ..lineTo(toX(n - 1), size.height - pad)
+      ..lineTo(toX(0), size.height - pad)
+      ..close();
+    canvas.drawPath(
+        fill,
+        Paint()
+          ..color =
+              Color.fromRGBO(accent.red, accent.green, accent.blue, 0.08));
+    canvas.drawPath(
+        line,
+        Paint()
+          ..color = accent
+          ..strokeWidth = 2
+          ..style = PaintingStyle.stroke
+          ..strokeJoin = StrokeJoin.round);
+
+    // Points, with the latest one flagged by direction.
+    final Paint dot = Paint()..color = accent;
+    for (int i = 0; i < n - 1; i++) {
+      canvas.drawCircle(Offset(toX(i), toY(v[i])), 1.8, dot);
+    }
+    final bool up = v.last > mean;
+    final bool good = lowerIsBetter ? !up : up;
+    canvas.drawCircle(Offset(toX(n - 1), toY(v.last)), 3.6,
+        Paint()..color = good ? _kGood : _kBad);
+  }
+
+  @override
+  bool shouldRepaint(covariant _SparkPainter old) => true;
+}
+
+/// Card chrome matching the rest of the app.
+Widget _detailCard({required Widget child}) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorder)),
+      child: child,
+    );
+
+/// A labelled value row with an optional delta chip (vs your baseline).
+Widget _detailRow(String label, String value,
+    {String? delta, Color? deltaColor}) {
+  return Padding(
+    padding: const EdgeInsets.symmetric(vertical: 7),
+    child: Row(children: <Widget>[
+      Text(label, style: TextStyle(color: Colors.grey[500], fontSize: 14)),
+      const Spacer(),
+      if (delta != null) ...<Widget>[
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+          decoration: BoxDecoration(
+              color: Color.fromRGBO((deltaColor ?? Colors.grey).red,
+                  (deltaColor ?? Colors.grey).green,
+                  (deltaColor ?? Colors.grey).blue, 0.14),
+              borderRadius: BorderRadius.circular(6)),
+          child: Text(delta,
+              style: TextStyle(
+                  color: deltaColor ?? Colors.grey[400],
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700)),
+        ),
+        const SizedBox(width: 10),
+      ],
+      Text(value,
+          style: const TextStyle(
+              color: Color(0xFFEEEEEE),
+              fontSize: 14,
+              fontWeight: FontWeight.w600)),
+    ]),
+  );
+}
+
+/// A titled trend block: caption + sparkline.
+Widget _trendBlock(
+    {required String title,
+    required List<double> values,
+    required Color accent,
+    bool lowerIsBetter = false}) {
+  return Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+    Text(title,
+        style: TextStyle(
+            color: Colors.grey[500],
+            fontSize: 12,
+            fontWeight: FontWeight.w600)),
+    const SizedBox(height: 6),
+    _Sparkline(values, accent: accent, lowerIsBetter: lowerIsBetter),
+  ]);
+}
+
+/// The local "getting better/worse" read — headline + grounded notes.
+Widget _localInsightCard(InsightRead read, Color accent) {
+  return _detailCard(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+      Row(children: <Widget>[
+        Icon(Icons.insights_rounded, size: 16, color: accent),
+        const SizedBox(width: 6),
+        Text(read.headline.toUpperCase(),
+            style: TextStyle(
+                color: accent,
+                fontSize: 12,
+                letterSpacing: 1,
+                fontWeight: FontWeight.w800)),
+      ]),
+      if (read.notes.isNotEmpty) const SizedBox(height: 10),
+      ...read.notes.map((String nte) => Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              Text('· ',
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13)),
+              Expanded(
+                  child: Text(nte,
+                      style: const TextStyle(
+                          color: Color(0xFFDDDDDD),
+                          fontSize: 13.5,
+                          height: 1.45))),
+            ]),
+          )),
+    ]),
+  );
+}
+
+Color? _deltaColor(double delta, {required bool lowerIsBetter}) {
+  if (delta.abs() < 1e-9) {
+    return Colors.grey[500];
+  }
+  final bool good = lowerIsBetter ? delta < 0 : delta > 0;
+  return good ? _kGood : _kBad;
+}
+
+String _signed(num v, {int digits = 0}) =>
+    (v > 0 ? '+' : '') + v.toStringAsFixed(digits);
+
+// ───────────────────────────────────────────────────────────────────────
+// SLEEP NIGHT DETAIL
+// ───────────────────────────────────────────────────────────────────────
+
+class _SleepDetailScreen extends StatelessWidget {
+  final Color accent;
+  final SleepEntry entry;
+  final List<SleepEntry> all;
+  const _SleepDetailScreen(
+      {required this.accent, required this.entry, required this.all});
+
+  String _hm(int minutes) => '${minutes ~/ 60}h ${minutes % 60}m';
+
+  @override
+  Widget build(BuildContext context) {
+    final SleepEntry e = entry;
+    final DateTime asOf = DateTime.tryParse(e.date) ?? DateTime.now();
+    final double? normH = SleepMath.baselineHours(all, asOf);
+    final double? normRhr = SleepMath.baselineRestingHr(all, asOf);
+    final double? normHrv = SleepMath.baselineHrv(all, asOf);
+    final InsightRead read = sleepNightRead(e, all);
+
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Night detail')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: <Widget>[
+          // Headline stat.
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              Text(e.date,
+                  style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+              const SizedBox(height: 4),
+              Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: <Widget>[
+                Text(e.hours.toStringAsFixed(1),
+                    style: const TextStyle(
+                        color: Color(0xFFEEEEEE),
+                        fontSize: 40,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(width: 5),
+                const Padding(
+                    padding: EdgeInsets.only(bottom: 6),
+                    child: Text('hours asleep',
+                        style:
+                            TextStyle(color: Color(0xFF888888), fontSize: 13))),
+                const Spacer(),
+                if (e.bedTime.isNotEmpty)
+                  Text('${e.bedTime} → ${e.wakeTime}',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+              ]),
+              if (e.hasStages) ...<Widget>[
+                const SizedBox(height: 14),
+                _stagesBar(e),
+                const SizedBox(height: 8),
+                Wrap(spacing: 14, runSpacing: 4, children: <Widget>[
+                  _stageKey('Deep', e.deepMin ?? 0, const Color(0xFF3D5AFE)),
+                  _stageKey('REM', e.remMin ?? 0, const Color(0xFF7C4DFF)),
+                  _stageKey('Light', e.lightMin ?? 0, const Color(0xFF5B8DEF)),
+                  if ((e.awakeMin ?? 0) > 0)
+                    _stageKey('Awake', e.awakeMin ?? 0, const Color(0xFF555555)),
+                ]),
+              ],
+            ]),
+          ),
+          const SizedBox(height: 12),
+
+          // Vitals vs your baseline.
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              _cardLabel('VITALS · VS YOUR NORM'),
+              const SizedBox(height: 4),
+              _detailRow(
+                'Duration',
+                '${e.hours.toStringAsFixed(1)} h',
+                delta: normH == null
+                    ? null
+                    : '${_signed(e.hours - normH, digits: 1)} h',
+                deltaColor: normH == null
+                    ? null
+                    : _deltaColor(e.hours - normH, lowerIsBetter: false),
+              ),
+              if (e.restingHr != null)
+                _detailRow(
+                  'Resting HR',
+                  '${e.restingHr!.round()} bpm',
+                  delta: normRhr == null
+                      ? null
+                      : '${_signed(e.restingHr! - normRhr)} bpm',
+                  deltaColor: normRhr == null
+                      ? null
+                      : _deltaColor(e.restingHr! - normRhr,
+                          lowerIsBetter: true),
+                ),
+              if (e.hrv != null)
+                _detailRow(
+                  'HRV',
+                  '${e.hrv!.round()} ms',
+                  delta: normHrv == null
+                      ? null
+                      : '${_signed(e.hrv! - normHrv)} ms',
+                  deltaColor: normHrv == null
+                      ? null
+                      : _deltaColor(e.hrv! - normHrv, lowerIsBetter: false),
+                ),
+              if (e.respiratoryRate != null)
+                _detailRow('Respiratory rate',
+                    '${e.respiratoryRate!.toStringAsFixed(1)} /min'),
+              if (e.avgHr != null)
+                _detailRow('Overnight HR', '${e.avgHr!.round()} bpm'),
+            ]),
+          ),
+          const SizedBox(height: 12),
+
+          // Trends.
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              _cardLabel('TRENDS · LAST 3 WEEKS'),
+              const SizedBox(height: 12),
+              _trendBlock(
+                  title: 'Sleep duration (h)',
+                  values: sleepSeries(all, e.date, (SleepEntry x) => x.hours),
+                  accent: accent),
+              const SizedBox(height: 16),
+              _trendBlock(
+                  title: 'Resting HR (lower is better)',
+                  values:
+                      sleepSeries(all, e.date, (SleepEntry x) => x.restingHr),
+                  accent: accent,
+                  lowerIsBetter: true),
+              const SizedBox(height: 16),
+              _trendBlock(
+                  title: 'HRV (higher is better)',
+                  values: sleepSeries(all, e.date, (SleepEntry x) => x.hrv),
+                  accent: accent),
+            ]),
+          ),
+          const SizedBox(height: 12),
+          _localInsightCard(read, accent),
+        ],
+      ),
+    );
+  }
+
+  Widget _stagesBar(SleepEntry e) {
+    final int deep = e.deepMin ?? 0;
+    final int rem = e.remMin ?? 0;
+    final int light = e.lightMin ?? 0;
+    final int awake = e.awakeMin ?? 0;
+    final int total = deep + rem + light + awake;
+    if (total == 0) {
+      return const SizedBox.shrink();
+    }
+    Widget seg(int m, Color c) => m == 0
+        ? const SizedBox.shrink()
+        : Expanded(flex: m, child: Container(color: c));
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(6),
+      child: SizedBox(
+        height: 14,
+        child: Row(children: <Widget>[
+          seg(deep, const Color(0xFF3D5AFE)),
+          seg(rem, const Color(0xFF7C4DFF)),
+          seg(light, const Color(0xFF5B8DEF)),
+          seg(awake, const Color(0xFF555555)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _stageKey(String label, int minutes, Color c) {
+    return Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+      Container(
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+      const SizedBox(width: 5),
+      Text('$label ${_hm(minutes)}',
+          style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+    ]);
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// RUN DETAIL
+// ───────────────────────────────────────────────────────────────────────
+
+class _RunDetailScreen extends StatelessWidget {
   final Color accent;
   final RunRecord run;
-  const _RunDetailSheet({required this.accent, required this.run});
+  final List<RunRecord> runs;
+  final List<SleepEntry> sleep;
+  const _RunDetailScreen(
+      {required this.accent,
+      required this.run,
+      required this.runs,
+      required this.sleep});
+
+  String _paceMi(RunRecord r) {
+    final double mi = r.distanceKm * 0.621371;
+    if (mi <= 0) {
+      return '—';
+    }
+    final int s = (r.durationSec / mi).round();
+    return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')} /mi';
+  }
 
   @override
   Widget build(BuildContext context) {
     final RunRecord r = run;
     final double mi = r.distanceKm * 0.621371;
-    String pace() {
-      if (mi <= 0) {
-        return '—';
-      }
-      final int s = (r.durationSec / mi).round();
-      return '${s ~/ 60}:${(s % 60).toString().padLeft(2, '0')} /mi';
-    }
+    final DateTime asOf = DateTime.tryParse(r.date) ?? DateTime.now();
+    final double? restingHr = SleepMath.baselineRestingHr(sleep, asOf) ??
+        SleepMath.latest(sleep)?.restingHr;
+    final InsightRead read = runRead(r, runs, restingHr: restingHr);
 
     final String dur =
         '${r.durationSec ~/ 60}m ${(r.durationSec % 60).toString().padLeft(2, '0')}s';
@@ -8837,63 +9341,133 @@ class _RunDetailSheet extends StatelessWidget {
         : (r.effort == 'ok'
             ? 'OK'
             : '${r.effort[0].toUpperCase()}${r.effort.substring(1)}');
-    final List<List<String>> rows = <List<String>>[
-      <String>['Date', r.date],
-      if (r.level > 0) <String>['Plan level', '${r.level}'],
-      if (mi > 0) <String>['Distance', '${mi.toStringAsFixed(2)} mi'],
-      <String>['Duration', dur],
-      if (mi > 0) <String>['Pace', pace()],
-      if (r.avgHr != null) <String>['Avg heart rate', '${r.avgHr!.round()} bpm'],
-      if (r.calories != null) <String>['Calories', '${r.calories!.round()} cal'],
-      <String>['Felt', effort],
-      <String>['Source', r.source == 'healthconnect' ? 'From watch' : 'Logged'],
-    ];
-    return Padding(
-      padding: EdgeInsets.fromLTRB(
-          24,
-          20,
-          24,
-          MediaQuery.of(context).viewPadding.bottom + 24),
-      child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(children: <Widget>[
-              Icon(Icons.directions_run_rounded, color: accent),
-              const SizedBox(width: 8),
-              Text('Run detail',
-                  style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: accent)),
+
+    // Pace vs the user's average at this level.
+    final double? levelAvg = (r.distanceKm > 0 && r.level > 0)
+        ? avgPaceSecPerKmAtLevel(runs, r.level, exceptId: r.id)
+        : null;
+    String? paceDelta;
+    Color? paceDeltaColor;
+    if (levelAvg != null && r.distanceKm > 0) {
+      final int dMi = ((r.paceSecPerKm - levelAvg) * 1.609344).round();
+      paceDelta = '${dMi <= 0 ? '−' : '+'}${paceDeltaLabel(dMi)}/mi';
+      paceDeltaColor = _deltaColor(dMi.toDouble(), lowerIsBetter: true);
+    }
+
+    // HR series over recent runs, for a trend.
+    final List<RunRecord> hrRuns = runs
+        .where((RunRecord x) => x.avgHr != null)
+        .toList()
+      ..sort((RunRecord a, RunRecord b) => a.date.compareTo(b.date));
+    final List<double> hrSeries =
+        hrRuns.map((RunRecord x) => x.avgHr!).toList();
+
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('Run detail')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: <Widget>[
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              Text(r.date,
+                  style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+              const SizedBox(height: 4),
+              Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+                  textBaseline: TextBaseline.alphabetic,
+                  children: <Widget>[
+                Text(mi > 0 ? mi.toStringAsFixed(2) : dur,
+                    style: const TextStyle(
+                        color: Color(0xFFEEEEEE),
+                        fontSize: 38,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(width: 5),
+                if (mi > 0)
+                  const Padding(
+                      padding: EdgeInsets.only(bottom: 6),
+                      child: Text('miles',
+                          style: TextStyle(
+                              color: Color(0xFF888888), fontSize: 13))),
+                const Spacer(),
+                if (r.level > 0)
+                  Text('Level ${r.level}',
+                      style:
+                          TextStyle(color: Colors.grey[500], fontSize: 13)),
+              ]),
+              if (!r.completed)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text('Partial — not completed',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+                ),
             ]),
-            const SizedBox(height: 8),
-            if (!r.completed)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text('Partial — not completed',
-                    style: TextStyle(color: Colors.grey[500], fontSize: 12)),
-              ),
-            const SizedBox(height: 8),
-            ...rows.map((List<String> kv) => Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 7),
-                  child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: <Widget>[
-                        Text(kv[0],
-                            style: TextStyle(
-                                color: Colors.grey[500], fontSize: 14)),
-                        Text(kv[1],
-                            style: const TextStyle(
-                                color: Color(0xFFEEEEEE),
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600)),
-                      ]),
-                )),
-            const SizedBox(height: 8),
-            Text('Swipe a run left in the list to delete it.',
-                style: TextStyle(color: Colors.grey[600], fontSize: 11)),
-          ]),
+          ),
+          const SizedBox(height: 12),
+
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              _cardLabel('THIS RUN'),
+              const SizedBox(height: 4),
+              _detailRow('Duration', dur),
+              if (mi > 0)
+                _detailRow('Pace', _paceMi(r),
+                    delta: paceDelta, deltaColor: paceDeltaColor),
+              if (r.avgHr != null)
+                _detailRow(
+                  'Avg heart rate',
+                  '${r.avgHr!.round()} bpm',
+                  delta: restingHr != null
+                      ? '${_signed(r.avgHr! - restingHr)} over rest'
+                      : null,
+                  deltaColor: restingHr != null
+                      ? _deltaColor(r.avgHr! - restingHr, lowerIsBetter: true)
+                      : null,
+                ),
+              if (r.calories != null)
+                _detailRow('Calories', '${r.calories!.round()} cal'),
+              _detailRow('Felt', effort),
+              _detailRow(
+                  'Source', r.source == 'healthconnect' ? 'From watch' : 'Logged'),
+            ]),
+          ),
+          const SizedBox(height: 12),
+
+          _detailCard(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+              _cardLabel('TRENDS'),
+              const SizedBox(height: 12),
+              _trendBlock(
+                  title: 'Pace over recent runs (lower is better)',
+                  values: runPaceSeries(runs),
+                  accent: accent,
+                  lowerIsBetter: true),
+              if (hrSeries.length >= 2) ...<Widget>[
+                const SizedBox(height: 16),
+                _trendBlock(
+                    title: 'Avg heart rate over recent runs',
+                    values: hrSeries,
+                    accent: accent,
+                    lowerIsBetter: true),
+              ],
+            ]),
+          ),
+          const SizedBox(height: 12),
+          _localInsightCard(read, accent),
+          const SizedBox(height: 10),
+          Text('Swipe a run left in the list to delete it.',
+              style: TextStyle(color: Colors.grey[600], fontSize: 11)),
+        ],
+      ),
     );
   }
 }
+
+Widget _cardLabel(String text) => Text(text,
+    style: TextStyle(
+        color: Colors.grey[600],
+        fontSize: 11,
+        letterSpacing: 1.2,
+        fontWeight: FontWeight.w700));
