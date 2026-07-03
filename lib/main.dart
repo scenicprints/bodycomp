@@ -468,6 +468,22 @@ class AdvisorDigest {
       }
     }
 
+    // Earliest date we have ANY data for — days before this are pre-adoption
+    // and stay hidden; days after it with no food are shown as "no food logged"
+    // so the coach treats them as no-data (not a failure), per the advisor rule.
+    String? firstDataDate;
+    for (final String d in <String>[
+      ...logByDate.keys,
+      ...byDateCal.keys,
+      ...fasted,
+      ...sleepByDate.keys,
+      ...runsByDate.keys,
+    ]) {
+      if (firstDataDate == null || d.compareTo(firstDataDate) < 0) {
+        firstDataDate = d;
+      }
+    }
+
     sb.writeln('\nPER-DAY DETAIL (oldest to newest):');
     for (int i = detailDays - 1; i >= 0; i--) {
       final String d = formatDate(now.subtract(Duration(days: i)));
@@ -476,7 +492,10 @@ class AdvisorDigest {
       final bool isFast = fasted.contains(d);
       final SleepEntry? slp = sleepByDate[d];
       final List<RunRecord>? dayRuns = runsByDate[d];
-      if (log == null && !hasFood && !isFast && slp == null && dayRuns == null) {
+      // Drop only truly empty days that predate the user's first-ever data.
+      final bool beforeAdoption =
+          firstDataDate == null || d.compareTo(firstDataDate) < 0;
+      if (beforeAdoption) {
         continue;
       }
       final List<String> parts = <String>[d];
@@ -497,6 +516,8 @@ class AdvisorDigest {
         }
       } else if (isFast) {
         parts.add('FASTED (0 cal)');
+      } else {
+        parts.add('no food logged');
       }
       if (slp != null) {
         parts.add('slept ${slp.hours.toStringAsFixed(1)}h'
@@ -7908,10 +7929,35 @@ class _CoachScreenState extends State<_CoachScreen> {
     super.initState();
     if (widget.audioCues) {
       _tts = FlutterTts();
+      _initTts();
     }
     _left = _ivs.isNotEmpty ? _ivs.first.seconds : 0;
     _cue(_ivs.first.kind);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  // Configure the voice once up front. System default volume is often well
+  // below full — push it to max and speak deliberately so cues carry over
+  // footfalls and wind. Per-cue tweaks (see _say) layer on top of this.
+  Future<void> _initTts() async {
+    try {
+      await _tts!.awaitSpeakCompletion(true);
+      await _tts!.setVolume(1.0);
+      await _tts!.setSpeechRate(0.5);
+      await _tts!.setPitch(1.0);
+    } catch (_) {}
+  }
+
+  Future<void> _say(String phrase,
+      {double volume = 1.0, double pitch = 1.0}) async {
+    if (_tts == null) {
+      return;
+    }
+    try {
+      await _tts!.setVolume(volume);
+      await _tts!.setPitch(pitch);
+      await _tts!.speak(phrase);
+    } catch (_) {}
   }
 
   @override
@@ -7970,23 +8016,43 @@ class _CoachScreenState extends State<_CoachScreen> {
         }
       }
     } catch (_) {}
-    if (widget.audioCues && _tts != null) {
-      final String phrase = k == IntervalKind.run
-          ? 'Run'
-          : k == IntervalKind.walk
-              ? 'Walk'
-              : k == IntervalKind.warmup
-                  ? 'Warm up'
-                  : 'Cool down';
-      try {
-        await _tts!.speak(phrase);
-      } catch (_) {}
+    if (!widget.audioCues || _tts == null) {
+      return;
+    }
+    // Run and walk are the switches you have to catch mid-stride — say them
+    // LOUD and firm (full volume, lifted pitch). Warm-up / cool-down are
+    // context, not commands, so they sit back a touch.
+    switch (k) {
+      case IntervalKind.run:
+        await _say('Run!', volume: 1.0, pitch: 1.15);
+        break;
+      case IntervalKind.walk:
+        await _say('Walk!', volume: 1.0, pitch: 1.15);
+        break;
+      case IntervalKind.warmup:
+        await _say('Warm up', volume: 0.85, pitch: 1.0);
+        break;
+      case IntervalKind.cooldown:
+        await _say('Cool down', volume: 0.85, pitch: 1.0);
+        break;
     }
   }
 
   void _finish() {
     setState(() => _done = true);
     _timer?.cancel();
+    // A long triple buzz + a spoken sign-off so you KNOW the run is over
+    // without pulling the phone out — this was previously silent.
+    try {
+      Vibration.hasVibrator().then((bool has) {
+        if (has) {
+          Vibration.vibrate(pattern: <int>[0, 300, 150, 300, 150, 500]);
+        }
+      });
+    } catch (_) {}
+    if (widget.audioCues && _tts != null) {
+      _say("Run complete. Nice work.", volume: 1.0, pitch: 1.0);
+    }
   }
 
   String _mmss(int s) =>
