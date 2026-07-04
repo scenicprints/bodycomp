@@ -457,15 +457,45 @@ class AdvisorDigest {
         sumFiber += dt.nutrients['fiber'] ?? 0;
       }
     }
+    // How current is the food tracking? Days since the most recent logged food.
+    // This gates everything below: a deficit computed from LAST week's logs must
+    // never be presented as THIS week's reality when the user has stopped
+    // tracking. (0 = logged today, -1 = nothing logged recently at all.)
+    int daysSinceFood = -1;
+    for (int i = 0; i <= 60; i++) {
+      if ((byDateCal[formatDate(now.subtract(Duration(days: i)))] ?? 0) > 0) {
+        daysSinceFood = i;
+        break;
+      }
+    }
+    final bool trackingStale = daysSinceFood < 0 || daysSinceFood >= 3;
+
     if (eaten > 0) {
       final double avgCal = sumCal / eaten;
       sb.writeln(
-          '\nLAST $detailDays DAYS — logged $eaten day(s); averages: ${avgCal.round()} cal, protein ${(sumP / eaten).round()} g, fat ${(sumF / eaten).round()} g, carbs ${(sumC / eaten).round()} g, fiber ${(sumFiber / eaten).round()} g.');
-      if (tdee > 0) {
+          '\nLAST $detailDays DAYS — food logged on $eaten of them; averages on those LOGGED days only: ${avgCal.round()} cal, protein ${(sumP / eaten).round()} g, fat ${(sumF / eaten).round()} g, carbs ${(sumC / eaten).round()} g, fiber ${(sumFiber / eaten).round()} g.');
+      // Only surface the deficit prediction when tracking is CURRENT — otherwise
+      // it reads as "you're on a deficit" for a week that hasn't been tracked.
+      if (!trackingStale && tdee > 0) {
         final double dailyDeficit = tdee - avgCal;
         sb.writeln(
-            'AVERAGE ACTUAL DEFICIT: ${dailyDeficit.round()} cal/day (predicts ~${(dailyDeficit * 7 / 3500).toStringAsFixed(1)} lb/week of fat).');
+            'AVERAGE ACTUAL DEFICIT (over the $eaten logged day(s)): ${dailyDeficit.round()} cal/day (predicts ~${(dailyDeficit * 7 / 3500).toStringAsFixed(1)} lb/week of fat).');
       }
+    }
+
+    // Loudly flag stale/absent tracking so the coach judges from the scale, not
+    // from a deficit it can no longer see.
+    if (daysSinceFood < 0) {
+      sb.writeln(
+          '\nINTAKE STATUS: UNTRACKED — no food logged recently. There is NO current calorie data. Do NOT claim a deficit or surplus from intake and do NOT reassure from older logs. The weight/fat trend is the only current signal; if weight is rising while intake is untracked, they are eating at a surplus.');
+    } else if (trackingStale) {
+      sb.writeln(
+          '\nINTAKE STATUS: STALE — last food log was $daysSinceFood days ago; the days since are untracked. Any calorie/deficit figure above is from BEFORE that gap and does NOT describe what they are eating now — do NOT treat it as a current deficit or use it to reassure them. Judge current status from the weight trend: rising weight + untracked intake = a surplus right now.');
+    } else if (daysSinceFood > 0) {
+      sb.writeln(
+          '\nINTAKE STATUS: current (last food log ${daysSinceFood == 1 ? 'yesterday' : '$daysSinceFood days ago'}).');
+    } else {
+      sb.writeln('\nINTAKE STATUS: current (food logged today).');
     }
 
     // Earliest date we have ANY data for — days before this are pre-adoption
@@ -645,6 +675,20 @@ class AppStorage {
   static void saveLogs(List<DailyLog> logs) {
     final Map<String, dynamic> d = _read();
     d['logs'] = logs.map((DailyLog l) => l.toJson()).toList();
+    _write(d);
+  }
+
+  /// Target wake-up time for the bedtime recommender, as 'HH:mm'. Persists
+  /// until the user manually changes it — never set or cleared automatically.
+  static String? getWakeTime() {
+    final Map<String, dynamic> d = _read();
+    final dynamic v = d['wakeTimeTarget'];
+    return v is String && v.isNotEmpty ? v : null;
+  }
+
+  static void saveWakeTime(String hm) {
+    final Map<String, dynamic> d = _read();
+    d['wakeTimeTarget'] = hm;
     _write(d);
   }
 
@@ -8220,6 +8264,45 @@ class SleepScreen extends StatefulWidget {
 
 class _SleepScreenState extends State<SleepScreen> {
   bool _importing = false;
+  String? _wakeTarget; // 'HH:mm', persisted; stays until manually changed
+
+  @override
+  void initState() {
+    super.initState();
+    _wakeTarget = AppStorage.getWakeTime();
+  }
+
+  int? _parseHm(String hm) {
+    final List<String> p = hm.split(':');
+    if (p.length != 2) {
+      return null;
+    }
+    final int? h = int.tryParse(p[0]);
+    final int? m = int.tryParse(p[1]);
+    if (h == null || m == null) {
+      return null;
+    }
+    return h * 60 + m;
+  }
+
+  Future<void> _pickWakeTime() async {
+    final int? cur = _wakeTarget == null ? null : _parseHm(_wakeTarget!);
+    final TimeOfDay initial = cur != null
+        ? TimeOfDay(hour: cur ~/ 60, minute: cur % 60)
+        : const TimeOfDay(hour: 6, minute: 30);
+    final TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: initial,
+      helpText: 'WHAT TIME DO YOU NEED TO WAKE UP?',
+    );
+    if (picked == null) {
+      return;
+    }
+    final String hm = '${picked.hour.toString().padLeft(2, '0')}:'
+        '${picked.minute.toString().padLeft(2, '0')}';
+    AppStorage.saveWakeTime(hm);
+    setState(() => _wakeTarget = hm);
+  }
 
   SleepEntry? get _last => SleepMath.latest(widget.sleep);
   double? get _baseline => SleepMath.baselineHours(widget.sleep, DateTime.now());
@@ -8412,6 +8495,8 @@ class _SleepScreenState extends State<SleepScreen> {
                     accent: widget.accent, entry: last, all: widget.sleep))),
             child: _lastNightCard(last),
           ),
+          const SizedBox(height: 12),
+          _bedtimeCard(),
           if (readiness != null) ...<Widget>[
             const SizedBox(height: 12),
             _readinessCard(readiness),
@@ -8543,6 +8628,108 @@ class _SleepScreenState extends State<SleepScreen> {
       Text('$label ${_hm(minutes)}',
           style: TextStyle(color: Colors.grey[500], fontSize: 11)),
     ]);
+  }
+
+  Widget _bedtimeCard() {
+    final Color accent = widget.accent;
+    final int? wakeMin = _wakeTarget == null ? null : _parseHm(_wakeTarget!);
+    String fmt(int minutes) =>
+        TimeOfDay(hour: (minutes ~/ 60) % 24, minute: minutes % 60)
+            .format(context);
+
+    final List<Widget> body = <Widget>[];
+    if (wakeMin == null) {
+      body.add(Text(
+          "Set the time you need to wake up and I'll work back to when you "
+          "should be in bed — from a healthy 8h target, how long you take to "
+          "settle, and your recovery vitals.",
+          style:
+              TextStyle(color: Colors.grey[500], fontSize: 13, height: 1.35)));
+    } else {
+      final BedtimeRecommendation rec =
+          recommendBedtime(widget.sleep, DateTime.now());
+      final int bedMin = bedtimeMinutes(wakeMin, rec.minutesBeforeWake);
+      final int h = rec.minutesBeforeWake ~/ 60;
+      final int m = rec.minutesBeforeWake % 60;
+      body.addAll(<Widget>[
+        Text('Go to bed by',
+            style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+        const SizedBox(height: 2),
+        Row(crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: <Widget>[
+          Text(fmt(bedMin),
+              style: TextStyle(
+                  color: accent, fontSize: 36, fontWeight: FontWeight.w800)),
+          const SizedBox(width: 8),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text('for ${h}h ${m}m in bed → ${fmt(wakeMin)}',
+                style: const TextStyle(color: Color(0xFF888888), fontSize: 13)),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        ...rec.factors.map((String f) => Padding(
+              padding: const EdgeInsets.only(bottom: 5),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                Padding(
+                    padding: const EdgeInsets.only(top: 5, right: 8),
+                    child: Container(width: 4, height: 4,
+                        decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.7),
+                            shape: BoxShape.circle))),
+                Expanded(
+                    child: Text(f,
+                        style: TextStyle(
+                            color: Colors.grey[500],
+                            fontSize: 12,
+                            height: 1.3))),
+              ]),
+            )),
+      ]);
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF262626))),
+      child:
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Text('BEDTIME',
+              style: TextStyle(
+                  color: Colors.grey[600],
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700)),
+          const Spacer(),
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: _pickWakeTime,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+              child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                Icon(Icons.alarm_rounded, color: accent, size: 15),
+                const SizedBox(width: 5),
+                Text(wakeMin != null ? 'Wake ${fmt(wakeMin)}' : 'Set wake time',
+                    style: TextStyle(
+                        color: accent,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(width: 3),
+                const Icon(Icons.edit_rounded,
+                    color: Color(0xFF777777), size: 13),
+              ]),
+            ),
+          ),
+        ]),
+        const SizedBox(height: 12),
+        ...body,
+      ]),
+    );
   }
 
   Widget _readinessCard(Readiness r) {

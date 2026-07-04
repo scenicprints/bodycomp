@@ -198,6 +198,76 @@ void main() {
       expect(decodeSleep('[${jsonEncodeEntry(e)}]').length, 1);
     });
   });
+
+  group('Bedtime recommendation', () {
+    // A night with explicit bed/wake clocks so settle time is measurable.
+    SleepEntry night(String date, double asleepH, String bed, String wake,
+            {double? rhr, double? hrv}) =>
+        SleepEntry(
+          id: date,
+          date: date,
+          asleepMinutes: (asleepH * 60).round(),
+          bedTime: bed,
+          wakeTime: wake,
+          restingHr: rhr,
+          hrv: hrv,
+        );
+
+    test('no data → healthy 8h target + default settle, nothing personalised',
+        () {
+      final BedtimeRecommendation r =
+          recommendBedtime(<SleepEntry>[], today);
+      expect(r.sleepNeedMin, 8 * 60);
+      expect(r.settleMeasured, isFalse);
+      expect(r.nudgeMin, 0);
+      // 8h + 25m default settle.
+      expect(r.minutesBeforeWake, 8 * 60 + 25);
+    });
+
+    test('settle time is measured from the gap between time-in-bed and asleep',
+        () {
+      // In bed 23:00→07:00 = 8h; asleep 7.5h → 30 min settle each night.
+      final List<SleepEntry> e = <SleepEntry>[
+        night('2026-06-29', 7.5, '23:00', '07:00'),
+        night('2026-06-28', 7.5, '23:00', '07:00'),
+        night('2026-06-27', 7.5, '23:00', '07:00'),
+      ];
+      expect(averageSettleMinutes(e, today), 30);
+      final BedtimeRecommendation r = recommendBedtime(e, today);
+      expect(r.settleMeasured, isTrue);
+      expect(r.settleMin, 30);
+    });
+
+    test('elevated resting HR and depressed HRV nudge bedtime earlier', () {
+      // Baselines from three calm nights, then a bad last night.
+      final List<SleepEntry> e = <SleepEntry>[
+        night('2026-06-26', 8, '23:00', '07:00', rhr: 50, hrv: 60),
+        night('2026-06-27', 8, '23:00', '07:00', rhr: 50, hrv: 60),
+        night('2026-06-28', 8, '23:00', '07:00', rhr: 50, hrv: 60),
+        night('2026-06-29', 8, '23:00', '07:00', rhr: 58, hrv: 45),
+      ];
+      final BedtimeRecommendation r = recommendBedtime(e, today);
+      // +15 for high resting HR, +15 for low HRV.
+      expect(r.nudgeMin, 30);
+    });
+
+    test('bedtimeMinutes works backwards and wraps across midnight', () {
+      // Wake 06:30 (390 min), budget 8h30m (510 min) → 22:00 the night before.
+      expect(bedtimeMinutes(390, 510), 22 * 60);
+      // Exactly midnight wrap.
+      expect(bedtimeMinutes(0, 60), 23 * 60);
+    });
+
+    test('a higher personal norm overrides the 8h target', () {
+      final List<SleepEntry> e = <SleepEntry>[
+        night('2026-06-27', 9, '22:00', '07:00'),
+        night('2026-06-28', 9, '22:00', '07:00'),
+        night('2026-06-29', 9, '22:00', '07:00'),
+      ];
+      final BedtimeRecommendation r = recommendBedtime(e, today);
+      expect(r.sleepNeedMin, 9 * 60);
+    });
+  });
 }
 
 String jsonEncodeEntry(SleepEntry e) {

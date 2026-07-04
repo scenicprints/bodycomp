@@ -276,6 +276,158 @@ String? scaleNoiseNote(double weightDeltaLb, double? recentSleepHours) {
   return null;
 }
 
+// ───────────────────────────────────────────────────────────────────────
+// BEDTIME RECOMMENDATION — work backwards from a fixed wake time to when the
+// user should be in bed. Base is a healthy 8h target (never below their own
+// higher norm), plus THEIR measured settle time (how long they take to fall
+// asleep + lie awake), plus a recovery nudge that moves bedtime EARLIER when
+// vitals are off baseline or they're carrying recent sleep debt. Every input
+// is spelled out in [factors] — no black box. Pure + unit-tested.
+// ───────────────────────────────────────────────────────────────────────
+
+class BedtimeRecommendation {
+  final int minutesBeforeWake; // total time-in-bed budget before wake
+  final int sleepNeedMin; // healthy target (or personal norm, if higher)
+  final int settleMin; // fall-asleep + awake-in-bed overhead
+  final int nudgeMin; // extra "turn in earlier" minutes (recovery/debt)
+  final bool settleMeasured; // false = used the default, no personal data yet
+  final List<String> factors; // human-readable reasoning
+  const BedtimeRecommendation({
+    required this.minutesBeforeWake,
+    required this.sleepNeedMin,
+    required this.settleMin,
+    required this.nudgeMin,
+    required this.settleMeasured,
+    required this.factors,
+  });
+}
+
+const int _defaultSettleMin = 25;
+
+int? _hmToMinutes(String hm) {
+  final List<String> p = hm.split(':');
+  if (p.length != 2) {
+    return null;
+  }
+  final int? h = int.tryParse(p[0]);
+  final int? m = int.tryParse(p[1]);
+  if (h == null || m == null || h < 0 || h > 23 || m < 0 || m > 59) {
+    return null;
+  }
+  return h * 60 + m;
+}
+
+/// Minutes from a bed time to a wake time, wrapping across midnight.
+int? _inBedMinutes(String bedHm, String wakeHm) {
+  final int? b = _hmToMinutes(bedHm);
+  final int? w = _hmToMinutes(wakeHm);
+  if (b == null || w == null) {
+    return null;
+  }
+  int diff = w - b;
+  if (diff <= 0) {
+    diff += 24 * 60; // crossed midnight
+  }
+  return diff;
+}
+
+/// Their own average overhead: time in bed minus time actually asleep, over
+/// the trailing 14 nights that recorded both bed/wake and asleep time. Null
+/// when there's nothing to measure.
+int? averageSettleMinutes(List<SleepEntry> entries, DateTime today) {
+  final List<int> vals = <int>[];
+  for (final SleepEntry e in SleepMath._within(entries, today, 14)) {
+    if (e.bedTime.isEmpty || e.wakeTime.isEmpty || e.asleepMinutes <= 0) {
+      continue;
+    }
+    final int? inBed = _inBedMinutes(e.bedTime, e.wakeTime);
+    if (inBed == null) {
+      continue;
+    }
+    final int gap = inBed - e.asleepMinutes;
+    if (gap >= 0 && gap <= 180) {
+      // Sane bound — ignore corrupt spans.
+      vals.add(gap);
+    }
+  }
+  if (vals.isEmpty) {
+    return null;
+  }
+  return (vals.reduce((int a, int b) => a + b) / vals.length).round();
+}
+
+/// Bed time (minutes-since-midnight, 0..1439) for a given wake time and budget.
+int bedtimeMinutes(int wakeMinutes, int minutesBeforeWake) {
+  int b = (wakeMinutes - minutesBeforeWake) % (24 * 60);
+  if (b < 0) {
+    b += 24 * 60;
+  }
+  return b;
+}
+
+/// The recommendation. [targetHours] is the healthy floor (default 8h).
+BedtimeRecommendation recommendBedtime(
+  List<SleepEntry> entries,
+  DateTime today, {
+  double targetHours = 8.0,
+}) {
+  final List<String> factors = <String>[];
+
+  // 1) Sleep need — a healthy target, but honour a higher personal norm.
+  final double? norm = SleepMath.baselineHours(entries, today);
+  final bool useNorm = norm != null && norm > targetHours + 0.05;
+  final double needH = useNorm ? norm : targetHours;
+  final int sleepNeedMin = (needH * 60).round();
+  factors.add(useNorm
+      ? 'You average ${norm.toStringAsFixed(1)}h — using that as your need.'
+      : 'Targeting ${targetHours.toStringAsFixed(0)}h of sleep.');
+
+  // 2) Settle time — how long YOU take to fall asleep + lie awake.
+  final int? measured = averageSettleMinutes(entries, today);
+  final int settleMin = measured ?? _defaultSettleMin;
+  factors.add(measured != null
+      ? 'You take about $settleMin min to fall asleep and settle.'
+      : 'Assuming ~$settleMin min to fall asleep (refines as sleep imports).');
+
+  // 3) Recovery nudge — under-recovered or in sleep debt → turn in earlier.
+  int nudge = 0;
+  final SleepEntry? last = SleepMath.latest(entries);
+  final double? baseRhr = SleepMath.baselineRestingHr(entries, today);
+  if (last?.restingHr != null &&
+      baseRhr != null &&
+      last!.restingHr! - baseRhr >= 3) {
+    nudge += 15;
+    factors.add('Resting HR ${last.restingHr!.round()} is above your '
+        '${baseRhr.round()} norm — recover with more sleep (+15 min).');
+  }
+  final double? baseHrv = SleepMath.baselineHrv(entries, today);
+  if (last?.hrv != null &&
+      baseHrv != null &&
+      baseHrv > 0 &&
+      (baseHrv - last!.hrv!) / baseHrv >= 0.10) {
+    nudge += 15;
+    factors.add('HRV ${last.hrv!.round()}ms is below your '
+        '${baseHrv.round()}ms norm — under-recovered (+15 min).');
+  }
+  final double? avg7 = SleepMath.averageHours(entries, today, 7);
+  if (avg7 != null && needH - avg7 >= 0.5) {
+    nudge += 15;
+    factors.add('Averaging ${avg7.toStringAsFixed(1)}h lately, under your '
+        '${needH.toStringAsFixed(1)}h need — turn in earlier to catch up '
+        '(+15 min).');
+  }
+  nudge = nudge.clamp(0, 45);
+
+  return BedtimeRecommendation(
+    minutesBeforeWake: sleepNeedMin + settleMin + nudge,
+    sleepNeedMin: sleepNeedMin,
+    settleMin: settleMin,
+    nudgeMin: nudge,
+    settleMeasured: measured != null,
+    factors: factors,
+  );
+}
+
 /// A compact sleep summary for the AI-coach digests (empty when no data).
 String sleepDigest(List<SleepEntry> entries, DateTime today) {
   final SleepEntry? last = SleepMath.latest(entries);
