@@ -7992,8 +7992,10 @@ class _CoachScreenState extends State<_CoachScreen> {
   @override
   void initState() {
     super.initState();
-    // Keep the run alive with the screen off / phone pocketed.
+    // Keep the run alive with the screen off / phone pocketed, and relay
+    // Pause/Stop taps from the ongoing notification (lock screen + watch).
     RunService.start();
+    FlutterForegroundTask.addTaskDataCallback(_onServiceAction);
     if (widget.audioCues) {
       _tts = FlutterTts();
       _initTts();
@@ -8001,7 +8003,42 @@ class _CoachScreenState extends State<_CoachScreen> {
     _startMs = DateTime.now().millisecondsSinceEpoch;
     _left = _ivs.isNotEmpty ? _ivs.first.seconds : 0;
     _cue(_ivs.first.kind);
+    _syncNotification();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  // A Pause/Resume or Stop tap on the notification arrives here (relayed from
+  // the service isolate). Mirror the on-screen buttons exactly.
+  void _onServiceAction(Object data) {
+    if (!mounted) {
+      return;
+    }
+    if (data == kRunActionToggle) {
+      _togglePause();
+    } else if (data == kRunActionStop) {
+      Navigator.pop<RunOutcome>(context, null);
+    }
+  }
+
+  // Reflect the live run into the ongoing notification: the current phase and
+  // its countdown as the title, what's next + total progress as the body.
+  // Safe to call every second — the channel is onlyAlertOnce (no re-buzz).
+  void _syncNotification() {
+    if (_done) {
+      return;
+    }
+    final RunInterval cur = _ivs[_idx];
+    final RunInterval? next = _idx < _ivs.length - 1 ? _ivs[_idx + 1] : null;
+    final String phase = _kindLabel(cur.kind);
+    final String title = _paused
+        ? 'Paused · $phase ${_mmss(_left)}'
+        : '$phase · ${_mmss(_left)} left';
+    final String progress =
+        '${_mmss(_elapsed)} / ${_mmss(widget.workout.totalSeconds)}';
+    final String body = next != null
+        ? 'Next: ${_kindLabel(next.kind)} ${_mmss(next.seconds)}  ·  $progress'
+        : 'Final interval  ·  $progress';
+    RunService.update(title: title, text: body, paused: _paused);
   }
 
   // Configure the voice once up front. System default volume is often well
@@ -8032,6 +8069,7 @@ class _CoachScreenState extends State<_CoachScreen> {
   void dispose() {
     _timer?.cancel();
     _tts?.stop();
+    FlutterForegroundTask.removeTaskDataCallback(_onServiceAction);
     RunService.stop();
     super.dispose();
   }
@@ -8047,6 +8085,8 @@ class _CoachScreenState extends State<_CoachScreen> {
         _pauseAt = null;
       }
     });
+    // Flip the notification's Pause⇄Resume button and title immediately.
+    _syncNotification();
   }
 
   // Advance to the number of whole seconds that have really elapsed. If the
@@ -8069,6 +8109,7 @@ class _CoachScreenState extends State<_CoachScreen> {
     }
     if (mounted && !_done) {
       setState(() {});
+      _syncNotification();
     }
   }
 
@@ -8145,6 +8186,11 @@ class _CoachScreenState extends State<_CoachScreen> {
     if (widget.audioCues && _tts != null) {
       _say("Run complete. Nice work.", volume: 1.0, pitch: 1.0);
     }
+    RunService.update(
+      title: 'Run complete 🎉',
+      text: 'Nice work — ${_mmss(_elapsed)}. Tap to import & log it.',
+      paused: false,
+    );
   }
 
   String _mmss(int s) =>
