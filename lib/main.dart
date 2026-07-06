@@ -5854,7 +5854,7 @@ class _MealEditScreenState extends State<_MealEditScreen> {
 
   // Deduct this meal's raw ingredient weights from the shared Pantry.
   // Opens an always-confirm review screen before anything is written.
-  void _subtractFromPantry() {
+  Future<void> _subtractFromPantry() async {
     final List<IngredientDeduction> deductions = _ings
         .map((MealIngredient i) => IngredientDeduction(
               name: i.food.name,
@@ -5862,7 +5862,20 @@ class _MealEditScreenState extends State<_MealEditScreen> {
               grams: i.rawGrams,
             ))
         .toList();
-    subtractMealFromPantry(context, widget.accent, deductions);
+    await subtractMealFromPantry(context, widget.accent, deductions);
+  }
+
+  // Save the meal. For a NEW meal, first auto-open the pantry-subtraction
+  // review (raw weights) so a cooked meal draws down the pantry with one tap;
+  // edits don't re-subtract (would double-count).
+  Future<void> _save() async {
+    final Meal meal = _meal;
+    if (widget.existing == null && _ings.isNotEmpty) {
+      await _subtractFromPantry();
+    }
+    if (mounted) {
+      Navigator.pop(context, meal);
+    }
   }
 
   @override
@@ -5882,7 +5895,7 @@ class _MealEditScreenState extends State<_MealEditScreen> {
                 color: _ings.isEmpty ? const Color(0xFF555555) : widget.accent),
           ),
           TextButton(
-            onPressed: _ok ? () => Navigator.pop(context, _meal) : null,
+            onPressed: _ok ? _save : null,
             child: Text('Save',
                 style: TextStyle(
                     color: _ok ? widget.accent : const Color(0xFF555555),
