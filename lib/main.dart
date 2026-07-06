@@ -11,10 +11,12 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:vibration/vibration.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:health/health.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'updater.dart';
 import 'food.dart';
 import 'custom_foods.dart';
 import 'pantry_bridge.dart';
+import 'run_service.dart';
 import 'trainer.dart';
 import 'sleep.dart';
 import 'advisor.dart';
@@ -916,6 +918,7 @@ String monthName(int m) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppStorage.init();
+  FlutterForegroundTask.initCommunicationPort();
   runApp(const BodyCompApp());
 }
 
@@ -7978,16 +7981,24 @@ class _CoachScreenState extends State<_CoachScreen> {
   int _elapsed = 0; // total elapsed seconds
   bool _paused = false;
   bool _done = false;
+  // Wall-clock anchors so the run stays accurate even if a tick is missed
+  // (e.g. a brief OS suspension); the foreground service keeps ticks firing.
+  int _startMs = 0;
+  int _pausedMs = 0; // total paused milliseconds
+  int? _pauseAt; // when the current pause began
 
   List<RunInterval> get _ivs => widget.workout.intervals;
 
   @override
   void initState() {
     super.initState();
+    // Keep the run alive with the screen off / phone pocketed.
+    RunService.start();
     if (widget.audioCues) {
       _tts = FlutterTts();
       _initTts();
     }
+    _startMs = DateTime.now().millisecondsSinceEpoch;
     _left = _ivs.isNotEmpty ? _ivs.first.seconds : 0;
     _cue(_ivs.first.kind);
     _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
@@ -8021,19 +8032,43 @@ class _CoachScreenState extends State<_CoachScreen> {
   void dispose() {
     _timer?.cancel();
     _tts?.stop();
+    RunService.stop();
     super.dispose();
   }
 
+  void _togglePause() {
+    setState(() {
+      final int now = DateTime.now().millisecondsSinceEpoch;
+      _paused = !_paused;
+      if (_paused) {
+        _pauseAt = now;
+      } else if (_pauseAt != null) {
+        _pausedMs += now - _pauseAt!;
+        _pauseAt = null;
+      }
+    });
+  }
+
+  // Advance to the number of whole seconds that have really elapsed. If the
+  // app was briefly suspended and ticks were missed, this catches up (and
+  // fires the boundary cue for each interval crossed) instead of drifting.
   void _tick() {
     if (_paused || _done) {
       return;
     }
-    setState(() {
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    final int target = (nowMs - _startMs - _pausedMs) ~/ 1000;
+    int guard = 0;
+    while (_elapsed < target && !_done && guard < 6000) {
       _left--;
       _elapsed++;
-    });
-    if (_left <= 0) {
-      _advanceInterval();
+      guard++;
+      if (_left <= 0) {
+        _advanceInterval(); // cues the next interval; may _finish()
+      }
+    }
+    if (mounted && !_done) {
+      setState(() {});
     }
   }
 
@@ -8179,7 +8214,7 @@ class _CoachScreenState extends State<_CoachScreen> {
               width: double.infinity,
               height: 56,
               child: ElevatedButton.icon(
-                onPressed: () => setState(() => _paused = !_paused),
+                onPressed: _togglePause,
                 icon: Icon(
                     _paused ? Icons.play_arrow_rounded : Icons.pause_rounded),
                 label: Text(_paused ? 'Resume' : 'Pause'),

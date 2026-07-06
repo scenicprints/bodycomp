@@ -30,6 +30,7 @@ dependencies:
   vibration: ^3.1.0         # run/walk haptic cues during a coached run
   flutter_tts: ^4.2.0       # optional spoken "run" / "walk" cues
   health: ^13.0.0           # import runs from Android Health Connect
+  flutter_foreground_task: ^9.2.2  # keep the run timer alive with screen off
 
 dev_dependencies:
   flutter_test:
