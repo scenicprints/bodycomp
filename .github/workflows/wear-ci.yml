@@ -50,12 +50,14 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :wear:assembleRelease --stacktrace
 
+      # Flutter redirects every module's build dir to the repo-root build/
+      # (see android/build.gradle.kts), so the Wear APK lands under build/wear/.
       - name: Locate built APK
-        run: find android/wear/build/outputs -name '*.apk' -print
+        run: find build/wear/outputs -name '*.apk' -print
 
       - name: Upload Wear APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: bodycomp-wear-apk
-          path: android/wear/build/outputs/apk/**/*.apk
+          path: build/wear/outputs/apk/**/*.apk
           if-no-files-found: error
