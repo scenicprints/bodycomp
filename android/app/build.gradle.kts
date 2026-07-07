@@ -86,4 +86,7 @@ flutter {
 dependencies {
     // Backport of newer Java APIs the ota_update plugin relies on
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Wearable Data Layer — pushes live run state to the Pixel Watch app and
+    // receives its Pause/Stop taps.
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
 }

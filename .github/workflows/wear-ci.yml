@@ -1,0 +1,58 @@
+name: Wear CI
+
+# Iteration build for the Wear OS module. Runs on pushes to the `wear` branch
+# (and on demand) and uploads the watch APK as a workflow artifact — it does
+# NOT cut a release. Used to get the native module compiling green before the
+# signed watch APK is wired into the real release build.
+on:
+  push:
+    branches: [ wear ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-wear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.2'
+          channel: stable
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      # settings.gradle.kts needs flutter.sdk, and the Android build needs
+      # sdk.dir — both live in android/local.properties, which we synthesise
+      # here (a normal `flutter build` would write it, but we drive Gradle
+      # directly for the :wear module).
+      - name: Write local.properties
+        run: |
+          echo "flutter.sdk=$FLUTTER_ROOT" > android/local.properties
+          echo "sdk.dir=$ANDROID_SDK_ROOT" >> android/local.properties
+
+      - name: Build Wear APK (debug-signed, iteration only)
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :wear:assembleRelease --stacktrace
+
+      - name: Upload Wear APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bodycomp-wear-apk
+          path: android/wear/build/outputs/apk/release/*.apk
+          if-no-files-found: error

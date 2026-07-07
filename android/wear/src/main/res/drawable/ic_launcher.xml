@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- Dark rounded tile background. -->
+    <path
+        android:fillColor="#0E0F12"
+        android:pathData="M0,0h48v48h-48z" />
+    <!-- Simple running figure in the app accent. -->
+    <path
+        android:fillColor="#4ADE80"
+        android:pathData="M28,11m-3,0a3,3 0,1 1,6 0a3,3 0,1 1,-6 0" />
+    <path
+        android:fillColor="#4ADE80"
+        android:strokeColor="#4ADE80"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M18,22 L24,18 L30,22 L36,26 M24,18 L26,28 L21,37 M26,28 L33,31" />
+</vector>

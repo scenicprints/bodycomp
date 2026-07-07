@@ -17,6 +17,7 @@ import 'food.dart';
 import 'custom_foods.dart';
 import 'pantry_bridge.dart';
 import 'run_service.dart';
+import 'watch_bridge.dart';
 import 'trainer.dart';
 import 'sleep.dart';
 import 'advisor.dart';
@@ -7986,6 +7987,7 @@ class _CoachScreenState extends State<_CoachScreen> {
   int _startMs = 0;
   int _pausedMs = 0; // total paused milliseconds
   int? _pauseAt; // when the current pause began
+  StreamSubscription<String>? _watchSub; // Pixel Watch button taps
 
   List<RunInterval> get _ivs => widget.workout.intervals;
 
@@ -7996,6 +7998,8 @@ class _CoachScreenState extends State<_CoachScreen> {
     // Pause/Stop taps from the ongoing notification (lock screen + watch).
     RunService.start();
     FlutterForegroundTask.addTaskDataCallback(_onServiceAction);
+    // Pause/Stop taps coming back from the Pixel Watch run the same handlers.
+    _watchSub = WatchBridge.actions().listen(_onServiceAction);
     if (widget.audioCues) {
       _tts = FlutterTts();
       _initTts();
@@ -8039,6 +8043,17 @@ class _CoachScreenState extends State<_CoachScreen> {
         ? 'Next: ${_kindLabel(next.kind)} ${_mmss(next.seconds)}  ·  $progress'
         : 'Final interval  ·  $progress';
     RunService.update(title: title, text: body, paused: _paused);
+    // Mirror the same live state to the Pixel Watch app.
+    WatchBridge.sendState(
+      phase: phase,
+      leftSec: _left,
+      elapsedSec: _elapsed,
+      totalSec: widget.workout.totalSeconds,
+      nextPhase: next != null ? _kindLabel(next.kind) : '',
+      nextSec: next?.seconds ?? 0,
+      level: widget.workout.level,
+      paused: _paused,
+    );
   }
 
   // Configure the voice once up front. System default volume is often well
@@ -8070,6 +8085,8 @@ class _CoachScreenState extends State<_CoachScreen> {
     _timer?.cancel();
     _tts?.stop();
     FlutterForegroundTask.removeTaskDataCallback(_onServiceAction);
+    _watchSub?.cancel();
+    WatchBridge.end(); // clear the run off the watch when the screen closes
     RunService.stop();
     super.dispose();
   }
@@ -8191,6 +8208,7 @@ class _CoachScreenState extends State<_CoachScreen> {
       text: 'Nice work — ${_mmss(_elapsed)}. Tap to import & log it.',
       paused: false,
     );
+    WatchBridge.end();
   }
 
   String _mmss(int s) =>
@@ -8403,16 +8421,33 @@ class _SleepScreenState extends State<SleepScreen> {
 
   String _hm(int minutes) => '${minutes ~/ 60}h ${minutes % 60}m';
 
-  void _merge(List<SleepEntry> imported) {
+  // Merge imported nights into stored sleep, keyed by wake-date. Returns how
+  // many nights were genuinely NEW vs. UPDATED (same date, changed data — e.g.
+  // vitals that finalise near wake time and arrive on a later sync). Nights we
+  // already have identically are left untouched, so a re-import is a no-op
+  // instead of "re-importing all of them every time".
+  ({int added, int updated}) _merge(List<SleepEntry> imported) {
     final Map<String, SleepEntry> byDate = <String, SleepEntry>{
       for (final SleepEntry e in widget.sleep) e.date: e
     };
+    int added = 0, updated = 0;
     for (final SleepEntry e in imported) {
-      byDate[e.date] = e;
+      final SleepEntry? existing = byDate[e.date];
+      if (existing == null) {
+        byDate[e.date] = e;
+        added++;
+      } else if (jsonEncode(existing.toJson()) != jsonEncode(e.toJson())) {
+        byDate[e.date] = e;
+        updated++;
+      }
+    }
+    if (added == 0 && updated == 0) {
+      return (added: 0, updated: 0); // nothing changed — don't rewrite storage
     }
     final List<SleepEntry> list = byDate.values.toList()
       ..sort((SleepEntry a, SleepEntry b) => b.date.compareTo(a.date));
     widget.onSetSleep(list);
+    return (added: added, updated: updated);
   }
 
   Future<void> _importSleep() async {
@@ -8534,11 +8569,20 @@ class _SleepScreenState extends State<SleepScreen> {
     }
     setState(() => _importing = false);
     if (found.isNotEmpty) {
-      _merge(found);
+      final ({int added, int updated}) r = _merge(found);
+      String msg;
+      if (r.added == 0 && r.updated == 0) {
+        msg = 'Already up to date — no new sleep to import.';
+      } else if (r.updated == 0) {
+        msg = 'Imported ${r.added} new night${r.added == 1 ? '' : 's'}.';
+      } else if (r.added == 0) {
+        msg = 'Updated ${r.updated} night${r.updated == 1 ? '' : 's'}.';
+      } else {
+        msg = 'Imported ${r.added} new, updated ${r.updated} '
+            'night${r.updated == 1 ? '' : 's'}.';
+      }
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          backgroundColor: const Color(0xFF2A2A2A),
-          content: Text('Imported ${found.length} '
-              'night${found.length == 1 ? '' : 's'} of sleep.')));
+          backgroundColor: const Color(0xFF2A2A2A), content: Text(msg)));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           backgroundColor: const Color(0xFF2A2A2A),
