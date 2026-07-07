@@ -12,7 +12,7 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import android.app.Activity
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
@@ -24,7 +24,7 @@ import com.google.android.gms.wearable.Wearable
 //  same way. The phone stays the single source of truth for the timer.
 // ═══════════════════════════════════════════════════════════════════════
 
-class RunActivity : AppCompatActivity(), MessageClient.OnMessageReceivedListener {
+class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
 
     private lateinit var phaseView: TextView
     private lateinit var countdownView: TextView
