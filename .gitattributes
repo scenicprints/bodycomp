@@ -1,0 +1,4 @@
+# The Gradle wrapper script must keep LF endings so its shebang runs on the
+# Linux CI runners — CRLF would make it fail with "bad interpreter".
+android/gradlew text eol=lf
+*.sh text eol=lf
