@@ -9,7 +9,6 @@ import android.os.Vibrator
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
-import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.app.Activity
@@ -18,10 +17,11 @@ import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
 
 // ═══════════════════════════════════════════════════════════════════════
-//  The watch face for a coached run: big phase label, huge countdown, what's
-//  next, and Pause/Stop that talk back to the phone. State arrives from the
-//  phone over the Data Layer (via RunStateHolder); button taps go back the
-//  same way. The phone stays the single source of truth for the timer.
+//  The watch face for a coached run: a glanceable, read-only mirror of the
+//  phone — big phase label, huge countdown, what's next, and total progress —
+//  plus a wrist buzz at each interval switch. Controls stay on the phone; the
+//  watch just shows what's happening. State arrives over the Data Layer via
+//  RunStateHolder.
 // ═══════════════════════════════════════════════════════════════════════
 
 class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
@@ -30,8 +30,6 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
     private lateinit var countdownView: TextView
     private lateinit var nextView: TextView
     private lateinit var elapsedView: TextView
-    private lateinit var pauseBtn: Button
-    private lateinit var stopBtn: Button
 
     private var lastPhase: String? = null
     private val listener: (RunState) -> Unit = { render(it) }
@@ -74,8 +72,6 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
             countdownView.text = "✓"
             nextView.text = "Run complete"
             elapsedView.text = mmss(s.elapsedSec)
-            pauseBtn.visibility = View.GONE
-            stopBtn.text = "Close"
             return
         }
 
@@ -94,23 +90,6 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
             "Final interval"
         }
         elapsedView.text = "${mmss(s.elapsedSec)} / ${mmss(s.totalSec)}"
-        pauseBtn.visibility = View.VISIBLE
-        pauseBtn.text = if (s.paused) "Resume" else "Pause"
-        stopBtn.text = "Stop"
-    }
-
-    private fun sendAction(action: String) {
-        val ctx = this
-        Wearable.getNodeClient(ctx).connectedNodes.addOnSuccessListener { nodes ->
-            val client = Wearable.getMessageClient(ctx)
-            for (node in nodes) {
-                client.sendMessage(
-                    node.id,
-                    RunProtocol.PATH_ACTION,
-                    action.toByteArray(Charsets.UTF_8),
-                )
-            }
-        }
     }
 
     private fun buzz(strong: Boolean) {
@@ -136,7 +115,7 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
         return "%02d:%02d".format(s / 60, s % 60)
     }
 
-    // ── UI built in code (no XML) — a centred column + a button row. ──────
+    // ── UI built in code (no XML) — a single centred column, no controls. ──
     private fun buildUi(): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -146,7 +125,7 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
         }
 
         phaseView = TextView(this).apply {
-            textSize = 20f
+            textSize = 22f
             setTypeface(typeface, Typeface.BOLD)
             letterSpacing = 0.15f
             gravity = Gravity.CENTER
@@ -154,54 +133,31 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
             setTextColor(ACCENT_GREEN)
         }
         countdownView = TextView(this).apply {
-            textSize = 52f
+            textSize = 58f
             setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL))
             gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#EEEEEE"))
             text = "--:--"
         }
         nextView = TextView(this).apply {
-            textSize = 12f
+            textSize = 13f
             gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#888888"))
             text = "Waiting for run…"
         }
         elapsedView = TextView(this).apply {
-            textSize = 11f
+            textSize = 12f
             gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#666666"))
             text = ""
         }
 
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dp(8), 0, 0)
-        }
-        pauseBtn = Button(this).apply {
-            text = "Pause"
-            setOnClickListener { sendAction(RunProtocol.ACTION_TOGGLE) }
-        }
-        stopBtn = Button(this).apply {
-            text = "Stop"
-            setOnClickListener {
-                val done = RunStateHolder.latest?.done == true
-                if (done) finish() else sendAction(RunProtocol.ACTION_STOP)
-            }
-        }
-        buttons.addView(pauseBtn, btnParams())
-        buttons.addView(stopBtn, btnParams())
-
         root.addView(phaseView)
         root.addView(countdownView)
         root.addView(nextView)
         root.addView(elapsedView)
-        root.addView(buttons)
         return root
     }
-
-    private fun btnParams() = LinearLayout.LayoutParams(0, dp(40), 1f)
-        .apply { setMargins(dp(4), 0, dp(4), 0) }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
