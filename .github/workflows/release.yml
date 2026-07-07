@@ -60,6 +60,20 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           cp build/app/outputs/flutter-apk/app-release.apk "bodycomp-${VERSION}.apk"
 
+      # Build the Wear OS companion, signed with the SAME upload key as the
+      # phone app so the Wearable Data Layer pairs them. `flutter build apk`
+      # above already wrote android/local.properties, so gradlew resolves.
+      - name: Build Wear OS APK
+        working-directory: android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :wear:assembleRelease --stacktrace
+
+      - name: Rename Wear APK to versioned name
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cp build/wear/outputs/apk/release/wear-release.apk "bodycomp-wear-${VERSION}.apk"
+
       - name: Extract release notes from tag message
         run: git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.txt
 
