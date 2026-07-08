@@ -44,9 +44,19 @@ class RunService {
     }
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'run_service',
+        // NOTE: a channel's importance is fixed when it is first created and
+        // can't be raised later — so bumping the id ('_v2') forces Android to
+        // recreate it at DEFAULT, which is what makes it show on the lock
+        // screen (the old LOW channel was hidden there). onlyAlertOnce +
+        // no sound/vibration keep the per-second updates silent.
+        channelId: 'run_service_v2',
         channelName: 'Run in progress',
         channelDescription: 'Keeps your run timing while the screen is off.',
+        channelImportance: NotificationChannelImportance.DEFAULT,
+        priority: NotificationPriority.DEFAULT,
+        visibility: NotificationVisibility.VISIBILITY_PUBLIC,
+        playSound: false,
+        enableVibration: false,
         onlyAlertOnce: true,
       ),
       iosNotificationOptions: const IOSNotificationOptions(),

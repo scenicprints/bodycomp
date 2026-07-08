@@ -7048,10 +7048,12 @@ class _TrainScreenState extends State<TrainScreen> {
       date: formatDate(DateTime.now()),
       level: _today.level,
       distanceKm: 0,
-      durationSec: _today.totalSeconds,
+      durationSec: outcome.elapsedSec ?? _today.totalSeconds,
       source: 'manual',
       completed: outcome.completed,
       effort: 'ok',
+      startMs: outcome.startMs,
+      endMs: outcome.endMs,
     ));
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -7090,6 +7092,11 @@ class _TrainScreenState extends State<TrainScreen> {
     int rawWorkouts = 0;
     int hrCount = 0, stepCount = 0, distCount = 0;
     String? exception;
+    // Hoisted so the merge step below can re-window heart-rate/distance to a
+    // coached run's actual clock window (see the enrich path).
+    List<HealthDataPoint> hrPts = <HealthDataPoint>[];
+    List<HealthDataPoint> distPts = <HealthDataPoint>[];
+    List<HealthDataPoint> calPts = <HealthDataPoint>[];
     try {
       final Health health = Health();
       await health.configure();
@@ -7118,7 +7125,6 @@ class _TrainScreenState extends State<TrainScreen> {
               types: <HealthDataType>[HealthDataType.WORKOUT]);
       rawWorkouts = workouts.length;
       // Heart rate is best-effort and must never block the import.
-      List<HealthDataPoint> hrPts = <HealthDataPoint>[];
       try {
         hrPts = await health.getHealthDataFromTypes(
             startTime: start,
@@ -7134,7 +7140,6 @@ class _TrainScreenState extends State<TrainScreen> {
                 types: <HealthDataType>[HealthDataType.STEPS]))
             .length;
       } catch (_) {}
-      List<HealthDataPoint> distPts = <HealthDataPoint>[];
       try {
         distPts = await health.getHealthDataFromTypes(
             startTime: start,
@@ -7142,7 +7147,6 @@ class _TrainScreenState extends State<TrainScreen> {
             types: <HealthDataType>[HealthDataType.DISTANCE_DELTA]);
       } catch (_) {}
       distCount = distPts.length;
-      List<HealthDataPoint> calPts = <HealthDataPoint>[];
       try {
         calPts = await health.getHealthDataFromTypes(
             startTime: start,
@@ -7296,17 +7300,62 @@ class _TrainScreenState extends State<TrainScreen> {
         r.date == date && r.distanceKm <= 0 && r.source != 'healthconnect');
     if (existingIdx >= 0) {
       final RunRecord ex = widget.runs[existingIdx];
+      // Default to the picked Health Connect session's figures…
+      double distKm = chosen.distanceKm;
+      double? hr = chosen.avgHr;
+      double? cal = chosen.calories;
+      int durSec = chosen.durationSec > 0 ? chosen.durationSec : ex.durationSec;
+      // …but if this coached run recorded its real clock window, trust the
+      // app's own duration and pull HR/distance/calories from EXACTLY that
+      // window. This is what stops an over-long HC session (73 min for a
+      // 31-min run) from corrupting the import. Windowed values only replace
+      // the session ones when they actually contain data, so we never wipe a
+      // good number to zero.
+      if (ex.startMs != null && ex.endMs != null && ex.endMs! > ex.startMs!) {
+        final DateTime a = DateTime.fromMillisecondsSinceEpoch(ex.startMs!);
+        final DateTime b = DateTime.fromMillisecondsSinceEpoch(ex.endMs!);
+        bool inWin(HealthDataPoint p) =>
+            !p.dateFrom.isBefore(a) && !p.dateTo.isAfter(b);
+        double meters = 0;
+        for (final HealthDataPoint p in distPts) {
+          if (inWin(p) && p.value is NumericHealthValue) {
+            meters += (p.value as NumericHealthValue).numericValue.toDouble();
+          }
+        }
+        double hrSum = 0;
+        int hrN = 0;
+        for (final HealthDataPoint p in hrPts) {
+          if (inWin(p) && p.value is NumericHealthValue) {
+            hrSum += (p.value as NumericHealthValue).numericValue.toDouble();
+            hrN++;
+          }
+        }
+        double calSum = 0;
+        int calN = 0;
+        for (final HealthDataPoint p in calPts) {
+          if (inWin(p) && p.value is NumericHealthValue) {
+            calSum += (p.value as NumericHealthValue).numericValue.toDouble();
+            calN++;
+          }
+        }
+        durSec = ex.durationSec; // the app timed the run — this is the truth
+        if (meters > 0) distKm = meters / 1000.0;
+        if (hrN > 0) hr = hrSum / hrN;
+        if (calN > 0) cal = calSum;
+      }
       final RunRecord merged = RunRecord(
         id: ex.id,
         date: ex.date,
         level: ex.level,
-        distanceKm: chosen.distanceKm,
-        durationSec: chosen.durationSec > 0 ? chosen.durationSec : ex.durationSec,
-        avgHr: chosen.avgHr,
-        calories: chosen.calories,
+        distanceKm: distKm,
+        durationSec: durSec,
+        avgHr: hr,
+        calories: cal,
         source: 'healthconnect',
         completed: ex.completed,
         effort: ex.effort,
+        startMs: ex.startMs,
+        endMs: ex.endMs,
       );
       widget.onSetRuns(<RunRecord>[
         for (final RunRecord r in widget.runs) r.id == ex.id ? merged : r
@@ -7316,7 +7365,7 @@ class _TrainScreenState extends State<TrainScreen> {
             backgroundColor: Color(0xFF2A2A2A),
             content: Text('Added distance, pace & heart rate to your run.')));
       }
-      _applyLevelFromVitals(chosen.avgHr);
+      _applyLevelFromVitals(hr);
       return;
     }
     _recordRun(RunRecord(
@@ -7987,6 +8036,7 @@ class _CoachScreenState extends State<_CoachScreen> {
   int _startMs = 0;
   int _pausedMs = 0; // total paused milliseconds
   int? _pauseAt; // when the current pause began
+  int _endMs = 0; // wall-clock when the run finished (for HC windowing)
   StreamSubscription<String>? _watchSub; // Pixel Watch button taps
 
   List<RunInterval> get _ivs => widget.workout.intervals;
@@ -8062,6 +8112,9 @@ class _CoachScreenState extends State<_CoachScreen> {
   Future<void> _initTts() async {
     try {
       await _tts!.awaitSpeakCompletion(true);
+      // Play cues as navigation guidance so they route like a maps voice —
+      // this is what lets them cut over music instead of mixing in under it.
+      await _tts!.setAudioAttributesForNavigation();
       await _tts!.setVolume(1.0);
       await _tts!.setSpeechRate(0.5);
       await _tts!.setPitch(1.0);
@@ -8076,7 +8129,9 @@ class _CoachScreenState extends State<_CoachScreen> {
     try {
       await _tts!.setVolume(volume);
       await _tts!.setPitch(pitch);
-      await _tts!.speak(phrase);
+      // focus: true grabs transient audio focus (AUDIOFOCUS_GAIN_TRANSIENT_
+      // MAY_DUCK) so the user's music drops while the cue speaks, then returns.
+      await _tts!.speak(phrase, focus: true);
     } catch (_) {}
   }
 
@@ -8190,6 +8245,7 @@ class _CoachScreenState extends State<_CoachScreen> {
 
   void _finish() {
     setState(() => _done = true);
+    _endMs = DateTime.now().millisecondsSinceEpoch;
     _timer?.cancel();
     // A long triple buzz + a spoken sign-off so you KNOW the run is over
     // without pulling the phone out — this was previously silent.
@@ -8329,7 +8385,13 @@ class _CoachScreenState extends State<_CoachScreen> {
                   height: 52,
                   child: ElevatedButton(
                     onPressed: () => Navigator.pop<RunOutcome>(
-                        context, const RunOutcome(completed: true)),
+                        context,
+                        RunOutcome(
+                          completed: true,
+                          startMs: _startMs,
+                          endMs: _endMs,
+                          elapsedSec: _elapsed,
+                        )),
                     style: ElevatedButton.styleFrom(
                         backgroundColor: widget.accent,
                         foregroundColor: Colors.black,

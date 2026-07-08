@@ -11,7 +11,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.wear.ambient.AmbientLifecycleObserver
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
@@ -24,7 +25,7 @@ import com.google.android.gms.wearable.Wearable
 //  RunStateHolder.
 // ═══════════════════════════════════════════════════════════════════════
 
-class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
+class RunActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener {
 
     private lateinit var phaseView: TextView
     private lateinit var countdownView: TextView
@@ -32,11 +33,43 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
     private lateinit var elapsedView: TextView
 
     private var lastPhase: String? = null
+    private var ambient = false
     private val listener: (RunState) -> Unit = { render(it) }
+
+    // Always-on: keeps the run displayed (dimmed) when the wrist drops, instead
+    // of the watch returning to its face and burying the app.
+    private val ambientObserver by lazy {
+        AmbientLifecycleObserver(
+            this,
+            object : AmbientLifecycleObserver.AmbientLifecycleCallback {
+                override fun onEnterAmbient(
+                    details: AmbientLifecycleObserver.AmbientDetails
+                ) {
+                    ambient = true
+                    RunStateHolder.latest?.let { render(it) }
+                }
+
+                override fun onExitAmbient() {
+                    ambient = false
+                    RunStateHolder.latest?.let { render(it) }
+                }
+
+                override fun onUpdateAmbient() {
+                    RunStateHolder.latest?.let { render(it) }
+                }
+            },
+        )
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Enabling ambient must never crash the run screen if the wearable
+        // library is somehow unavailable.
+        try {
+            lifecycle.addObserver(ambientObserver)
+        } catch (_: Throwable) {
+        }
         setContentView(buildUi())
         RunStateHolder.latest?.let { render(it) }
     }
@@ -82,7 +115,15 @@ class RunActivity : Activity(), MessageClient.OnMessageReceivedListener {
         lastPhase = s.phase
 
         phaseView.text = if (s.paused) "PAUSED" else s.phase
-        phaseView.setTextColor(if (s.paused) Color.GRAY else accent)
+        // In ambient (always-on) mode, drop the bright accent for a muted grey
+        // so the display is low-power and burn-in-friendly.
+        phaseView.setTextColor(
+            when {
+                s.paused -> Color.GRAY
+                ambient -> Color.parseColor("#B0B0B0")
+                else -> accent
+            }
+        )
         countdownView.text = mmss(s.leftSec)
         nextView.text = if (s.nextPhase.isNotEmpty()) {
             "Next: ${s.nextPhase} ${mmss(s.nextSec)}"

@@ -12,6 +12,11 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
+        <!-- Required for ambient (always-on) support. -->
+        <uses-library
+            android:name="com.google.android.wearable"
+            android:required="false" />
+
         <!-- Runs without a phone-side counterpart being required to install. -->
         <meta-data
             android:name="com.google.android.wearable.standalone"

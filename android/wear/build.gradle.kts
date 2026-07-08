@@ -83,6 +83,12 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
+    // ComponentActivity (a LifecycleOwner, and NOT tied to an AppCompat theme)
+    // so we can attach the ambient observer.
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    // Ambient / always-on support so the run stays on the wrist through a
+    // wrist-down instead of the watch returning to its face.
+    implementation("androidx.wear:wear:1.3.0")
     // Wearable Data Layer (MessageClient / NodeClient).
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
 }

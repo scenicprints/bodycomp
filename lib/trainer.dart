@@ -150,8 +150,18 @@ class RunOutcome {
   final bool completed; // did they get through all the intervals?
   final Effort effort; // self-reported, or inferred from HR
   final double? avgHrFraction; // avg HR ÷ max HR, 0..1, when known
+  // Wall-clock window the run actually occupied (epoch ms) and the counted
+  // run seconds — used to record an accurate, HC-independent run.
+  final int? startMs;
+  final int? endMs;
+  final int? elapsedSec;
   const RunOutcome(
-      {required this.completed, this.effort = Effort.ok, this.avgHrFraction});
+      {required this.completed,
+      this.effort = Effort.ok,
+      this.avgHrFraction,
+      this.startMs,
+      this.endMs,
+      this.elapsedSec});
 }
 
 /// Adapt the plan rung from a run's ACTUAL heart rate, judged against the
@@ -210,6 +220,12 @@ class RunRecord {
   final String source; // 'healthconnect' | 'manual'
   final bool completed;
   final String effort; // Effort.name
+  // Wall-clock window the coached run actually occupied (epoch ms). Recorded
+  // for app-timed runs so a Health Connect import can pull heart-rate/distance
+  // from EXACTLY this window — instead of trusting an over-long HC workout
+  // session (e.g. a watch that logged 73 min for a 31-min run).
+  final int? startMs;
+  final int? endMs;
 
   const RunRecord({
     required this.id,
@@ -222,6 +238,8 @@ class RunRecord {
     this.source = 'manual',
     this.completed = true,
     this.effort = 'ok',
+    this.startMs,
+    this.endMs,
   });
 
   /// Pace in seconds per km (0 if distance unknown).
@@ -253,6 +271,8 @@ class RunRecord {
         'source': source,
         'completed': completed,
         'effort': effort,
+        if (startMs != null) 'startMs': startMs,
+        if (endMs != null) 'endMs': endMs,
       };
 
   factory RunRecord.fromJson(Map<String, dynamic> j) => RunRecord(
@@ -266,6 +286,8 @@ class RunRecord {
         source: (j['source'] as String?) ?? 'manual',
         completed: j['completed'] != false,
         effort: (j['effort'] as String?) ?? 'ok',
+        startMs: (j['startMs'] as num?)?.toInt(),
+        endMs: (j['endMs'] as num?)?.toInt(),
       );
 }
 
