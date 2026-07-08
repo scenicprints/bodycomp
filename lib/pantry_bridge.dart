@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'food.dart';
+
 // ═══════════════════════════════════════════════════════════════════════
 // PANTRY BRIDGE — lets BodyComp's Cook screen subtract a meal's raw
 // ingredients from the shared Pantry (scenicprints/pantry-data/pantry.json).
@@ -134,6 +136,119 @@ int _match(IngredientDeduction ing, List<Map<String, dynamic>> items) {
   }
   return best;
 }
+
+// ── read: expose pantry items as loggable foods ──────────────────────────
+
+/// A pantry item hydrated into a loggable food, plus a short "on hand" label.
+class PantryFood {
+  final FoodTemplate template;
+  final String remainingLabel; // e.g. "220 g left", "3 left", or ''
+  const PantryFood(this.template, this.remainingLabel);
+
+  String get name => template.name;
+}
+
+/// Fetch the shared pantry and return the items that carry gram-based macros
+/// as loggable [FoodTemplate]s. Spices, quantity-unknown, count-only, and
+/// macro-less items are skipped (they can't be scaled by grams). Returns null
+/// only when the pantry file itself couldn't be fetched (offline/error).
+Future<List<PantryFood>?> fetchPantryFoods() async {
+  final _PantryFile? file = await _PantryApi.fetch();
+  if (file == null) {
+    return null;
+  }
+  final List<PantryFood> out = <PantryFood>[];
+  for (final Map<String, dynamic> m in file.items) {
+    if (m['deleted'] == true) {
+      continue;
+    }
+    final PantryFood? pf = _pantryFoodFrom(m);
+    if (pf != null) {
+      out.add(pf);
+    }
+  }
+  out.sort((PantryFood a, PantryFood b) =>
+      a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  return out;
+}
+
+PantryFood? _pantryFoodFrom(Map<String, dynamic> m) {
+  final String name = (m['name'] as String?)?.trim() ?? '';
+  if (name.isEmpty || m['spice'] == true || m['quantity_unknown'] == true) {
+    return null;
+  }
+  final String servingUnit = (m['serving_unit'] as String?) ?? 'g';
+  final double servingSize = _pd(m['serving_size']);
+  final Map<String, dynamic>? per100 =
+      (m['macros_per_100g'] as Map<dynamic, dynamic>?)?.cast<String, dynamic>();
+  final Map<String, dynamic>? perServing =
+      (m['macros_per_serving'] as Map<dynamic, dynamic>?)
+          ?.cast<String, dynamic>();
+
+  double kcal100 = 0, p100 = 0, f100 = 0, c100 = 0;
+  double? servingGrams;
+  if (per100 != null) {
+    kcal100 = _pd(per100['calories']);
+    p100 = _pd(per100['protein_g']);
+    f100 = _pd(per100['fat_g']);
+    c100 = _pd(per100['carbs_g']);
+    if (servingUnit == 'g' && servingSize > 0) {
+      servingGrams = servingSize;
+    }
+  } else if (perServing != null && servingUnit == 'g' && servingSize > 0) {
+    // Only grams-based servings can be turned into a per-100 g profile.
+    final double s = 100.0 / servingSize;
+    kcal100 = _pd(perServing['calories']) * s;
+    p100 = _pd(perServing['protein_g']) * s;
+    f100 = _pd(perServing['fat_g']) * s;
+    c100 = _pd(perServing['carbs_g']) * s;
+    servingGrams = servingSize;
+  } else {
+    return null; // no gram-based macros to scale
+  }
+  if (kcal100 <= 0 && p100 <= 0 && f100 <= 0 && c100 <= 0) {
+    return null;
+  }
+
+  final String? barcode = m['barcode'] as String?;
+  final FoodTemplate t = FoodTemplate(
+    name: name,
+    kcal100: kcal100,
+    protein100: p100,
+    fat100: f100,
+    carbs100: c100,
+    nutrients100: <String, double>{},
+    servingGrams: servingGrams,
+    barcode: (barcode != null && barcode.isNotEmpty) ? barcode : null,
+  );
+
+  String rem = '';
+  if (m['unit'] == 'count' || m.containsKey('total_count')) {
+    final double r = _pd(m['remaining_count']);
+    if (r > 0) {
+      rem = '${_fmtNum(r)} left';
+    }
+  } else {
+    final double r = _pd(m['remaining_weight_g']);
+    if (r > 0) {
+      rem = '${_fmtNum(r)} g left';
+    }
+  }
+  return PantryFood(t, rem);
+}
+
+double _pd(dynamic v) {
+  if (v is num) {
+    return v.toDouble();
+  }
+  if (v is String) {
+    return double.tryParse(v) ?? 0;
+  }
+  return 0;
+}
+
+String _fmtNum(double v) =>
+    v == v.roundToDouble() ? v.toInt().toString() : v.toStringAsFixed(1);
 
 // ── entry point ─────────────────────────────────────────────────────────
 

@@ -3703,6 +3703,11 @@ class _FoodScreenState extends State<FoodScreen> {
             Navigator.pop(context);
             _searchFood();
           }),
+          _menuTile(Icons.kitchen_rounded, 'From Pantry',
+              'Log something you already have on hand', () {
+            Navigator.pop(context);
+            _pickFromPantry();
+          }),
           _menuTile(Icons.restaurant_menu_rounded, 'Cook a meal',
               'Combine ingredients, portion by calories', () {
             Navigator.pop(context);
@@ -3768,6 +3773,16 @@ class _FoodScreenState extends State<FoodScreen> {
       return;
     }
     _openConfirm(t);
+  }
+
+  Future<void> _pickFromPantry() async {
+    final FoodTemplate? t = await Navigator.of(context).push<FoodTemplate>(
+        MaterialPageRoute<FoodTemplate>(
+            builder: (_) => _PantryPickerPage(accent: _accent)));
+    if (t == null || !mounted) {
+      return;
+    }
+    _openConfirm(t, source: 'pantry');
   }
 
   void _openMeals() {
@@ -4729,6 +4744,182 @@ class _FoodSearchPageState extends State<_FoodSearchPage> {
   }
 }
 
+// ─── Pull a food from the shared Pantry ───
+class _PantryPickerPage extends StatefulWidget {
+  final Color accent;
+  const _PantryPickerPage({required this.accent});
+  @override
+  State<_PantryPickerPage> createState() => _PantryPickerPageState();
+}
+
+class _PantryPickerPageState extends State<_PantryPickerPage> {
+  final TextEditingController _q = TextEditingController();
+  bool _loading = true;
+  bool _error = false;
+  String _query = '';
+  List<PantryFood> _all = <PantryFood>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = false;
+    });
+    List<PantryFood>? res;
+    try {
+      res = await fetchPantryFoods();
+    } catch (_) {}
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _loading = false;
+      _error = res == null;
+      _all = res ?? <PantryFood>[];
+    });
+  }
+
+  List<PantryFood> get _visible {
+    final String q = _query.trim().toLowerCase();
+    if (q.isEmpty) {
+      return _all;
+    }
+    return _all
+        .where((PantryFood f) => f.name.toLowerCase().contains(q))
+        .toList();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          foregroundColor: const Color(0xFFEEEEEE),
+          title: const Text('From Pantry')),
+      body: _loading
+          ? Center(child: CircularProgressIndicator(color: widget.accent))
+          : _error
+              ? _message(
+                  "Couldn't reach your pantry. Check your connection and retry.",
+                  retry: true)
+              : _all.isEmpty
+                  ? _message(
+                      'No pantry foods with nutrition yet. Add macros to items '
+                      'in the Pantry app and they\'ll show up here.')
+                  : Column(children: <Widget>[
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                        child: TextField(
+                          controller: _q,
+                          style: const TextStyle(
+                              fontSize: 16, color: Color(0xFFEEEEEE)),
+                          decoration: _foodDec(widget.accent).copyWith(
+                              hintText: 'Filter your pantry',
+                              prefixIcon: const Icon(Icons.search_rounded,
+                                  color: Color(0xFF888888))),
+                          onChanged: (String v) => setState(() => _query = v),
+                        ),
+                      ),
+                      Expanded(child: _list()),
+                    ]),
+    );
+  }
+
+  Widget _message(String text, {bool retry = false}) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+          Text(text,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey[600], fontSize: 13, height: 1.5)),
+          if (retry) ...<Widget>[
+            const SizedBox(height: 16),
+            OutlinedButton(
+              onPressed: _load,
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: widget.accent,
+                  side: BorderSide(color: widget.accent.withValues(alpha: 0.5))),
+              child: const Text('Retry'),
+            ),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _list() {
+    final List<PantryFood> items = _visible;
+    if (items.isEmpty) {
+      return Center(
+          child: Text('No matches.',
+              style: TextStyle(color: Colors.grey[600], fontSize: 13)));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      itemCount: items.length,
+      itemBuilder: (BuildContext ctx, int i) {
+        final PantryFood pf = items[i];
+        final FoodTemplate t = pf.template;
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Material(
+            color: kSurface0,
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => Navigator.of(context).pop(t),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: kBorder)),
+                child: Row(children: <Widget>[
+                  Expanded(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(t.name,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: Color(0xFFDDDDDD))),
+                          const SizedBox(height: 3),
+                          Text(
+                              '${t.kcal100.round()} cal · P ${_trim(t.protein100)} '
+                              'F ${_trim(t.fat100)} C ${_trim(t.carbs100)}  (per 100 g)'
+                              '${pf.remainingLabel.isEmpty ? '' : ' · ${pf.remainingLabel}'}',
+                              style: TextStyle(
+                                  fontSize: 11, color: Colors.grey[600])),
+                        ]),
+                  ),
+                  Icon(Icons.add_circle_outline_rounded,
+                      color: widget.accent, size: 20),
+                ]),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 // ─── Confirm a scanned food + pick serving size ───
 class _ConfirmFoodSheet extends StatefulWidget {
   final FoodTemplate template;
@@ -4743,6 +4934,11 @@ class _ConfirmFoodSheet extends StatefulWidget {
 class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
   late final TextEditingController _gramsC;
   late final TextEditingController _servingsC;
+  // Editable macro fields — grams, servings and every macro all stay in sync.
+  late final TextEditingController _calC;
+  late final TextEditingController _pC;
+  late final TextEditingController _fC;
+  late final TextEditingController _cC;
   bool _syncing = false;
 
   bool get _hasServing =>
@@ -4755,18 +4951,48 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     final double initGrams = _hasServing ? _servingG : 100;
     _gramsC = TextEditingController(text: _trim(initGrams, dp: 1));
     _servingsC = TextEditingController(text: _hasServing ? '1' : '');
+    _calC = TextEditingController();
+    _pC = TextEditingController();
+    _fC = TextEditingController();
+    _cC = TextEditingController();
+    _writeMacros();
   }
 
   @override
   void dispose() {
     _gramsC.dispose();
     _servingsC.dispose();
+    _calC.dispose();
+    _pC.dispose();
+    _fC.dispose();
+    _cC.dispose();
     super.dispose();
   }
 
   double get _grams => double.tryParse(_gramsC.text) ?? 0;
 
-  // The two fields stay in sync; _syncing guards against feedback loops.
+  /// Recompute every macro field from the current grams (the food's fixed
+  /// per-100 g profile scaled). Skips [except] so we never overwrite the field
+  /// the user is actively typing in.
+  void _writeMacros({TextEditingController? except}) {
+    final FoodTemplate t = widget.template;
+    final double s = _grams / 100.0;
+    if (except != _calC) _calC.text = '${(t.kcal100 * s).round()}';
+    if (except != _pC) _pC.text = _trim(t.protein100 * s);
+    if (except != _fC) _fC.text = _trim(t.fat100 * s);
+    if (except != _cC) _cC.text = _trim(t.carbs100 * s);
+  }
+
+  /// Push the derived grams into the grams + servings fields.
+  void _setGrams(double g) {
+    _gramsC.text = _trim(g, dp: 1);
+    if (_hasServing) {
+      _servingsC.text = _trim(g / _servingG, dp: 2);
+    }
+  }
+
+  // grams / servings drive the macros; editing a macro back-solves grams.
+  // _syncing guards against the onChanged feedback loop.
   void _onGrams(String v) {
     if (_syncing) {
       return;
@@ -4776,6 +5002,7 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
       final double? g = double.tryParse(v);
       _servingsC.text = g != null ? _trim(g / _servingG, dp: 2) : '';
     }
+    _writeMacros();
     _syncing = false;
     setState(() {});
   }
@@ -4786,7 +5013,28 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     }
     _syncing = true;
     final double? s = double.tryParse(v);
-    _gramsC.text = s != null ? _trim(s * _servingG, dp: 1) : '';
+    _setGrams(s != null ? s * _servingG : 0);
+    _writeMacros();
+    _syncing = false;
+    setState(() {});
+  }
+
+  /// A macro was edited: back-solve the grams from that macro's per-100 g rate,
+  /// then rescale everything else. [rate] is the template's per-100 g value for
+  /// this macro; when it's 0 the food has none of it, so grams can't be solved
+  /// from it and we leave the amount unchanged.
+  void _onMacro(double rate, TextEditingController src, String v) {
+    if (_syncing) {
+      return;
+    }
+    final double? val = double.tryParse(v);
+    if (rate <= 0 || val == null) {
+      setState(() {});
+      return;
+    }
+    _syncing = true;
+    _setGrams(val * 100.0 / rate);
+    _writeMacros(except: src);
     _syncing = false;
     setState(() {});
   }
@@ -4805,7 +5053,6 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
   @override
   Widget build(BuildContext context) {
     final FoodTemplate t = widget.template;
-    final double s = _grams / 100.0;
     return Padding(
       padding: EdgeInsets.fromLTRB(
           24,
@@ -4814,7 +5061,8 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
           MediaQuery.of(context).viewInsets.bottom +
               MediaQuery.of(context).viewPadding.bottom +
               24),
-      child: Column(
+      child: SingleChildScrollView(
+        child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -4836,12 +5084,20 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
               ],
             ]),
             const SizedBox(height: 16),
-            Row(children: [
-              _stat('Calories', '${(t.kcal100 * s).round()}', widget.accent),
-              _stat('Protein', '${_trim(t.protein100 * s)} g', widget.accent),
-              _stat('Fat', '${_trim(t.fat100 * s)} g', widget.accent),
-              _stat('Carbs', '${_trim(t.carbs100 * s)} g', widget.accent),
+            Row(children: <Widget>[
+              _macroField('CALORIES', _calC, t.kcal100),
+              const SizedBox(width: 12),
+              _macroField('PROTEIN (g)', _pC, t.protein100),
             ]),
+            const SizedBox(height: 12),
+            Row(children: <Widget>[
+              _macroField('FAT (g)', _fC, t.fat100),
+              const SizedBox(width: 12),
+              _macroField('CARBS (g)', _cC, t.carbs100),
+            ]),
+            const SizedBox(height: 8),
+            Text('Type grams, a serving, or any macro — the rest update to match.',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600])),
             const SizedBox(height: 20),
             SizedBox(
                 width: double.infinity,
@@ -4860,6 +5116,7 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
                   child: const Text('Log it'),
                 )),
           ]),
+      ),
     );
   }
 
@@ -4882,22 +5139,26 @@ class _ConfirmFoodSheetState extends State<_ConfirmFoodSheet> {
     ]);
   }
 
-  Widget _stat(String label, String value, Color accent) {
+  /// An editable macro field. Editing it back-solves grams via [rate] (the
+  /// food's per-100 g value for this macro) and rescales the others.
+  Widget _macroField(String label, TextEditingController c, double rate) {
     return Expanded(
-        child: Column(children: [
-      Text(value,
-          style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w700,
-              color: Color(0xFFEEEEEE))),
-      const SizedBox(height: 2),
-      Text(label.toUpperCase(),
-          style: TextStyle(
-              fontSize: 9,
-              color: Colors.grey[600],
-              letterSpacing: 0.5,
-              fontWeight: FontWeight.w600)),
-    ]));
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text(label,
+            style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey[600],
+                letterSpacing: 1,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 6),
+        TextField(
+            controller: c,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            style: const TextStyle(fontSize: 17, color: Color(0xFFEEEEEE)),
+            decoration: _foodDec(widget.accent),
+            onChanged: (String v) => _onMacro(rate, c, v)),
+      ]),
+    );
   }
 }
 
@@ -5719,7 +5980,16 @@ class _MealEditScreenState extends State<_MealEditScreen> {
     }
   }
 
-  void _manual() {
+  Future<void> _pantryIngredient() async {
+    final FoodTemplate? t = await Navigator.of(context).push<FoodTemplate>(
+        MaterialPageRoute<FoodTemplate>(
+            builder: (_) => _PantryPickerPage(accent: widget.accent)));
+    if (t != null && mounted) {
+      _addTemplate(t);
+    }
+  }
+
+  void _manual({LabelParse? prefill}) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -5728,12 +5998,53 @@ class _MealEditScreenState extends State<_MealEditScreen> {
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       builder: (_) => _ManualIngredientSheet(
         accent: widget.accent,
+        prefill: prefill,
         onSave: (MealIngredient ing) {
           setState(() => _ings = <MealIngredient>[..._ings, ing]);
           Navigator.pop(context);
         },
       ),
     );
+  }
+
+  Future<void> _scanLabel() async {
+    XFile? shot;
+    try {
+      shot = await ImagePicker().pickImage(
+          source: ImageSource.camera, maxWidth: 2200, imageQuality: 92);
+    } catch (_) {}
+    if (shot == null || !mounted) {
+      return;
+    }
+    showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) =>
+            Center(child: CircularProgressIndicator(color: widget.accent)));
+    String text = '';
+    final TextRecognizer recognizer =
+        TextRecognizer(script: TextRecognitionScript.latin);
+    try {
+      final RecognizedText r =
+          await recognizer.processImage(InputImage.fromFilePath(shot.path));
+      text = r.text;
+    } catch (_) {
+    } finally {
+      await recognizer.close();
+    }
+    if (!mounted) {
+      return;
+    }
+    Navigator.pop(context); // dismiss the loader
+    final LabelParse parse = parseNutritionLabel(text);
+    if (!parse.hasAnything) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text(
+              "Couldn't read the label — fill it in (or retake the photo).")));
+    }
+    // Open the manual ingredient sheet prefilled with whatever we read.
+    _manual(prefill: parse);
   }
 
   void _addIngredient() {
@@ -5749,9 +6060,17 @@ class _MealEditScreenState extends State<_MealEditScreen> {
           Navigator.pop(context);
           _scan();
         }),
+        _ingTile(Icons.document_scanner_rounded, 'Scan label', () {
+          Navigator.pop(context);
+          _scanLabel();
+        }),
         _ingTile(Icons.search_rounded, 'Search by name', () {
           Navigator.pop(context);
           _search();
+        }),
+        _ingTile(Icons.kitchen_rounded, 'From Pantry', () {
+          Navigator.pop(context);
+          _pantryIngredient();
         }),
         _ingTile(Icons.edit_rounded, 'Enter manually', () {
           Navigator.pop(context);
@@ -6217,8 +6536,10 @@ class _MealPortionSheetState extends State<_MealPortionSheet> {
 // ─── Manual ingredient (nutrition entered for the raw grams) ───
 class _ManualIngredientSheet extends StatefulWidget {
   final Color accent;
+  final LabelParse? prefill; // from a scanned nutrition label
   final void Function(MealIngredient) onSave;
-  const _ManualIngredientSheet({required this.accent, required this.onSave});
+  const _ManualIngredientSheet(
+      {required this.accent, this.prefill, required this.onSave});
   @override
   State<_ManualIngredientSheet> createState() => _ManualIngredientSheetState();
 }
@@ -6230,6 +6551,23 @@ class _ManualIngredientSheetState extends State<_ManualIngredientSheet> {
   final TextEditingController _p = TextEditingController();
   final TextEditingController _f = TextEditingController();
   final TextEditingController _c = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    // A scanned label reads per-serving numbers — drop them straight into the
+    // "raw amount" fields; the user names it and confirms.
+    final LabelParse? p = widget.prefill;
+    if (p != null) {
+      if (p.servingGrams != null && p.servingGrams! > 0) {
+        _grams.text = _trim(p.servingGrams!, dp: 1);
+      }
+      if (p.calories != null) _cal.text = _trim(p.calories!);
+      if (p.protein != null) _p.text = _trim(p.protein!);
+      if (p.fat != null) _f.text = _trim(p.fat!);
+      if (p.carbs != null) _c.text = _trim(p.carbs!);
+    }
+  }
 
   @override
   void dispose() {
