@@ -394,52 +394,123 @@ class AdvisorDigest {
     }
 
     if (logs.isNotEmpty) {
-      final DailyLog last = logs.last;
-      sb.writeln(
-          'LATEST WEIGH-IN (${last.date}): ${last.weight.toStringAsFixed(1)} lb, ${(last.bf * 100).toStringAsFixed(1)}% BF, lean mass ${last.lbm.toStringAsFixed(1)} lb.');
-      double? change(int days) {
-        final String cutoff = formatDate(now.subtract(Duration(days: days)));
-        final List<DailyLog> older =
-            logs.where((DailyLog l) => l.date.compareTo(cutoff) <= 0).toList();
-        return older.isEmpty ? null : last.weight - older.last.weight;
+      // Smoothed rolling average of a metric over a [windowDays] window ending
+      // [endDaysAgo] days back. Averaging cancels day-to-day water swings, so a
+      // trend reads true instead of a single noisy weigh-in masquerading as fat
+      // gain/loss.
+      double? smooth(
+          double Function(DailyLog) sel, int endDaysAgo, int windowDays) {
+        final String hi = formatDate(now.subtract(Duration(days: endDaysAgo)));
+        final String lo = formatDate(
+            now.subtract(Duration(days: endDaysAgo + windowDays)));
+        final List<double> xs = logs
+            .where((DailyLog l) =>
+                l.date.compareTo(lo) > 0 && l.date.compareTo(hi) <= 0)
+            .map(sel)
+            .toList();
+        if (xs.isEmpty) {
+          return null;
+        }
+        return xs.reduce((double a, double b) => a + b) / xs.length;
       }
 
-      final double? c14 = change(14), c30 = change(30);
-      if (c14 != null) {
-        sb.writeln(
-            'WEIGHT CHANGE last ~14d: ${c14 >= 0 ? '+' : ''}${c14.toStringAsFixed(1)} lb.');
-      }
-      if (c30 != null) {
-        sb.writeln(
-            'WEIGHT CHANGE last ~30d: ${c30 >= 0 ? '+' : ''}${c30.toStringAsFixed(1)} lb.');
-      }
-      // Body-composition OUTCOME trends — lean vs fat mass — over ~30d.
-      double? metricChange(double Function(DailyLog) sel, int days) {
-        final String cutoff = formatDate(now.subtract(Duration(days: days)));
-        final List<DailyLog> older =
-            logs.where((DailyLog l) => l.date.compareTo(cutoff) <= 0).toList();
-        return older.isEmpty ? null : sel(last) - sel(older.last);
-      }
+      double wOf(DailyLog l) => l.weight;
+      double bfOf(DailyLog l) => l.bf * 100;
+      double leanOf(DailyLog l) => l.lbm;
+      double fatOf(DailyLog l) => l.weight * l.bf;
 
-      final double? leanC = metricChange((DailyLog l) => l.lbm, 30);
-      final double? fatC =
-          metricChange((DailyLog l) => l.weight * l.bf, 30);
-      if (leanC != null) {
-        sb.writeln('LEAN MASS CHANGE last ~30d: '
-            '${leanC >= 0 ? '+' : ''}${leanC.toStringAsFixed(1)} lb '
-            '(the muscle outcome — if this is holding/rising, recomp is working).');
-      }
-      if (fatC != null) {
-        sb.writeln('FAT MASS CHANGE last ~30d: '
-            '${fatC >= 0 ? '+' : ''}${fatC.toStringAsFixed(1)} lb.');
-      }
-      final DateTime? goal = MathEngine.goalDate(logs, cal.targetBf);
-      if (goal != null) {
-        sb.writeln(
-            'PROJECTED GOAL DATE at current pace: ${monthName(goal.month)} ${goal.day}, ${goal.year}.');
-      }
-      if (MathEngine.isPlateau(logs)) {
-        sb.writeln('NOTE: rolling weight average has plateaued (~10 days).');
+      if (kind == 'weekly') {
+        // WEEKLY: the ~4-week smoothed picture (7-day averages a month apart).
+        final double? wNow = smooth(wOf, 0, 7);
+        final double? wThen = smooth(wOf, 28, 7);
+        final double? bfNow = smooth(bfOf, 0, 7);
+        final double? leanNow = smooth(leanOf, 0, 7);
+        final double? leanThen = smooth(leanOf, 28, 7);
+        final double? fatNow = smooth(fatOf, 0, 7);
+        final double? fatThen = smooth(fatOf, 28, 7);
+        if (wNow != null) {
+          sb.writeln('CURRENT 7-DAY AVG: ${wNow.toStringAsFixed(1)} lb'
+              '${bfNow != null ? ', ${bfNow.toStringAsFixed(1)}% BF' : ''}.');
+        }
+        if (wNow != null && wThen != null) {
+          final double d = wNow - wThen;
+          sb.writeln('WEIGHT TREND ~4 wks (smoothed): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb '
+              '(${(d / 4).abs().toStringAsFixed(1)} lb/wk '
+              '${d < -0.4 ? 'down' : d > 0.4 ? 'up' : 'flat'}).');
+        }
+        if (leanNow != null && leanThen != null) {
+          final double d = leanNow - leanThen;
+          sb.writeln('LEAN MASS ~4 wks (smoothed): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb '
+              '(the muscle outcome — holding/rising = recomp is working).');
+        }
+        if (fatNow != null && fatThen != null) {
+          final double d = fatNow - fatThen;
+          sb.writeln('FAT MASS ~4 wks (smoothed): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb.');
+        }
+        final DateTime? goal = MathEngine.goalDate(logs, cal.targetBf);
+        if (goal != null) {
+          sb.writeln(
+              'PROJECTED GOAL DATE at current pace: ${monthName(goal.month)} ${goal.day}, ${goal.year}.');
+        }
+        if (MathEngine.isPlateau(logs)) {
+          sb.writeln('NOTE: rolling weight average has plateaued (~10 days).');
+        }
+      } else {
+        // DAILY: RECENT direction only — this week's smoothed average vs last
+        // week's. Overall/30-day weight is a weekly concern and is deliberately
+        // omitted here so the day-to-day coach can't fixate on it.
+        final double? wNow = smooth(wOf, 0, 7);
+        final double? wPrev = smooth(wOf, 7, 7);
+        final double? bfNow = smooth(bfOf, 0, 7);
+        final double? bfPrev = smooth(bfOf, 7, 7);
+        final double? leanNow = smooth(leanOf, 0, 7);
+        final double? leanPrev = smooth(leanOf, 7, 7);
+        if (wNow != null) {
+          sb.writeln('THIS WEEK (7-day avg): ${wNow.toStringAsFixed(1)} lb'
+              '${bfNow != null ? ', ${bfNow.toStringAsFixed(1)}% BF' : ''}.');
+        }
+        // Raw 7-day swing. A wide range means the scale is water-dominated right
+        // now, so even the smoothed direction should be discounted — this is
+        // what stops a mid-week water spike being read as fat gain.
+        final List<double> last7 = logs
+            .where((DailyLog l) =>
+                l.date.compareTo(
+                    formatDate(now.subtract(const Duration(days: 7)))) >
+                0)
+            .map(wOf)
+            .toList();
+        double? swing;
+        if (last7.length >= 2) {
+          double lo = last7.first, hi = last7.first;
+          for (final double w in last7) {
+            if (w < lo) lo = w;
+            if (w > hi) hi = w;
+          }
+          swing = hi - lo;
+        }
+        if (wNow != null && wPrev != null) {
+          final double d = wNow - wPrev;
+          final bool noisy = swing != null && swing > 4;
+          sb.writeln('WEIGHT DIRECTION (7-day avg vs the week before): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb/wk — '
+              '${d < -0.4 ? 'DOWN' : d > 0.4 ? 'UP' : 'flat'}'
+              '${swing != null ? '; this week swung ${swing.toStringAsFixed(1)} lb top-to-bottom' : ''}. '
+              '${noisy ? 'That swing is large — the scale is water-dominated right now, so DISCOUNT its direction entirely and coach the behaviours instead. ' : ''}'
+              'Never judge from a single day; day-to-day weigh-ins are water.');
+        }
+        if (bfNow != null && bfPrev != null) {
+          final double d = bfNow - bfPrev;
+          sb.writeln('BODY-FAT DIRECTION (7-day avg): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} pts vs the week before.');
+        }
+        if (leanNow != null && leanPrev != null) {
+          final double d = leanNow - leanPrev;
+          sb.writeln('LEAN MASS DIRECTION (7-day avg): '
+              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb vs the week before.');
+        }
       }
     }
 
