@@ -21,6 +21,7 @@ import 'food.dart';
 const String _owner = 'scenicprints';
 const String _repo = 'pantry-data';
 const String _path = 'pantry.json';
+const String _usagePath = 'usage.json';
 
 /// One line the caller wants to deduct: an ingredient and its raw grams.
 class IngredientDeduction {
@@ -92,6 +93,99 @@ class _PantryApi {
     } catch (_) {
       return false;
     }
+  }
+}
+
+// ── spending ledger ───────────────────────────────────────────────────────
+// The Pantry app tracks spending by CONSUMPTION, not purchase, in an
+// append-only `usage.json` in the same repo. When BodyComp subtracts a cooked
+// meal it appends one entry per matched item (source: "bodycomp") with the cost
+// of what was used, so BodyComp usage shows up in Pantry's weekly/monthly
+// spend. The merge is a union by entry id, so it can never clobber an entry the
+// Pantry app added. Entry schema mirrors Pantry's UsageEntry exactly.
+
+class _UsageApi {
+  static String get _token =>
+      const String.fromEnvironment('PANTRY_DATA_TOKEN');
+  static bool get canWrite => _token.isNotEmpty;
+
+  static Uri get _uri => Uri.parse(
+      'https://api.github.com/repos/$_owner/$_repo/contents/$_usagePath');
+
+  static Map<String, String> get _headers => <String, String>{
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'BodyComp-PantryBridge',
+        if (canWrite) 'Authorization': 'Bearer $_token',
+      };
+
+  /// Append [entries] to usage.json (union by id). Best-effort: returns false
+  /// on any failure so the caller can note it without blocking the subtract.
+  static Future<bool> append(List<Map<String, dynamic>> entries) async {
+    if (entries.isEmpty || !canWrite) {
+      return false;
+    }
+    for (int attempt = 0; attempt < 2; attempt++) {
+      List<dynamic> existing = <dynamic>[];
+      String? sha;
+      try {
+        final http.Response r = await http
+            .get(_uri, headers: _headers)
+            .timeout(const Duration(seconds: 15));
+        if (r.statusCode == 200) {
+          final Map<String, dynamic> j =
+              jsonDecode(r.body) as Map<String, dynamic>;
+          sha = j['sha'] as String?;
+          final String content =
+              (j['content'] as String? ?? '').replaceAll('\n', '');
+          if (content.isNotEmpty) {
+            final Map<String, dynamic> root =
+                jsonDecode(utf8.decode(base64.decode(content)))
+                    as Map<String, dynamic>;
+            existing = (root['usage'] as List<dynamic>?) ?? <dynamic>[];
+          }
+        } else if (r.statusCode != 404) {
+          return false; // don't risk a bad write on an unexpected status
+        }
+      } catch (_) {
+        return false;
+      }
+
+      // Union by id: keep every existing entry, add/replace ours.
+      final Map<String, Map<String, dynamic>> byId =
+          <String, Map<String, dynamic>>{};
+      for (final dynamic e in existing) {
+        if (e is Map<String, dynamic> && e['id'] is String) {
+          byId[e['id'] as String] = e;
+        }
+      }
+      for (final Map<String, dynamic> e in entries) {
+        byId[e['id'] as String] = e;
+      }
+      final Map<String, dynamic> out = <String, dynamic>{
+        'usage': byId.values.toList()
+      };
+
+      try {
+        const JsonEncoder enc = JsonEncoder.withIndent('  ');
+        final Map<String, dynamic> body = <String, dynamic>{
+          'message': 'Append usage (from BodyComp)',
+          'content': base64.encode(utf8.encode(enc.convert(out))),
+          'branch': 'main',
+          'sha': ?sha,
+        };
+        final http.Response r = await http
+            .put(_uri, headers: _headers, body: jsonEncode(body))
+            .timeout(const Duration(seconds: 20));
+        if (r.statusCode == 200 || r.statusCode == 201) {
+          return true;
+        }
+        // else: likely a sha race — loop refetches and retries once.
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
   }
 }
 
@@ -394,6 +488,8 @@ class _ConfirmSubtractPageState extends State<_ConfirmSubtractPage> {
     setState(() => _writing = true);
     final int nowMs = DateTime.now().millisecondsSinceEpoch;
     final List<String> summary = <String>[];
+    // One spending-ledger entry per subtracted line (cost of what was used).
+    final List<Map<String, dynamic>> usage = <Map<String, dynamic>>[];
     int applied = 0;
 
     for (final _Line l in _lines) {
@@ -408,11 +504,33 @@ class _ConfirmSubtractPageState extends State<_ConfirmSubtractPage> {
       final bool count = _isCount(item);
       final String key = count ? 'remaining_count' : 'remaining_weight_g';
       final double cur = (item[key] as num?)?.toDouble() ?? 0;
+      final double subtracted = amt > cur ? cur : amt; // can't use more than left
       final double next = (cur - amt) < 0 ? 0 : (cur - amt);
       item[key] = num.parse(next.toStringAsFixed(1));
       item['updated_at_ms'] = nowMs;
       applied++;
       summary.add('${_itemName(l.matchIndex)}: −${_fmt(amt)}${count ? ' ct' : ' g'}');
+
+      // Record the cost of what was actually consumed, using the pantry item's
+      // own unit price. Skipped when there's no price to cost it against.
+      final double unitPrice = count
+          ? _pd(item['price_per_unit'])
+          : _pd(item['price_per_gram']);
+      if (unitPrice > 0 && subtracted > 0) {
+        final String itemId =
+            (item['id'] as String?) ?? _norm(_itemName(l.matchIndex));
+        usage.add(<String, dynamic>{
+          'id': '$itemId-$nowMs-$applied',
+          'ts': nowMs,
+          'item_id': itemId,
+          'name': _itemName(l.matchIndex),
+          'amount': num.parse(subtracted.toStringAsFixed(1)),
+          'unit': count ? 'count' : 'g',
+          'unit_price': num.parse(unitPrice.toStringAsFixed(4)),
+          'cost': num.parse((subtracted * unitPrice).toStringAsFixed(2)),
+          'source': 'bodycomp',
+        });
+      }
     }
 
     if (applied == 0) {
@@ -431,6 +549,11 @@ class _ConfirmSubtractPageState extends State<_ConfirmSubtractPage> {
       if (fresh != null) {
         ok = await _PantryApi.push(widget.file.root, fresh.sha);
       }
+    }
+    // Only record spend once the pantry write actually landed, so the ledger
+    // never counts a subtraction that didn't happen. Best-effort.
+    if (ok && usage.isNotEmpty) {
+      await _UsageApi.append(usage);
     }
     if (!mounted) {
       return;
