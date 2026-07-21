@@ -476,45 +476,64 @@ class Usda {
     if (q.isEmpty) {
       return <FoodTemplate>[];
     }
-    final Uri uri = Uri.parse('https://api.nal.usda.gov/fdc/v1/foods/search'
-        '?api_key=$apiKey&query=${Uri.encodeQueryComponent(q)}'
-        '&pageSize=30&dataType=${Uri.encodeQueryComponent('Foundation,SR Legacy,Branded')}');
-    final http.Response resp = await http.get(uri);
-    if (resp.statusCode != 200) {
-      return <FoodTemplate>[];
-    }
-    final Map<String, dynamic> data =
-        jsonDecode(resp.body) as Map<String, dynamic>;
-    final List<dynamic> foods =
-        (data['foods'] as List<dynamic>?) ?? <dynamic>[];
-    // Whole foods (Foundation / SR Legacy) first, then everything else —
-    // keeps simple searches like "onion" from drowning in branded variants.
+    // Two separate requests: generic datasets and Branded. A single mixed
+    // query lets branded products fill the whole page by relevance before any
+    // local ranking can run — searching "asparagus" should lead with
+    // "Asparagus, cooked from fresh" (Survey/FNDDS — which the old query
+    // never even requested), with brands trailing behind.
+    final List<List<Map<String, dynamic>>> pages =
+        await Future.wait(<Future<List<Map<String, dynamic>>>>[
+      _searchPage(q, 'Foundation,SR Legacy,Survey (FNDDS)', 25),
+      _searchPage(q, 'Branded', 10),
+    ]);
+    // Within generics: Foundation → SR Legacy → FNDDS.
     int rank(Map<String, dynamic> f) {
       switch ((f['dataType'] as String?) ?? '') {
         case 'Foundation':
           return 0;
         case 'SR Legacy':
           return 1;
-        case 'Survey (FNDDS)':
-          return 2;
         default:
-          return 3; // Branded
+          return 2; // Survey (FNDDS)
       }
     }
 
-    final List<Map<String, dynamic>> sorted = foods
-        .map((dynamic f) => f as Map<String, dynamic>)
-        .toList()
+    final List<Map<String, dynamic>> generic = pages[0]
       ..sort((Map<String, dynamic> a, Map<String, dynamic> b) =>
           rank(a).compareTo(rank(b)));
     final List<FoodTemplate> out = <FoodTemplate>[];
-    for (final Map<String, dynamic> f in sorted) {
+    for (final Map<String, dynamic> f in <Map<String, dynamic>>[
+      ...generic,
+      ...pages[1],
+    ]) {
       final FoodTemplate? t = parseFood(f);
       if (t != null) {
         out.add(t);
       }
     }
     return out;
+  }
+
+  /// One foods/search page for [dataTypes]; empty on any failure so a bad
+  /// branded request can't take the generic results down with it.
+  static Future<List<Map<String, dynamic>>> _searchPage(
+      String q, String dataTypes, int pageSize) async {
+    try {
+      final Uri uri = Uri.parse('https://api.nal.usda.gov/fdc/v1/foods/search'
+          '?api_key=$apiKey&query=${Uri.encodeQueryComponent(q)}'
+          '&pageSize=$pageSize&dataType=${Uri.encodeQueryComponent(dataTypes)}');
+      final http.Response resp = await http.get(uri);
+      if (resp.statusCode != 200) {
+        return <Map<String, dynamic>>[];
+      }
+      final Map<String, dynamic> data =
+          jsonDecode(resp.body) as Map<String, dynamic>;
+      return ((data['foods'] as List<dynamic>?) ?? <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+    } catch (_) {
+      return <Map<String, dynamic>>[];
+    }
   }
 
   static Future<FoodTemplate?> fetchByBarcode(String barcode) async {

@@ -271,6 +271,15 @@ PantryFood? _pantryFoodFrom(Map<String, dynamic> m) {
   if (name.isEmpty || m['spice'] == true || m['quantity_unknown'] == true) {
     return null;
   }
+  // Used-up items stay in the shared file (the Pantry app shows them under
+  // its "Used up" history) but they're not IN the pantry anymore — don't
+  // offer them as loggable foods.
+  final bool isCount = m['unit'] == 'count' || m.containsKey('total_count');
+  final double remaining =
+      _pd(isCount ? m['remaining_count'] : m['remaining_weight_g']);
+  if (remaining <= 0) {
+    return null;
+  }
   final String servingUnit = (m['serving_unit'] as String?) ?? 'g';
   final double servingSize = _pd(m['serving_size']);
   final Map<String, dynamic>? per100 =
@@ -316,18 +325,8 @@ PantryFood? _pantryFoodFrom(Map<String, dynamic> m) {
     barcode: (barcode != null && barcode.isNotEmpty) ? barcode : null,
   );
 
-  String rem = '';
-  if (m['unit'] == 'count' || m.containsKey('total_count')) {
-    final double r = _pd(m['remaining_count']);
-    if (r > 0) {
-      rem = '${_fmtNum(r)} left';
-    }
-  } else {
-    final double r = _pd(m['remaining_weight_g']);
-    if (r > 0) {
-      rem = '${_fmtNum(r)} g left';
-    }
-  }
+  final String rem =
+      isCount ? '${_fmtNum(remaining)} left' : '${_fmtNum(remaining)} g left';
   return PantryFood(t, rem);
 }
 
