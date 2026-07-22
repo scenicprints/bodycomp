@@ -20,7 +20,7 @@ import 'run_service.dart';
 import 'watch_bridge.dart';
 import 'trainer.dart';
 import 'sleep.dart';
-import 'advisor.dart';
+import 'coach.dart';
 import 'insights.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -67,8 +67,6 @@ class UserCalibration {
   final double? fatTarget;
   final double? carbTarget;
   final double? fiberTarget;
-  // AI coach model (Settings-selectable).
-  final String advisorModel;
 
   UserCalibration({
     required this.startWeight,
@@ -80,7 +78,6 @@ class UserCalibration {
     this.fatTarget,
     this.carbTarget,
     this.fiberTarget,
-    this.advisorModel = kDefaultAdvisorModel,
   });
 
   double get startLbm => startWeight * (1 - startBf);
@@ -94,7 +91,6 @@ class UserCalibration {
     Object? fatTarget = _unset,
     Object? carbTarget = _unset,
     Object? fiberTarget = _unset,
-    String? advisorModel,
   }) {
     return UserCalibration(
       startWeight: startWeight,
@@ -102,7 +98,6 @@ class UserCalibration {
       targetBf: targetBf ?? this.targetBf,
       activityMult: activityMult ?? this.activityMult,
       deficit: deficit ?? this.deficit,
-      advisorModel: advisorModel ?? this.advisorModel,
       proteinTarget: proteinTarget == _unset
           ? this.proteinTarget
           : (proteinTarget as num?)?.toDouble(),
@@ -128,7 +123,6 @@ class UserCalibration {
       if (fatTarget != null) 'fatTarget': fatTarget,
       if (carbTarget != null) 'carbTarget': carbTarget,
       if (fiberTarget != null) 'fiberTarget': fiberTarget,
-      'advisorModel': advisorModel,
     };
   }
 
@@ -143,7 +137,6 @@ class UserCalibration {
       fatTarget: (j['fatTarget'] as num?)?.toDouble(),
       carbTarget: (j['carbTarget'] as num?)?.toDouble(),
       fiberTarget: (j['fiberTarget'] as num?)?.toDouble(),
-      advisorModel: (j['advisorModel'] as String?) ?? kDefaultAdvisorModel,
     );
   }
 }
@@ -353,335 +346,6 @@ class MacroTargets {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ADVISOR DIGEST  — the local facts we send to the AI coach
-// ═══════════════════════════════════════════════════════════════════════
-
-class AdvisorDigest {
-  static String build(UserCalibration cal, List<DailyLog> logs,
-      List<FoodEntry> foods, Set<String> fasted, String kind,
-      {List<SleepEntry> sleep = const <SleepEntry>[],
-      List<RunRecord> runs = const <RunRecord>[],
-      int trainerLevel = 0}) {
-    final DateTime now = DateTime.now();
-    final String today = formatDate(now);
-    final MacroTargets t = MacroTargets.compute(cal, logs, foods, fasted);
-    final Map<String, double> byDateCal = FoodMath.caloriesByDate(foods);
-    final Map<String, DailyLog> logByDate = <String, DailyLog>{
-      for (final DailyLog l in logs) l.date: l
-    };
-    // Per-day sleep + runs, so the coach can correlate across domains.
-    final Map<String, SleepEntry> sleepByDate = <String, SleepEntry>{
-      for (final SleepEntry e in sleep) e.date: e
-    };
-    final Map<String, List<RunRecord>> runsByDate = <String, List<RunRecord>>{};
-    for (final RunRecord r in runs) {
-      (runsByDate[r.date] ??= <RunRecord>[]).add(r);
-    }
-    final double tdee = logs.isEmpty
-        ? 0
-        : MathEngine.activeTdee(logs, cal.activityMult,
-            caloriesByDate: byDateCal, fastedDates: fasted);
-
-    final StringBuffer sb = StringBuffer();
-    sb.writeln('DATE: $today');
-    sb.writeln(
-        'GOAL: start body-fat ${(cal.startBf * 100).toStringAsFixed(1)}% → target ${(cal.targetBf * 100).toStringAsFixed(1)}%; intended daily deficit ${cal.deficit} cal.');
-    sb.writeln(
-        'DAILY TARGETS: ${t.calories.round()} cal, protein ${t.protein.round()} g, fat ${t.fat.round()} g, carbs ${t.carbs.round()} g, fiber ${t.fiber.round()} g.');
-    if (tdee > 0) {
-      sb.writeln('ESTIMATED TDEE (maintenance): ${tdee.round()} cal.');
-    }
-
-    if (logs.isNotEmpty) {
-      // Smoothed rolling average of a metric over a [windowDays] window ending
-      // [endDaysAgo] days back. Averaging cancels day-to-day water swings, so a
-      // trend reads true instead of a single noisy weigh-in masquerading as fat
-      // gain/loss.
-      double? smooth(
-          double Function(DailyLog) sel, int endDaysAgo, int windowDays) {
-        final String hi = formatDate(now.subtract(Duration(days: endDaysAgo)));
-        final String lo = formatDate(
-            now.subtract(Duration(days: endDaysAgo + windowDays)));
-        final List<double> xs = logs
-            .where((DailyLog l) =>
-                l.date.compareTo(lo) > 0 && l.date.compareTo(hi) <= 0)
-            .map(sel)
-            .toList();
-        if (xs.isEmpty) {
-          return null;
-        }
-        return xs.reduce((double a, double b) => a + b) / xs.length;
-      }
-
-      double wOf(DailyLog l) => l.weight;
-      double bfOf(DailyLog l) => l.bf * 100;
-      double leanOf(DailyLog l) => l.lbm;
-      double fatOf(DailyLog l) => l.weight * l.bf;
-
-      if (kind == 'weekly') {
-        // WEEKLY: the ~4-week smoothed picture (7-day averages a month apart).
-        final double? wNow = smooth(wOf, 0, 7);
-        final double? wThen = smooth(wOf, 28, 7);
-        final double? bfNow = smooth(bfOf, 0, 7);
-        final double? leanNow = smooth(leanOf, 0, 7);
-        final double? leanThen = smooth(leanOf, 28, 7);
-        final double? fatNow = smooth(fatOf, 0, 7);
-        final double? fatThen = smooth(fatOf, 28, 7);
-        if (wNow != null) {
-          sb.writeln('CURRENT 7-DAY AVG: ${wNow.toStringAsFixed(1)} lb'
-              '${bfNow != null ? ', ${bfNow.toStringAsFixed(1)}% BF' : ''}.');
-        }
-        if (wNow != null && wThen != null) {
-          final double d = wNow - wThen;
-          sb.writeln('WEIGHT TREND ~4 wks (smoothed): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb '
-              '(${(d / 4).abs().toStringAsFixed(1)} lb/wk '
-              '${d < -0.4 ? 'down' : d > 0.4 ? 'up' : 'flat'}).');
-        }
-        if (leanNow != null && leanThen != null) {
-          final double d = leanNow - leanThen;
-          sb.writeln('LEAN MASS ~4 wks (smoothed): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb '
-              '(the muscle outcome — holding/rising = recomp is working).');
-        }
-        if (fatNow != null && fatThen != null) {
-          final double d = fatNow - fatThen;
-          sb.writeln('FAT MASS ~4 wks (smoothed): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb.');
-        }
-        final DateTime? goal = MathEngine.goalDate(logs, cal.targetBf);
-        if (goal != null) {
-          sb.writeln(
-              'PROJECTED GOAL DATE at current pace: ${monthName(goal.month)} ${goal.day}, ${goal.year}.');
-        }
-        if (MathEngine.isPlateau(logs)) {
-          sb.writeln('NOTE: rolling weight average has plateaued (~10 days).');
-        }
-      } else {
-        // DAILY: RECENT direction only — this week's smoothed average vs last
-        // week's. Overall/30-day weight is a weekly concern and is deliberately
-        // omitted here so the day-to-day coach can't fixate on it.
-        final double? wNow = smooth(wOf, 0, 7);
-        final double? wPrev = smooth(wOf, 7, 7);
-        final double? bfNow = smooth(bfOf, 0, 7);
-        final double? bfPrev = smooth(bfOf, 7, 7);
-        final double? leanNow = smooth(leanOf, 0, 7);
-        final double? leanPrev = smooth(leanOf, 7, 7);
-        if (wNow != null) {
-          sb.writeln('THIS WEEK (7-day avg): ${wNow.toStringAsFixed(1)} lb'
-              '${bfNow != null ? ', ${bfNow.toStringAsFixed(1)}% BF' : ''}.');
-        }
-        // Raw 7-day swing. A wide range means the scale is water-dominated right
-        // now, so even the smoothed direction should be discounted — this is
-        // what stops a mid-week water spike being read as fat gain.
-        final List<double> last7 = logs
-            .where((DailyLog l) =>
-                l.date.compareTo(
-                    formatDate(now.subtract(const Duration(days: 7)))) >
-                0)
-            .map(wOf)
-            .toList();
-        double? swing;
-        if (last7.length >= 2) {
-          double lo = last7.first, hi = last7.first;
-          for (final double w in last7) {
-            if (w < lo) lo = w;
-            if (w > hi) hi = w;
-          }
-          swing = hi - lo;
-        }
-        if (wNow != null && wPrev != null) {
-          final double d = wNow - wPrev;
-          final bool noisy = swing != null && swing > 4;
-          sb.writeln('WEIGHT DIRECTION (7-day avg vs the week before): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb/wk — '
-              '${d < -0.4 ? 'DOWN' : d > 0.4 ? 'UP' : 'flat'}'
-              '${swing != null ? '; this week swung ${swing.toStringAsFixed(1)} lb top-to-bottom' : ''}. '
-              '${noisy ? 'That swing is large — the scale is water-dominated right now, so DISCOUNT its direction entirely and coach the behaviours instead. ' : ''}'
-              'Never judge from a single day; day-to-day weigh-ins are water.');
-        }
-        if (bfNow != null && bfPrev != null) {
-          final double d = bfNow - bfPrev;
-          sb.writeln('BODY-FAT DIRECTION (7-day avg): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} pts vs the week before.');
-        }
-        if (leanNow != null && leanPrev != null) {
-          final double d = leanNow - leanPrev;
-          sb.writeln('LEAN MASS DIRECTION (7-day avg): '
-              '${d >= 0 ? '+' : ''}${d.toStringAsFixed(1)} lb vs the week before.');
-        }
-      }
-    }
-
-    // Adherence + deficit-vs-actual over the detail window. Daily stays tight
-    // and recent; weekly reaches back far enough to surface real patterns.
-    final int detailDays = kind == 'weekly' ? 30 : 10;
-    int eaten = 0;
-    double sumCal = 0, sumP = 0, sumF = 0, sumC = 0, sumFiber = 0;
-    for (int i = 0; i < detailDays; i++) {
-      final String d = formatDate(now.subtract(Duration(days: i)));
-      if ((byDateCal[d] ?? 0) > 0) {
-        final DayTotals dt = FoodMath.totals(foods, d);
-        eaten++;
-        sumCal += dt.calories;
-        sumP += dt.protein;
-        sumF += dt.fat;
-        sumC += dt.carbs;
-        sumFiber += dt.nutrients['fiber'] ?? 0;
-      }
-    }
-    // How current is the food tracking? Days since the most recent logged food.
-    // This gates everything below: a deficit computed from LAST week's logs must
-    // never be presented as THIS week's reality when the user has stopped
-    // tracking. (0 = logged today, -1 = nothing logged recently at all.)
-    int daysSinceFood = -1;
-    for (int i = 0; i <= 60; i++) {
-      if ((byDateCal[formatDate(now.subtract(Duration(days: i)))] ?? 0) > 0) {
-        daysSinceFood = i;
-        break;
-      }
-    }
-    final bool trackingStale = daysSinceFood < 0 || daysSinceFood >= 3;
-
-    if (eaten > 0) {
-      final double avgCal = sumCal / eaten;
-      sb.writeln(
-          '\nLAST $detailDays DAYS — food logged on $eaten of them; averages on those LOGGED days only: ${avgCal.round()} cal, protein ${(sumP / eaten).round()} g, fat ${(sumF / eaten).round()} g, carbs ${(sumC / eaten).round()} g, fiber ${(sumFiber / eaten).round()} g.');
-      // Only surface the deficit prediction when tracking is CURRENT — otherwise
-      // it reads as "you're on a deficit" for a week that hasn't been tracked.
-      if (!trackingStale && tdee > 0) {
-        final double dailyDeficit = tdee - avgCal;
-        sb.writeln(
-            'AVERAGE ACTUAL DEFICIT (over the $eaten logged day(s)): ${dailyDeficit.round()} cal/day (predicts ~${(dailyDeficit * 7 / 3500).toStringAsFixed(1)} lb/week of fat).');
-      }
-    }
-
-    // Loudly flag stale/absent tracking so the coach judges from the scale, not
-    // from a deficit it can no longer see.
-    if (daysSinceFood < 0) {
-      sb.writeln(
-          '\nINTAKE STATUS: UNTRACKED — no food logged recently. There is NO current calorie data. Do NOT claim a deficit or surplus from intake and do NOT reassure from older logs. The weight/fat trend is the only current signal; if weight is rising while intake is untracked, they are eating at a surplus.');
-    } else if (trackingStale) {
-      sb.writeln(
-          '\nINTAKE STATUS: STALE — last food log was $daysSinceFood days ago; the days since are untracked. Any calorie/deficit figure above is from BEFORE that gap and does NOT describe what they are eating now — do NOT treat it as a current deficit or use it to reassure them. Judge current status from the weight trend: rising weight + untracked intake = a surplus right now.');
-    } else if (daysSinceFood > 0) {
-      sb.writeln(
-          '\nINTAKE STATUS: current (last food log ${daysSinceFood == 1 ? 'yesterday' : '$daysSinceFood days ago'}).');
-    } else {
-      sb.writeln('\nINTAKE STATUS: current (food logged today).');
-    }
-
-    // Earliest date we have ANY data for — days before this are pre-adoption
-    // and stay hidden; days after it with no food are shown as "no food logged"
-    // so the coach treats them as no-data (not a failure), per the advisor rule.
-    String? firstDataDate;
-    for (final String d in <String>[
-      ...logByDate.keys,
-      ...byDateCal.keys,
-      ...fasted,
-      ...sleepByDate.keys,
-      ...runsByDate.keys,
-    ]) {
-      if (firstDataDate == null || d.compareTo(firstDataDate) < 0) {
-        firstDataDate = d;
-      }
-    }
-
-    sb.writeln('\nPER-DAY DETAIL (oldest to newest):');
-    for (int i = detailDays - 1; i >= 0; i--) {
-      final String d = formatDate(now.subtract(Duration(days: i)));
-      final DailyLog? log = logByDate[d];
-      final bool hasFood = (byDateCal[d] ?? 0) > 0;
-      final bool isFast = fasted.contains(d);
-      final SleepEntry? slp = sleepByDate[d];
-      final List<RunRecord>? dayRuns = runsByDate[d];
-      // Drop only truly empty days that predate the user's first-ever data.
-      final bool beforeAdoption =
-          firstDataDate == null || d.compareTo(firstDataDate) < 0;
-      if (beforeAdoption) {
-        continue;
-      }
-      final List<String> parts = <String>[d];
-      if (log != null) {
-        parts.add(
-            '${log.weight.toStringAsFixed(1)}lb/${(log.bf * 100).toStringAsFixed(1)}%');
-      }
-      if (hasFood) {
-        final DayTotals dt = FoodMath.totals(foods, d);
-        parts.add(
-            '${dt.calories.round()}cal P${dt.protein.round()} F${dt.fat.round()} C${dt.carbs.round()} fib${(dt.nutrients['fiber'] ?? 0).round()} sug${(dt.nutrients['sugars'] ?? 0).round()}');
-        // ALL foods for the day (by name) so patterns are visible.
-        final List<String> names = FoodMath.forDate(foods, d)
-            .map((FoodEntry e) => e.name)
-            .toList();
-        if (names.isNotEmpty) {
-          parts.add('[${names.join(', ')}]');
-        }
-      } else if (isFast) {
-        parts.add('FASTED (0 cal)');
-      } else {
-        parts.add('no food logged');
-      }
-      if (slp != null) {
-        parts.add('slept ${slp.hours.toStringAsFixed(1)}h'
-            '${slp.restingHr != null ? ' RHR${slp.restingHr!.round()}' : ''}'
-            '${slp.hrv != null ? ' HRV${slp.hrv!.round()}' : ''}');
-      }
-      if (dayRuns != null && dayRuns.isNotEmpty) {
-        final RunRecord r = dayRuns.first;
-        parts.add('RAN ${(r.durationSec / 60).round()}min'
-            '${r.distanceKm > 0 ? ' ${(r.distanceKm * 0.621371).toStringAsFixed(1)}mi' : ''}'
-            '${r.avgHr != null ? ' HR${r.avgHr!.round()}' : ''}');
-      }
-      sb.writeln('- ${parts.join(' · ')}');
-    }
-
-    final String sleepLine = sleepDigest(sleep, now);
-    if (sleepLine.isNotEmpty) {
-      sb.writeln(sleepLine);
-    }
-
-    // Training — so the dashboard coach briefs across running too.
-    if (trainerLevel > 0 || runs.isNotEmpty) {
-      final int wk = runsThisWeek(runs, now);
-      if (trainerLevel > 0) {
-        sb.writeln('TRAINING: 5K plan level $trainerLevel of $kMaxLevel '
-            '("${workoutForLevel(trainerLevel).name}"); $wk run'
-            '${wk == 1 ? '' : 's'} in the last 7 days.');
-      } else {
-        sb.writeln('TRAINING: $wk run${wk == 1 ? '' : 's'} in the last 7 days.');
-      }
-      for (final RunRecord r in runs.reversed.take(4)) {
-        final String dist = r.distanceKm > 0
-            ? ', ${(r.distanceKm * 0.621371).toStringAsFixed(2)} mi'
-            : '';
-        sb.writeln('- ${r.date}: ${(r.durationSec / 60).round()} min$dist'
-            '${r.avgHr != null ? ', HR ${r.avgHr!.round()}' : ''}'
-            ', felt ${r.effort}${r.completed ? '' : ' (partial)'}');
-      }
-    }
-
-    // Readiness — the same transparent read shown on the Sleep tab.
-    final SleepEntry? lastSleep = SleepMath.latest(sleep);
-    final Readiness? readiness = computeReadiness(
-      lastNightHours: lastSleep?.hours,
-      baselineHours: SleepMath.baselineHours(sleep, now),
-      runsLast7: runsThisWeek(runs, now),
-      deficit: cal.deficit,
-      restingHr: lastSleep?.restingHr,
-      baselineRestingHr: SleepMath.baselineRestingHr(sleep, now),
-      hrv: lastSleep?.hrv,
-      baselineHrv: SleepMath.baselineHrv(sleep, now),
-    );
-    if (readiness != null) {
-      sb.writeln(
-          'READINESS: ${readiness.score}/100 (${readiness.label}).');
-    }
-
-    return sb.toString();
-  }
-}
 
 class AppStorage {
   static late File _file;
@@ -3404,46 +3068,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: kBorder)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-        Text('AI COACH',
-            style: TextStyle(
-                fontSize: 11,
-                color: Colors.grey[600],
-                letterSpacing: 1,
-                fontWeight: FontWeight.w600)),
-        const SizedBox(height: 4),
-        Text('Model used for daily/weekly coaching. Pricier = sharper.',
-            style: TextStyle(fontSize: 12, color: Colors.grey[600])),
-        const SizedBox(height: 10),
-        Container(
-          decoration: BoxDecoration(
-              color: const Color(0xFF111111),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: const Color(0xFF333333))),
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: widget.cal.advisorModel,
-              isExpanded: true,
-              dropdownColor: kSurface2,
-              style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 15),
-              items: kAdvisorModels
-                  .map((AdvisorModel m) => DropdownMenuItem<String>(
-                      value: m.id,
-                      child: Text('${m.label}  (${m.cost})')))
-                  .toList(),
-              onChanged: (String? v) {
-                if (v != null) {
-                  widget.onSetCal(widget.cal.copyWith(advisorModel: v));
-                }
-              },
-            ),
-          ),
-        ),
-        if (!Advisor.configured) ...<Widget>[
-          const SizedBox(height: 8),
-          Text('No API key in this build — coaching is disabled until one is added.',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-        ],
+        Row(children: <Widget>[
+          Icon(Icons.psychology_rounded, size: 15, color: accent),
+          const SizedBox(width: 6),
+          Text('COACH',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 8),
+        Text('Coaching runs entirely on your device from your own numbers — '
+            'no AI, no API key, no cost. Nothing to configure.',
+            style: TextStyle(fontSize: 12, color: Colors.grey[500], height: 1.4)),
       ]),
     );
   }
@@ -6934,22 +6572,19 @@ class _AdvisorCardState extends State<_AdvisorCard> {
     return m.isEmpty ? null : m.last;
   }
 
-  Future<void> _generate(String kind) async {
+  void _generate(String kind) {
     setState(() {
       _busyKind = kind;
       _error = null;
     });
     try {
-      final String digest = AdvisorDigest.build(
-          widget.cal, widget.logs, widget.foods, widget.fasted.toSet(), kind,
+      final CoachFacts facts = CoachFacts.build(
+          widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
+          weekly: kind == 'weekly',
           sleep: widget.sleep,
-          runs: widget.runs,
-          trainerLevel: widget.trainerLevel);
-      final String text = await Advisor.generate(
-          model: widget.cal.advisorModel, kind: kind, digest: digest);
-      if (!mounted) {
-        return;
-      }
+          runs: widget.runs);
+      final String text =
+          kind == 'weekly' ? Coach.weekly(facts) : Coach.daily(facts);
       final String key = kind == 'weekly' ? _weekKey : _todayKey;
       final List<AdvisorInsight> updated = widget.insights
           .where((AdvisorInsight i) => i.kind != kind)
@@ -6960,14 +6595,8 @@ class _AdvisorCardState extends State<_AdvisorCard> {
             text: text,
             createdAtMs: DateTime.now().millisecondsSinceEpoch));
       widget.onSetInsights(updated);
-    } on AdvisorException catch (e) {
-      if (mounted) {
-        setState(() => _error = e.message);
-      }
     } catch (_) {
-      if (mounted) {
-        setState(() => _error = 'Something went wrong reaching the coach.');
-      }
+      setState(() => _error = 'Could not build a read from your data yet.');
     } finally {
       if (mounted) {
         setState(() => _busyKind = null);
@@ -6982,7 +6611,6 @@ class _AdvisorCardState extends State<_AdvisorCard> {
     final AdvisorInsight? weekly = _latest('weekly');
     final bool todayDone = daily != null && daily.periodKey == _todayKey;
     final bool weekDone = weekly != null && weekly.periodKey == _weekKey;
-    final bool configured = Advisor.configured;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -7002,16 +6630,11 @@ class _AdvisorCardState extends State<_AdvisorCard> {
                     letterSpacing: 1,
                     fontWeight: FontWeight.w700)),
           ]),
-          Text(advisorModelLabel(widget.cal.advisorModel),
+          Text('on-device',
               style: TextStyle(fontSize: 10, color: Colors.grey[600])),
         ]),
         const SizedBox(height: 10),
-        if (!configured)
-          Text(
-              'AI coach isn\'t set up in this build (no API key). Add one to enable coaching.',
-              style: TextStyle(
-                  fontSize: 13, color: Colors.grey[500], height: 1.4))
-        else ...<Widget>[
+        ...<Widget>[
           if (daily != null)
             InkWell(
               onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
@@ -7230,39 +6853,6 @@ class _TrainScreenState extends State<TrainScreen> {
   bool _coaching = false;
 
   // ── AI coaching (reuses the Claude client behind the Food Advisor) ───
-  String _runDigest() {
-    final StringBuffer b = StringBuffer();
-    final Workout w = _today;
-    b.writeln('Plan: Level ${w.level} of $kMaxLevel — "${w.name}".');
-    final List<RunRecord> recent = widget.runs.reversed.take(8).toList();
-    if (recent.isEmpty) {
-      b.writeln('No runs logged yet.');
-    } else {
-      b.writeln('Recent runs (newest first):');
-      for (final RunRecord r in recent) {
-        final String dist = r.distanceKm > 0
-            ? '${_kmToMi(r.distanceKm).toStringAsFixed(2)} mi, '
-                '${_paceMinPerMile(r)} /mi'
-            : 'no distance';
-        b.writeln('- ${r.date}: ${(r.durationSec / 60).round()} min, $dist'
-            '${r.avgHr != null ? ', HR ${r.avgHr!.round()}' : ''}'
-            ', felt ${r.effort}${r.completed ? '' : ', PARTIAL'}');
-      }
-    }
-    if (widget.logs.isNotEmpty) {
-      b.writeln('Latest weight: '
-          '${widget.logs.last.weight.toStringAsFixed(1)} lb.');
-    }
-    b.writeln('Planned daily calorie deficit: ${widget.cal.deficit} kcal.');
-    b.writeln('Runs in the last 7 days: '
-        '${runsThisWeek(widget.runs, DateTime.now())}.');
-    final String sleep = sleepDigest(widget.sleep, DateTime.now());
-    if (sleep.isNotEmpty) {
-      b.writeln(sleep);
-    }
-    return b.toString();
-  }
-
   double? get _lastNightHours => SleepMath.latest(widget.sleep)?.hours;
   double? get _baselineHours =>
       SleepMath.baselineHours(widget.sleep, DateTime.now());
@@ -7271,13 +6861,18 @@ class _TrainScreenState extends State<TrainScreen> {
   // against this key so it's a one-per-run read, not a refreshable spend:
   // once this run is coached the button locks until a newer run comes in.
   String get _latestRunKey {
-    String? key;
+    final RunRecord? r = _latestRun;
+    return r == null ? 'none' : '${r.date}|${r.id}';
+  }
+
+  RunRecord? get _latestRun {
+    RunRecord? best;
     for (final RunRecord r in widget.runs) {
-      if (key == null || r.date.compareTo(key.split('|').first) > 0) {
-        key = '${r.date}|${r.id}';
+      if (best == null || r.date.compareTo(best.date) > 0) {
+        best = r;
       }
     }
-    return key ?? 'none';
+    return best;
   }
 
   AdvisorInsight? get _runInsight {
@@ -7288,14 +6883,18 @@ class _TrainScreenState extends State<TrainScreen> {
     return m.isEmpty ? null : m.last;
   }
 
-  Future<void> _askCoach() async {
+  void _askCoach() {
+    final RunRecord? run = _latestRun;
+    if (run == null) {
+      setState(() => _coachError = 'Log a run first.');
+      return;
+    }
     setState(() {
       _coaching = true;
       _coachError = null;
     });
     try {
-      final String text = await Advisor.generate(
-          model: widget.cal.advisorModel, kind: 'run', digest: _runDigest());
+      final String text = Coach.run(run, sleep: widget.sleep);
       // Persist against this run so it survives tab switches and can't be
       // re-spent — a fresh read only unlocks when a newer run is logged.
       final List<AdvisorInsight> updated = widget.insights
@@ -7307,14 +6906,8 @@ class _TrainScreenState extends State<TrainScreen> {
             text: text,
             createdAtMs: DateTime.now().millisecondsSinceEpoch));
       widget.onSetInsights(updated);
-    } on AdvisorException catch (e) {
-      if (mounted) {
-        setState(() => _coachError = e.message);
-      }
     } catch (_) {
-      if (mounted) {
-        setState(() => _coachError = 'Coaching is unavailable right now.');
-      }
+      setState(() => _coachError = 'Could not read this run.');
     } finally {
       if (mounted) {
         setState(() => _coaching = false);
@@ -7851,7 +7444,7 @@ class _TrainScreenState extends State<TrainScreen> {
               ]),
             ),
           ],
-          if (Advisor.configured) ...<Widget>[
+          if (widget.runs.isNotEmpty) ...<Widget>[
             const SizedBox(height: 12),
             _coachCard(),
           ],
