@@ -478,40 +478,98 @@ class Usda {
     }
     // Two separate requests: generic datasets and Branded. A single mixed
     // query lets branded products fill the whole page by relevance before any
-    // local ranking can run — searching "asparagus" should lead with
-    // "Asparagus, cooked from fresh" (Survey/FNDDS — which the old query
-    // never even requested), with brands trailing behind.
+    // local ranking can run — searching "plantain" should lead with
+    // "Plantains, raw", never with plantain chips.
     final List<List<Map<String, dynamic>>> pages =
         await Future.wait(<Future<List<Map<String, dynamic>>>>[
       _searchPage(q, 'Foundation,SR Legacy,Survey (FNDDS)', 25),
-      _searchPage(q, 'Branded', 10),
+      _searchPage(q, 'Branded', 12),
     ]);
-    // Within generics: Foundation → SR Legacy → FNDDS.
-    int rank(Map<String, dynamic> f) {
-      switch ((f['dataType'] as String?) ?? '') {
-        case 'Foundation':
-          return 0;
-        case 'SR Legacy':
-          return 1;
-        default:
-          return 2; // Survey (FNDDS)
-      }
-    }
-
-    final List<Map<String, dynamic>> generic = pages[0]
-      ..sort((Map<String, dynamic> a, Map<String, dynamic> b) =>
-          rank(a).compareTo(rank(b)));
-    final List<FoodTemplate> out = <FoodTemplate>[];
-    for (final Map<String, dynamic> f in <Map<String, dynamic>>[
-      ...generic,
+    final List<Map<String, dynamic>> all = <Map<String, dynamic>>[
+      ...pages[0],
       ...pages[1],
-    ]) {
-      final FoodTemplate? t = parseFood(f);
+    ];
+    final List<int> scores =
+        all.map((Map<String, dynamic> f) => matchScore(q, f)).toList();
+    final List<int> order = List<int>.generate(all.length, (int i) => i);
+    // Stable: score desc, then original order (generics first) on ties.
+    order.sort((int a, int b) {
+      final int d = scores[b] - scores[a];
+      return d != 0 ? d : a - b;
+    });
+    final List<FoodTemplate> out = <FoodTemplate>[];
+    for (final int i in order) {
+      final FoodTemplate? t = parseFood(all[i]);
       if (t != null) {
         out.add(t);
       }
     }
     return out;
+  }
+
+  /// Relevance of one raw foods/search result for [query]. Public for tests.
+  ///   +100 the head noun IS the queried food ("Plantains, raw" → "plantain")
+  ///    +30 …and the head is an exact match, nothing extra
+  ///    +40 the query only appears deeper in the name (chips, sauces, dishes)
+  ///    +50 the query names the product's BRAND — brands surface when asked
+  ///   +4-6 curated generic datasets win ties over crowd/branded data
+  static int matchScore(String query, Map<String, dynamic> food) {
+    final List<String> q = _words(query);
+    if (q.isEmpty) {
+      return 0;
+    }
+    final String desc = (food['description'] as String?)?.trim() ?? '';
+    final String brand =
+        ((food['brandName'] ?? food['brandOwner']) as String?)?.trim() ?? '';
+    final String dataType = (food['dataType'] as String?) ?? '';
+    final bool generic = dataType == 'Foundation' ||
+        dataType == 'SR Legacy' ||
+        dataType == 'Survey (FNDDS)';
+    int s = 0;
+    final String head = desc.split(',').first;
+    // The head-noun tier is only meaningful for curated generic entries
+    // ("Plantains, raw"). A branded product's name has no taxonomy — without
+    // this gate "Plantain Chips Sea Salt" would score like the whole food.
+    if (generic && _wordsIn(q, head)) {
+      s += 100;
+      if (_words(head).length == q.length) {
+        s += 30;
+      }
+    } else if (_wordsIn(q, desc)) {
+      s += 40;
+    }
+    if (brand.isNotEmpty && _wordsIn(q, brand, any: true)) {
+      s += 50;
+    }
+    if (s == 0) {
+      return 0;
+    }
+    switch ((food['dataType'] as String?) ?? '') {
+      case 'Foundation':
+        return s + 6;
+      case 'SR Legacy':
+        return s + 5;
+      case 'Survey (FNDDS)':
+        return s + 4;
+      default:
+        return s; // Branded
+    }
+  }
+
+  static List<String> _words(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .split(' ')
+      .where((String w) => w.isNotEmpty)
+      .map((String w) => w.length > 3 && w.endsWith('s')
+          ? w.substring(0, w.length - 1)
+          : w)
+      .toList();
+
+  static bool _wordsIn(List<String> query, String text, {bool any = false}) {
+    final List<String> words = _words(text);
+    bool hit(String q) => words.any((String w) => w == q || w.startsWith(q));
+    return any ? query.any(hit) : query.isNotEmpty && query.every(hit);
   }
 
   /// One foods/search page for [dataTypes]; empty on any failure so a bad

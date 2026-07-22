@@ -22,6 +22,7 @@ Map<String, dynamic> _ground = <String, dynamic>{
 };
 
 void main() {
+  rankingTests();
   group('Open Food Facts parsing', () {
     test('parses macros and converts micronutrient units', () {
       final FoodTemplate? t = OpenFoodFacts.parseProduct(_ground, '123');
@@ -254,6 +255,48 @@ void main() {
       final Map<String, double> byDate = FoodMath.caloriesByDate(foods);
       expect(byDate['2026-06-29'], 280);
       expect(byDate['2026-06-28'], 95);
+    });
+  });
+}
+
+// ── search ranking ────────────────────────────────────────────────────────
+
+Map<String, dynamic> _raw(String desc, String dataType, {String? brand}) =>
+    <String, dynamic>{
+      'description': desc,
+      'dataType': dataType,
+      if (brand != null) 'brandName': brand,
+    };
+
+void rankingTests() {
+  group('search ranking (matchScore)', () {
+    test('"plantain" — the whole food beats chips beats brands', () {
+      final int raw = Usda.matchScore('plantain', _raw('Plantains, raw', 'SR Legacy'));
+      final int chips = Usda.matchScore('plantain', _raw('Chips, plantain', 'Survey (FNDDS)'));
+      final int branded = Usda.matchScore(
+          'plantain', _raw('Plantain Chips Sea Salt', 'Branded', brand: 'Barnana'));
+      expect(raw, greaterThan(chips));
+      expect(chips, greaterThan(branded));
+    });
+
+    test('"onion" — plural head still an exact match', () {
+      final int onions = Usda.matchScore('onion', _raw('Onions, raw', 'SR Legacy'));
+      final int rings = Usda.matchScore(
+          'onion', _raw('Onion rings, breaded, fried', 'Survey (FNDDS)'));
+      expect(onions, greaterThan(rings));
+      expect(onions, greaterThanOrEqualTo(130));
+    });
+
+    test('brand query surfaces the brand above unrelated generics', () {
+      final int brand = Usda.matchScore('jennie o',
+          _raw('Ground Turkey 93/7', 'Branded', brand: 'Jennie-O'));
+      final int generic =
+          Usda.matchScore('jennie o', _raw('Turkey, ground, raw', 'SR Legacy'));
+      expect(brand, greaterThan(generic));
+    });
+
+    test('irrelevant items score zero', () {
+      expect(Usda.matchScore('plantain', _raw('Milk, whole', 'SR Legacy')), 0);
     });
   });
 }
