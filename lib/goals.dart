@@ -4,6 +4,7 @@ import 'main.dart';
 import 'food.dart';
 import 'sleep.dart';
 import 'trainer.dart';
+import 'unlocks.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // GOALS — the ladder of small wins on the way to the goal weight.
@@ -254,12 +255,18 @@ class ChallengeRun {
   ChallengeRun complete(String date) => ChallengeRun(id, startedAt, date);
 }
 
+/// Look up any challenge — everyday or boss battle.
 ChallengeDef? challengeDef(String id) {
   for (final ChallengeDef c in kChallenges) {
     if (c.id == id) return c;
   }
+  for (final ChallengeDef c in kBossBattles) {
+    if (c.id == id) return c;
+  }
   return null;
 }
+
+bool isBoss(String id) => kBossBattles.any((ChallengeDef c) => c.id == id);
 
 // ── the computed state ──────────────────────────────────────────────────
 
@@ -331,6 +338,7 @@ class GoalEngine {
     List<SleepEntry> sleep = const <SleepEntry>[],
     int trainerLevel = 1,
     List<ChallengeRun> challenges = const <ChallengeRun>[],
+    Prestige prestige = const Prestige(0),
     DateTime? asOf,
   }) {
     final DateTime now = asOf ?? DateTime.now();
@@ -342,7 +350,7 @@ class GoalEngine {
             caloriesByDate: byDateCal, fastedDates: fasted);
 
     final List<List<Goal>> lanes = <List<Goal>>[
-      _weight(cal, logs),
+      prestige.active ? _maintenance(cal, logs, now) : _weight(cal, logs),
       _body(cal, logs),
       _running(runs, trainerLevel, sleep, now),
       _nutrition(t, foods, byDateCal, tdee, now),
@@ -418,7 +426,11 @@ class GoalEngine {
     final Set<String> activeIds =
         active.map((ChallengeRun c) => c.id).toSet();
     final List<ChallengeDef> available = <ChallengeDef>[];
-    for (final ChallengeDef d in kChallenges) {
+    final List<ChallengeDef> pool = <ChallengeDef>[
+      ...kChallenges,
+      if (hasUnlock('f_boss', level)) ...kBossBattles,
+    ];
+    for (final ChallengeDef d in pool) {
       if (d.unlockLevel > level || activeIds.contains(d.id)) {
         continue;
       }
@@ -480,8 +492,10 @@ class GoalEngine {
     MacroTargets t,
     List<FoodEntry> foods,
     Set<String> fasted,
-    DateTime now,
-  ) {
+    DateTime now, {
+    List<RunRecord> runs = const <RunRecord>[],
+    double tdee = 0,
+  }) {
     final ChallengeDef? d = challengeDef(run.id);
     if (d == null || !d.auto) return false;
     final DateTime start = DateTime.parse(run.startedAt);
@@ -489,7 +503,30 @@ class GoalEngine {
       for (int i = 0; i < d.days; i++)
         formatDate(start.add(Duration(days: i)))
     ];
+    int daysWhere(bool Function(DayTotals) test) => window.where((String day) {
+          final DayTotals dt = FoodMath.totals(foods, day);
+          return dt.calories > 0 && test(dt);
+        }).length;
+
     switch (run.id) {
+      // ── boss battles ──
+      case 'boss_protein_30':
+        return daysWhere((DayTotals dt) =>
+                t.protein > 0 && dt.protein >= t.protein * 0.9) >=
+            25;
+      case 'boss_deficit_21':
+        return tdee > 0 && daysWhere((DayTotals dt) => dt.calories < tdee) >= 18;
+      case 'boss_run_12':
+        final Set<String> runDates =
+            runs.map((RunRecord r) => r.date).toSet();
+        return window.where(runDates.contains).length >= 12;
+      case 'boss_perfect_14':
+        return window.every((String day) {
+          final DayTotals dt = FoodMath.totals(foods, day);
+          return dt.calories > 0 &&
+              t.protein > 0 &&
+              dt.protein >= t.protein * 0.9;
+        });
       case 'fast_day':
         return window.any(fasted.contains);
       case 'double_fast':
@@ -624,6 +661,49 @@ class GoalEngine {
       repeatable: true,
     ));
     return out;
+  }
+
+  /// The weight lane once the goal has been reached and a maintenance season
+  /// has begun — holding the line becomes the win instead of dropping further.
+  static List<Goal> _maintenance(
+      UserCalibration cal, List<DailyLog> logs, DateTime now) {
+    if (logs.isEmpty) {
+      return <Goal>[
+        const Goal(
+            id: 'm_first',
+            lane: Lane.weight,
+            title: 'Weigh In',
+            desc: 'Log a weight to start the season',
+            emoji: '⚖️',
+            xp: kXpSmall,
+            progress: 0,
+            done: false),
+      ];
+    }
+    final double goalW =
+        MathEngine.dynamicTargetWeight(logs.last.lbm, cal.targetBf);
+    // Days in a row inside a 3 lb band around the goal.
+    final List<DailyLog> sorted = List<DailyLog>.of(logs)
+      ..sort((DailyLog a, DailyLog b) => a.date.compareTo(b.date));
+    int held = 0;
+    for (final DailyLog l in sorted) {
+      held = (l.weight - goalW).abs() <= 3 ? held + 1 : 0;
+    }
+    Goal g(String id, String title, int need, int xp) => Goal(
+        id: id,
+        lane: Lane.weight,
+        title: title,
+        desc: '$held/$need days inside 3 lb of goal',
+        emoji: '🛡️',
+        xp: xp,
+        progress: (held / need).clamp(0.0, 1.0),
+        done: held >= need);
+    return <Goal>[
+      g('m_hold_7', 'Hold the Line', 7, kXpMed),
+      g('m_hold_30', 'Steady Month', 30, kXpBig),
+      g('m_hold_90', 'Maintenance Master', 90, kXpHuge),
+      g('m_hold_180', 'It Just Is Your Weight Now', 180, kXpHuge),
+    ];
   }
 
   // ── lane: body composition ────────────────────────────────────────────

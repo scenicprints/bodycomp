@@ -347,6 +347,51 @@ class Coach {
     return _cap(out, 5);
   }
 
+  // ── Monthly review (unlocked at level 6) ──────────────────────────────
+  // The long view: whole-month outcomes and the one structural change worth
+  // making, rather than week-to-week tactics.
+  static String monthly(CoachFacts f, {int goalsCleared = 0, int bestStreak = 0}) {
+    final List<String> out = <String>[];
+    out.add(_weeklyHeadline(f));
+
+    final double? dLean = (f.leanNow != null && f.leanThen != null)
+        ? f.leanNow! - f.leanThen!
+        : null;
+    final double? dFat =
+        (f.fatNow != null && f.fatThen != null) ? f.fatNow! - f.fatThen! : null;
+    if (dFat != null && dLean != null) {
+      final double ratio = dLean.abs() < 0.05
+          ? 100
+          : (dFat.abs() / (dFat.abs() + dLean.abs())) * 100;
+      out.add('• Of everything you lost this period, roughly '
+          '${ratio.clamp(0, 100).round()}% of it was fat. Above 80% is a '
+          'well-run cut; below that means the deficit or the protein needs work.');
+    }
+    if (bestStreak > 0) {
+      out.add('✓ Best run of consistent days this period: $bestStreak. That '
+          'number, more than any macro, is what decides where you end up.');
+    }
+    if (goalsCleared > 0) {
+      out.add('✓ $goalsCleared goal${goalsCleared == 1 ? '' : 's'} cleared. '
+          'Steady accumulation like that is exactly how the big one falls.');
+    }
+    if (f.eatenDays >= 10 && f.t.calories > 0) {
+      final double gap = f.avgCal - f.t.calories;
+      out.add(gap > 150
+          ? '→ The one change for next month: close the ${_r0(gap)} cal/day '
+              'gap between what you plan and what you eat. Everything else is '
+              'already in place.'
+          : '→ Intake is tracking your target closely. Next month, hold the '
+              'method and let time do the work — do not get clever.');
+    }
+    if (f.plateau) {
+      out.add('• A flat stretch on the smoothed average. If lean mass is '
+          'holding, that is a recomp plateau, not a stall — drop ~150 cal or '
+          'add a session before touching protein.');
+    }
+    return _cap(out, 6);
+  }
+
   static String _weeklyHeadline(CoachFacts f) {
     final double? dW =
         (f.wNow != null && f.wThen != null) ? f.wNow! - f.wThen! : null;

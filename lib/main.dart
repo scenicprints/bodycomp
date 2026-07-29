@@ -23,6 +23,7 @@ import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
 import 'goals.dart';
+import 'unlocks.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -492,6 +493,33 @@ class AppStorage {
     _write(d);
   }
 
+  /// Cosmetic picks unlocked from the Goals tab, all with safe defaults so an
+  /// older save simply reads as the classic look.
+  static String getPref(String key, String fallback) {
+    final Map<String, dynamic> d = _read();
+    return (d[key] as String?) ?? fallback;
+  }
+
+  static void savePref(String key, String value) {
+    final Map<String, dynamic> d = _read();
+    d[key] = value;
+    _write(d);
+  }
+
+  static Prestige getPrestige() {
+    final Map<String, dynamic> d = _read();
+    final dynamic p = d['prestige'];
+    return p is Map<String, dynamic>
+        ? Prestige.fromJson(p)
+        : const Prestige(0);
+  }
+
+  static void savePrestige(Prestige p) {
+    final Map<String, dynamic> d = _read();
+    d['prestige'] = p.toJson();
+    _write(d);
+  }
+
   static List<FoodEntry> getFoods() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('foods')) {
@@ -661,6 +689,80 @@ Color skinAccent(String skinId, Color phaseAccent) {
   return argb == 0 ? phaseAccent : Color(argb);
 }
 
+/// The user's unlocked cosmetic picks. Every field defaults to the classic
+/// look, so an older save (or a locked style) simply reads as before.
+class Cosmetics {
+  final String skin;
+  final String celebration;
+  final String cardStyle;
+  final String chartSkin;
+  final String shelf;
+  final String title; // '' = show the current rank
+
+  const Cosmetics({
+    this.skin = 'auto',
+    this.celebration = 'cel_confetti',
+    this.cardStyle = 'card_classic',
+    this.chartSkin = 'chart_classic',
+    this.shelf = 'shelf_plain',
+    this.title = '',
+  });
+
+  static Cosmetics load() => Cosmetics(
+        skin: AppStorage.getSkin(),
+        celebration: AppStorage.getPref('celebration', 'cel_confetti'),
+        cardStyle: AppStorage.getPref('cardStyle', 'card_classic'),
+        chartSkin: AppStorage.getPref('chartSkin', 'chart_classic'),
+        shelf: AppStorage.getPref('shelf', 'shelf_plain'),
+        title: AppStorage.getPref('title', ''),
+      );
+
+  Cosmetics set(String key, String v) => Cosmetics(
+        skin: key == 'skin' ? v : skin,
+        celebration: key == 'celebration' ? v : celebration,
+        cardStyle: key == 'cardStyle' ? v : cardStyle,
+        chartSkin: key == 'chartSkin' ? v : chartSkin,
+        shelf: key == 'shelf' ? v : shelf,
+        title: key == 'title' ? v : title,
+      );
+
+  static void persist(String key, String v) =>
+      key == 'skin' ? AppStorage.saveSkin(v) : AppStorage.savePref(key, v);
+}
+
+/// Card decoration for the chosen card style. Locked styles never reach here.
+BoxDecoration styledCard(String style, Color accent, {double radius = 14}) {
+  switch (style) {
+    case 'card_glass':
+      return BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.045),
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.13)),
+      );
+    case 'card_gradient':
+      return BoxDecoration(
+        gradient: LinearGradient(
+            colors: <Color>[accent.withValues(alpha: 0.16), kSurface0],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight),
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: accent.withValues(alpha: 0.28)),
+      );
+    case 'card_minimal':
+      return BoxDecoration(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: kBorderLight),
+      );
+    default:
+      return BoxDecoration(
+        color: kSurface0,
+        borderRadius: BorderRadius.circular(radius),
+        border: Border.all(color: kBorder),
+      );
+  }
+}
+
 const List<PhaseColors> kPhases = [
   PhaseColors(Color(0xFF5B8FB9), Color(0x4D5B8FB9), 'Phase 0: Launch'),
   PhaseColors(Color(0xFFB44CF0), Color(0x4DB44CF0), 'Phase 1: Momentum'),
@@ -731,7 +833,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<AdvisorInsight> _insights = [];
   List<String> _seenAchv = [];
   List<ChallengeRun> _challenges = [];
-  String _skin = 'auto';
+  Cosmetics _cos = const Cosmetics();
+  Prestige _prestige = const Prestige(0);
   bool _syncingFoods = false;
 
   @override
@@ -742,7 +845,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _dismissed = AppStorage.getDismissedMilestones();
     _seenAchv = AppStorage.getSeenAchievements();
     _challenges = AppStorage.getChallenges();
-    _skin = AppStorage.getSkin();
+    _cos = Cosmetics.load();
+    _prestige = AppStorage.getPrestige();
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
@@ -828,9 +932,14 @@ class _BodyCompAppState extends State<BodyCompApp> {
     AppStorage.saveChallenges(c);
   }
 
-  void _setSkin(String id) {
-    setState(() => _skin = id);
-    AppStorage.saveSkin(id);
+  void _setCosmetic(String key, String value) {
+    setState(() => _cos = _cos.set(key, value));
+    Cosmetics.persist(key, value);
+  }
+
+  void _setPrestige(Prestige p) {
+    setState(() => _prestige = p);
+    AppStorage.savePrestige(p);
   }
 
   void _setFoods(List<FoodEntry> f) {
@@ -915,7 +1024,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       ph = MathEngine.phase(
           MathEngine.progress(_cal!.startBf, _logs.last.bf, _cal!.targetBf));
     }
-    final Color accent = skinAccent(_skin, kPhases[ph].accent);
+    final Color accent = skinAccent(_cos.skin, kPhases[ph].accent);
 
     return MaterialApp(
       title: 'BodyComp',
@@ -954,8 +1063,10 @@ class _BodyCompAppState extends State<BodyCompApp> {
               onSetSeenAchievements: _setSeenAchievements,
               challenges: _challenges,
               onSetChallenges: _setChallenges,
-              skin: _skin,
-              onSetSkin: _setSkin,
+              cosmetics: _cos,
+              onSetCosmetic: _setCosmetic,
+              prestige: _prestige,
+              onSetPrestige: _setPrestige,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
@@ -1197,8 +1308,13 @@ class TrendChart extends StatefulWidget {
   final List<DailyLog> logs;
   final UserCalibration cal;
   final Color accent;
+  final String skin; // unlocked chart look
   const TrendChart(
-      {super.key, required this.logs, required this.cal, required this.accent});
+      {super.key,
+      required this.logs,
+      required this.cal,
+      required this.accent,
+      this.skin = 'chart_classic'});
 
   @override
   State<TrendChart> createState() => _TrendChartState();
@@ -1242,6 +1358,7 @@ class _TrendChartState extends State<TrendChart>
               logs: widget.logs,
               cal: widget.cal,
               accent: widget.accent,
+              skin: widget.skin,
               revealPct: _anim.value),
           size: Size.infinite,
         );
@@ -1255,12 +1372,14 @@ class TrendPainter extends CustomPainter {
   final UserCalibration cal;
   final Color accent;
   final double revealPct;
+  final String skin; // unlocked chart look
 
   TrendPainter(
       {required this.logs,
       required this.cal,
       required this.accent,
-      required this.revealPct});
+      required this.revealPct,
+      this.skin = 'chart_classic'});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1387,11 +1506,40 @@ class TrendPainter extends CustomPainter {
     for (int i = 1; i < n; i++) {
       wPath.lineTo(toX(i), toY(weights[i]));
     }
+    // Chart skin: glow lights the trend line, filled washes the area under it.
+    if (skin == 'chart_filled') {
+      final Path fill = Path.from(wPath)
+        ..lineTo(toX(n - 1), padT + chartH)
+        ..lineTo(toX(0), padT + chartH)
+        ..close();
+      canvas.drawPath(
+          fill,
+          Paint()
+            ..shader = LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: <Color>[
+                  accent.withValues(alpha: 0.35),
+                  accent.withValues(alpha: 0.02),
+                ]).createShader(
+                Rect.fromLTWH(padL, padT, chartW, chartH)));
+    }
+    if (skin == 'chart_glow') {
+      canvas.drawPath(
+          wPath,
+          Paint()
+            ..color = accent.withValues(alpha: 0.5)
+            ..strokeWidth = 5
+            ..style = PaintingStyle.stroke
+            ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4));
+    }
     canvas.drawPath(
         wPath,
         Paint()
-          ..color = const Color(0xFFEEEEEE)
-          ..strokeWidth = 1.5
+          ..color = skin == 'chart_classic'
+              ? const Color(0xFFEEEEEE)
+              : accent
+          ..strokeWidth = skin == 'chart_classic' ? 1.5 : 2.0
           ..style = PaintingStyle.stroke);
 
     // Dots
@@ -1619,8 +1767,10 @@ class HomeShell extends StatefulWidget {
   final void Function(List<String>) onSetSeenAchievements;
   final List<ChallengeRun> challenges;
   final void Function(List<ChallengeRun>) onSetChallenges;
-  final String skin;
-  final void Function(String) onSetSkin;
+  final Cosmetics cosmetics;
+  final void Function(String, String) onSetCosmetic;
+  final Prestige prestige;
+  final void Function(Prestige) onSetPrestige;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
@@ -1650,8 +1800,10 @@ class HomeShell extends StatefulWidget {
       required this.onSetSeenAchievements,
       required this.challenges,
       required this.onSetChallenges,
-      required this.skin,
-      required this.onSetSkin,
+      required this.cosmetics,
+      required this.onSetCosmetic,
+      required this.prestige,
+      required this.onSetPrestige,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
@@ -1677,11 +1829,12 @@ class _HomeShellState extends State<HomeShell> {
       ph = MathEngine.phase(MathEngine.progress(
           widget.cal.startBf, widget.logs.last.bf, widget.cal.targetBf));
     }
-    final Color accent = skinAccent(widget.skin, kPhases[ph].accent);
+    final Color accent = skinAccent(widget.cosmetics.skin, kPhases[ph].accent);
     return Scaffold(
       body: SafeArea(
           child: IndexedStack(index: _tab, children: [
         DashboardScreen(
+            chartSkin: widget.cosmetics.chartSkin,
             cal: widget.cal,
             logs: widget.logs,
             dismissed: widget.dismissed,
@@ -1745,8 +1898,10 @@ class _HomeShellState extends State<HomeShell> {
             onSetSeen: widget.onSetSeenAchievements,
             challenges: widget.challenges,
             onSetChallenges: widget.onSetChallenges,
-            skin: widget.skin,
-            onSetSkin: widget.onSetSkin),
+            cosmetics: widget.cosmetics,
+            onSetCosmetic: widget.onSetCosmetic,
+            prestige: widget.prestige,
+            onSetPrestige: widget.onSetPrestige),
         SettingsScreen(
             cal: widget.cal,
             logs: widget.logs,
@@ -1805,8 +1960,10 @@ class GoalsScreen extends StatefulWidget {
   final void Function(List<String>) onSetSeen;
   final List<ChallengeRun> challenges;
   final void Function(List<ChallengeRun>) onSetChallenges;
-  final String skin;
-  final void Function(String) onSetSkin;
+  final Cosmetics cosmetics;
+  final void Function(String, String) onSetCosmetic;
+  final Prestige prestige;
+  final void Function(Prestige) onSetPrestige;
 
   const GoalsScreen({
     super.key,
@@ -1823,8 +1980,10 @@ class GoalsScreen extends StatefulWidget {
     required this.onSetSeen,
     required this.challenges,
     required this.onSetChallenges,
-    required this.skin,
-    required this.onSetSkin,
+    required this.cosmetics,
+    required this.onSetCosmetic,
+    required this.prestige,
+    required this.onSetPrestige,
   });
 
   @override
@@ -1843,6 +2002,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
         sleep: widget.sleep,
         trainerLevel: widget.trainer.level,
         challenges: widget.challenges,
+        prestige: widget.prestige,
       );
 
   @override
@@ -1875,7 +2035,13 @@ class _GoalsScreenState extends State<GoalsScreen> {
     for (final ChallengeRun c in widget.challenges) {
       if (c.completedAt == null &&
           GoalEngine.challengeMet(
-              c, t, widget.foods, widget.fasted.toSet(), now)) {
+              c, t, widget.foods, widget.fasted.toSet(), now,
+              runs: widget.runs,
+              tdee: widget.logs.isEmpty
+                  ? 0
+                  : MathEngine.activeTdee(widget.logs, widget.cal.activityMult,
+                      caloriesByDate: FoodMath.caloriesByDate(widget.foods),
+                      fastedDates: widget.fasted.toSet()))) {
         updated.add(c.complete(formatDate(now)));
         changed = true;
       } else {
@@ -1937,7 +2103,8 @@ class _GoalsScreenState extends State<GoalsScreen> {
             title: title,
             desc: desc,
             xp: xp,
-            accent: widget.accent),
+            accent: widget.accent,
+            style: widget.cosmetics.celebration),
       );
     }
   }
@@ -1969,7 +2136,8 @@ class _GoalsScreenState extends State<GoalsScreen> {
             title: d.title,
             desc: 'Challenge complete',
             xp: d.xp,
-            accent: widget.accent),
+            accent: widget.accent,
+            style: widget.cosmetics.celebration),
       );
     }
   }
@@ -1998,6 +2166,8 @@ class _GoalsScreenState extends State<GoalsScreen> {
       body: ListView(
         padding: EdgeInsets.fromLTRB(16, 4, 16, bottomPad),
         children: <Widget>[
+          if (st.journey >= 1.0 && !widget.prestige.active)
+            _prestigeBanner(st),
           _journeyCard(st),
           const SizedBox(height: 12),
           _levelCard(st),
@@ -2014,7 +2184,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
           for (final ChallengeRun c in st.active) _activeChallenge(c),
           if (st.available.isNotEmpty) _availableChallenges(st),
           const SizedBox(height: 20),
-          _skinPicker(st),
+          _featureRow(st),
+          const SizedBox(height: 12),
+          _unlocksSection(st),
           const SizedBox(height: 16),
           InkWell(
             onTap: () => setState(() => _showShelf = !_showShelf),
@@ -2130,14 +2302,27 @@ class _GoalsScreenState extends State<GoalsScreen> {
           ),
           const SizedBox(width: 14),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-            Text('LEVEL ${st.level}',
-                style: const TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 1,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFFBBBBBB))),
+            Row(children: <Widget>[
+              Text(insigniaFor(st.level),
+                  style: const TextStyle(fontSize: 13)),
+              const SizedBox(width: 5),
+              Text('LEVEL ${st.level}',
+                  style: const TextStyle(
+                      fontSize: 11,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFFBBBBBB))),
+              if (widget.prestige.active) ...<Widget>[
+                const SizedBox(width: 6),
+                Text(widget.prestige.stars,
+                    style: TextStyle(fontSize: 11, color: widget.accent)),
+              ],
+            ]),
             const SizedBox(height: 2),
-            Text(st.rank,
+            Text(
+                widget.cosmetics.title.isEmpty
+                    ? st.rank
+                    : widget.cosmetics.title,
                 style: const TextStyle(
                     fontSize: 21,
                     fontWeight: FontWeight.w800,
@@ -2211,12 +2396,24 @@ class _GoalsScreenState extends State<GoalsScreen> {
       'bronze' => const Color(0xFFC08A50),
       _ => kBorder,
     };
-    return Container(
+    final BoxDecoration deco =
+        styledCard(widget.cosmetics.cardStyle, widget.accent);
+    return InkWell(
+      onTap: () => showModalBottomSheet<void>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        isScrollControlled: true,
+        builder: (_) => _GoalDetailSheet(
+            goal: g,
+            state: st,
+            accent: widget.accent,
+            deficit: widget.cal.deficit),
+      ),
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-          color: kSurface0,
-          borderRadius: BorderRadius.circular(14),
+      decoration: deco.copyWith(
           border: Border.all(color: trimColor.withValues(alpha: 0.55))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
         Row(children: <Widget>[
@@ -2250,6 +2447,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
               Text('×${g.timesDone}',
                   style: TextStyle(fontSize: 10, color: Colors.grey[500])),
           ]),
+          const SizedBox(width: 4),
+          Icon(Icons.chevron_right_rounded,
+              size: 18, color: Colors.grey[600]),
         ]),
         if (g.desc.isNotEmpty) ...<Widget>[
           const SizedBox(height: 8),
@@ -2267,6 +2467,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
                   widget.accent.withValues(alpha: 0.85))),
         ),
       ]),
+    ),
     );
   }
 
@@ -2363,74 +2564,222 @@ class _GoalsScreenState extends State<GoalsScreen> {
     ]);
   }
 
-  Widget _skinPicker(GoalState st) {
-    final List<ThemeSkin> unlocked = st.unlockedThemes;
-    final ThemeSkin? next = kThemes
-        .where((ThemeSkin t) => t.unlockLevel > st.level)
-        .fold<ThemeSkin?>(null,
-            (ThemeSkin? a, ThemeSkin b) => a == null || b.unlockLevel < a.unlockLevel ? b : a);
+  /// Screens that levelling up has opened, plus the collectible library that
+  /// is always available. Locked ones simply don't appear.
+  Widget _featureRow(GoalState st) {
+    final List<Widget> tiles = <Widget>[
+      _featureTile('📚', 'Knowledge', () => KnowledgeScreen(
+          level: st.level, accent: widget.accent)),
+      if (hasUnlock('f_stats', st.level))
+        _featureTile('📊', 'Stats', () => AdvancedStatsScreen(
+            cal: widget.cal,
+            logs: widget.logs,
+            foods: widget.foods,
+            fasted: widget.fasted,
+            runs: widget.runs,
+            sleep: widget.sleep,
+            accent: widget.accent)),
+      if (hasUnlock('f_certs', st.level))
+        _featureTile('📜', 'Certificates',
+            () => CertificateScreen(state: st, accent: widget.accent)),
+      if (hasUnlock('f_recap', st.level))
+        _featureTile('📅', 'Recap', () => YearInReviewScreen(
+            cal: widget.cal,
+            state: st,
+            logs: widget.logs,
+            runs: widget.runs,
+            accent: widget.accent)),
+    ];
+    return Wrap(spacing: 10, runSpacing: 10, children: tiles);
+  }
+
+  Widget _featureTile(String emoji, String label, Widget Function() build) =>
+      GestureDetector(
+        onTap: () => Navigator.of(context)
+            .push(MaterialPageRoute<void>(builder: (_) => build())),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: styledCard(widget.cosmetics.cardStyle, widget.accent,
+              radius: 20),
+          child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+            Text(emoji, style: const TextStyle(fontSize: 15)),
+            const SizedBox(width: 8),
+            Text(label,
+                style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFDDDDDD))),
+          ]),
+        ),
+      );
+
+  /// Offered once the goal weight is reached: bank the run and start a
+  /// maintenance season, so the app has somewhere to go next.
+  Widget _prestigeBanner(GoalState st) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          gradient: LinearGradient(
+              colors: <Color>[widget.accent.withValues(alpha: 0.3), kSurface1],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: widget.accent)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        const Text('🏆 You reached your goal weight',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w800,
+                color: Color(0xFFEEEEEE))),
+        const SizedBox(height: 6),
+        Text('Start a maintenance season: your rank keeps a star, and the '
+            'weight lane switches from losing to holding.',
+            style: TextStyle(
+                fontSize: 12.5, height: 1.45, color: Colors.grey[400])),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          height: 44,
+          child: ElevatedButton(
+            onPressed: () {
+              HapticFeedback.heavyImpact();
+              widget.onSetPrestige(Prestige(widget.prestige.count + 1,
+                  formatDate(DateTime.now())));
+            },
+            style: ElevatedButton.styleFrom(
+                backgroundColor: widget.accent,
+                foregroundColor: Colors.black,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12))),
+            child: const Text('Begin Season ★',
+                style: TextStyle(fontWeight: FontWeight.w800)),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  /// Everything levelling up has earned: pickers for each cosmetic family,
+  /// the feature list, and a teaser for whatever unlocks next.
+  Widget _unlocksSection(GoalState st) {
+    final Unlock? next = nextUnlock(st.level);
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-          color: kSurface0,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: kBorder)),
+      decoration: styledCard(widget.cosmetics.cardStyle, widget.accent),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-        Text('ACCENT',
+        Text('UNLOCKED',
             style: TextStyle(
                 fontSize: 11,
                 letterSpacing: 1.5,
                 fontWeight: FontWeight.w700,
                 color: Colors.grey[500])),
-        const SizedBox(height: 10),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: <Widget>[
-            for (final ThemeSkin s in unlocked)
-              GestureDetector(
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  widget.onSetSkin(s.id);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                      color: kSurface1,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                          color: widget.skin == s.id
-                              ? widget.accent
-                              : kBorder,
-                          width: widget.skin == s.id ? 2 : 1)),
-                  child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
-                    Container(
-                      width: 12,
-                      height: 12,
-                      decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: s.argb == 0
-                              ? widget.accent
-                              : Color(s.argb)),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(s.name,
-                        style: const TextStyle(
-                            fontSize: 12, color: Color(0xFFDDDDDD))),
-                  ]),
-                ),
-              ),
-          ],
-        ),
+        const SizedBox(height: 12),
+        _pickerRow('Accent', <_Opt>[
+          for (final ThemeSkin s in st.unlockedThemes)
+            _Opt(s.id, s.name, s.argb == 0 ? widget.accent : Color(s.argb)),
+        ], widget.cosmetics.skin, (String v) => widget.onSetCosmetic('skin', v)),
+        _pickerRow('Celebration', <_Opt>[
+          for (final Unlock u in unlocksOfKind(UnlockKind.celebration, st.level))
+            _Opt(u.id, '${u.emoji} ${u.name}', null),
+        ], widget.cosmetics.celebration,
+            (String v) => widget.onSetCosmetic('celebration', v)),
+        _pickerRow('Cards', <_Opt>[
+          for (final Unlock u in unlocksOfKind(UnlockKind.cardStyle, st.level))
+            _Opt(u.id, '${u.emoji} ${u.name}', null),
+        ], widget.cosmetics.cardStyle,
+            (String v) => widget.onSetCosmetic('cardStyle', v)),
+        _pickerRow('Chart', <_Opt>[
+          for (final Unlock u in unlocksOfKind(UnlockKind.chartSkin, st.level))
+            _Opt(u.id, '${u.emoji} ${u.name}', null),
+        ], widget.cosmetics.chartSkin,
+            (String v) => widget.onSetCosmetic('chartSkin', v)),
+        _pickerRow('Shelf', <_Opt>[
+          for (final Unlock u in unlocksOfKind(UnlockKind.shelf, st.level))
+            _Opt(u.id, '${u.emoji} ${u.name}', null),
+        ], widget.cosmetics.shelf,
+            (String v) => widget.onSetCosmetic('shelf', v)),
+        if (hasUnlock('f_titles', st.level))
+          _pickerRow('Title', <_Opt>[
+            const _Opt('', 'Current rank', null),
+            for (final String t in earnedTitles(st.level)) _Opt(t, t, null),
+          ], widget.cosmetics.title,
+              (String v) => widget.onSetCosmetic('title', v)),
         if (next != null) ...<Widget>[
-          const SizedBox(height: 8),
-          Text('🔒 ${next.name} unlocks at level ${next.unlockLevel}',
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+                color: kSurface1, borderRadius: BorderRadius.circular(10)),
+            child: Row(children: <Widget>[
+              const Text('🔒', style: TextStyle(fontSize: 14)),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('${next.name} — ${next.desc}',
+                    style: const TextStyle(
+                        fontSize: 11.5, color: Color(0xFFAAAAAA))),
+              ),
+              Text('Lv ${next.level}',
+                  style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      color: widget.accent)),
+            ]),
+          ),
         ],
       ]),
     );
   }
+
+  Widget _pickerRow(
+      String label, List<_Opt> opts, String selected, void Function(String) on) {
+    if (opts.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text(label.toUpperCase(),
+            style: TextStyle(
+                fontSize: 9.5,
+                letterSpacing: 1.2,
+                fontWeight: FontWeight.w700,
+                color: Colors.grey[600])),
+        const SizedBox(height: 6),
+        Wrap(spacing: 8, runSpacing: 8, children: <Widget>[
+          for (final _Opt o in opts)
+            GestureDetector(
+              onTap: () {
+                HapticFeedback.selectionClick();
+                on(o.id);
+              },
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+                decoration: BoxDecoration(
+                    color: kSurface1,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                        color: selected == o.id ? widget.accent : kBorder,
+                        width: selected == o.id ? 2 : 1)),
+                child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                  if (o.dot != null) ...<Widget>[
+                    Container(
+                        width: 11,
+                        height: 11,
+                        decoration: BoxDecoration(
+                            shape: BoxShape.circle, color: o.dot)),
+                    const SizedBox(width: 7),
+                  ],
+                  Text(o.label,
+                      style: const TextStyle(
+                          fontSize: 11.5, color: Color(0xFFDDDDDD))),
+                ]),
+              ),
+            ),
+        ]),
+      ]),
+    );
+  }
+
 
   Widget _shelf(GoalState st) {
     final List<Goal> shelf = <Goal>[...st.tallied, ...st.completed];
@@ -2441,6 +2790,72 @@ class _GoalsScreenState extends State<GoalsScreen> {
             style: TextStyle(fontSize: 12.5, color: Colors.grey[600])),
       );
     }
+    final String style = widget.cosmetics.shelf;
+    String label(Goal g) =>
+        g.repeatable ? '${g.title} ×${g.timesDone}' : g.title;
+
+    // Framed: each win in its own tile. Cabinet: a lit display case.
+    if (style == 'shelf_framed' || style == 'shelf_cabinet') {
+      final bool cabinet = style == 'shelf_cabinet';
+      return Container(
+        padding: EdgeInsets.all(cabinet ? 12 : 0),
+        decoration: cabinet
+            ? BoxDecoration(
+                gradient: LinearGradient(
+                    colors: <Color>[
+                      widget.accent.withValues(alpha: 0.13),
+                      kSurface0,
+                    ],
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter),
+                borderRadius: BorderRadius.circular(16),
+                border:
+                    Border.all(color: widget.accent.withValues(alpha: 0.4)))
+            : null,
+        child: GridView.count(
+          crossAxisCount: 3,
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: 0.85,
+          children: <Widget>[
+            for (final Goal g in shelf)
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                    color: kSurface1,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                        color: widget.accent.withValues(alpha: 0.45)),
+                    boxShadow: cabinet
+                        ? <BoxShadow>[
+                            BoxShadow(
+                                color:
+                                    widget.accent.withValues(alpha: 0.18),
+                                blurRadius: 10)
+                          ]
+                        : null),
+                child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: <Widget>[
+                      Text(g.emoji, style: const TextStyle(fontSize: 24)),
+                      const SizedBox(height: 6),
+                      Text(label(g),
+                          textAlign: TextAlign.center,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFDDDDDD))),
+                    ]),
+              ),
+          ],
+        ),
+      );
+    }
+
     return Wrap(
       spacing: 8,
       runSpacing: 8,
@@ -2457,7 +2872,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
             child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
               Text(g.emoji, style: const TextStyle(fontSize: 13)),
               const SizedBox(width: 6),
-              Text(g.repeatable ? '${g.title} ×${g.timesDone}' : g.title,
+              Text(label(g),
                   style: const TextStyle(
                       fontSize: 11.5,
                       fontWeight: FontWeight.w600,
@@ -2469,6 +2884,562 @@ class _GoalsScreenState extends State<GoalsScreen> {
   }
 }
 
+/// One choice in a cosmetic picker row.
+class _Opt {
+  final String id;
+  final String label;
+  final Color? dot;
+  const _Opt(this.id, this.label, this.dot);
+}
+
+// ── goal detail: tap a goal to understand it ────────────────────────────
+
+class _GoalDetailSheet extends StatelessWidget {
+  final Goal goal;
+  final GoalState state;
+  final Color accent;
+  final int deficit;
+  const _GoalDetailSheet(
+      {required this.goal,
+      required this.state,
+      required this.accent,
+      required this.deficit});
+
+  @override
+  Widget build(BuildContext context) {
+    final GoalInsight gi = goalInsight(goal, state, deficit: deficit);
+    final double bottom = MediaQuery.of(context).viewPadding.bottom;
+    return Container(
+      decoration: const BoxDecoration(
+          color: kSurface2,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+      padding: EdgeInsets.fromLTRB(20, 10, 20, 20 + bottom),
+      child: SingleChildScrollView(
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Center(
+                child: Container(
+                    width: 38,
+                    height: 4,
+                    decoration: BoxDecoration(
+                        color: kBorderLight,
+                        borderRadius: BorderRadius.circular(2))),
+              ),
+              const SizedBox(height: 18),
+              Row(children: <Widget>[
+                Text(goal.emoji, style: const TextStyle(fontSize: 32)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(goal.lane.label,
+                            style: TextStyle(
+                                fontSize: 9.5,
+                                letterSpacing: 1.2,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.grey[600])),
+                        const SizedBox(height: 3),
+                        Text(goal.title,
+                            style: const TextStyle(
+                                fontSize: 21,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFEEEEEE))),
+                      ]),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(20)),
+                  child: Text('+${goal.xp} XP',
+                      style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                          color: accent)),
+                ),
+              ]),
+              const SizedBox(height: 16),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: LinearProgressIndicator(
+                    value: goal.progress,
+                    minHeight: 9,
+                    backgroundColor: kSurface3,
+                    valueColor: AlwaysStoppedAnimation<Color>(accent)),
+              ),
+              const SizedBox(height: 6),
+              Row(children: <Widget>[
+                if (goal.desc.isNotEmpty)
+                  Text(goal.desc,
+                      style:
+                          TextStyle(fontSize: 12, color: Colors.grey[400])),
+                const Spacer(),
+                Text('${(goal.progress * 100).round()}%',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        color: accent)),
+              ]),
+              const SizedBox(height: 22),
+              _block('WHAT THIS IS', gi.what, accent),
+              _block('WHY IT MATTERS', gi.why, accent),
+              _block('HOW TO GET THERE', gi.how, accent),
+              _block('WATCH OUT FOR', gi.watch, const Color(0xFFCC8855)),
+              const SizedBox(height: 6),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  style: TextButton.styleFrom(
+                      backgroundColor: kSurface3,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  child: const Text('Got it',
+                      style: TextStyle(
+                          color: Color(0xFFDDDDDD),
+                          fontWeight: FontWeight.w700)),
+                ),
+              ),
+            ]),
+      ),
+    );
+  }
+
+  Widget _block(String label, String body, Color c) => Padding(
+        padding: const EdgeInsets.only(bottom: 18),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text(label,
+                  style: TextStyle(
+                      fontSize: 10,
+                      letterSpacing: 1.4,
+                      fontWeight: FontWeight.w800,
+                      color: c)),
+              const SizedBox(height: 6),
+              Text(body,
+                  style: const TextStyle(
+                      fontSize: 13.5,
+                      height: 1.55,
+                      color: Color(0xFFCCCCCC))),
+            ]),
+      );
+}
+
+// ── unlocked feature screens ────────────────────────────────────────────
+
+/// Advanced Stats — rates, projections and correlations, unlocked at level 9.
+class AdvancedStatsScreen extends StatelessWidget {
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<FoodEntry> foods;
+  final List<String> fasted;
+  final List<RunRecord> runs;
+  final List<SleepEntry> sleep;
+  final Color accent;
+  const AdvancedStatsScreen(
+      {super.key,
+      required this.cal,
+      required this.logs,
+      required this.foods,
+      required this.fasted,
+      required this.runs,
+      required this.sleep,
+      required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final List<DailyLog> sorted = List<DailyLog>.of(logs)
+      ..sort((DailyLog a, DailyLog b) => a.date.compareTo(b.date));
+    String rate = '—', proj = '—', plateau = '—', lean = '—', fat = '—';
+    if (sorted.length >= 8) {
+      final int n = sorted.length;
+      final List<DailyLog> recent = sorted.sublist(max(0, n - 28));
+      final double days = DateTime.parse(recent.last.date)
+          .difference(DateTime.parse(recent.first.date))
+          .inDays
+          .toDouble();
+      if (days > 0) {
+        final double perWeek =
+            (recent.last.weight - recent.first.weight) / days * 7;
+        rate = '${perWeek >= 0 ? '+' : ''}${perWeek.toStringAsFixed(2)} lb/wk';
+      }
+      final double dLean = recent.last.lbm - recent.first.lbm;
+      final double dFat = recent.last.fatMass - recent.first.fatMass;
+      lean = '${dLean >= 0 ? '+' : ''}${dLean.toStringAsFixed(1)} lb';
+      fat = '${dFat >= 0 ? '+' : ''}${dFat.toStringAsFixed(1)} lb';
+      final DateTime? g = MathEngine.goalDate(sorted, cal.targetBf);
+      proj = g == null
+          ? 'not on pace'
+          : '${monthName(g.month)} ${g.day}, ${g.year}';
+      plateau = MathEngine.isPlateau(sorted) ? 'Yes — flat ~10 days' : 'No';
+    }
+    final double tdee = sorted.isEmpty
+        ? 0
+        : MathEngine.activeTdee(sorted, cal.activityMult,
+            caloriesByDate: FoodMath.caloriesByDate(foods),
+            fastedDates: fasted.toSet());
+
+    // Simple correlation: sleep hours vs next-day protein adherence.
+    final MacroTargets t =
+        MacroTargets.compute(cal, sorted, foods, fasted.toSet());
+    int goodAfterGood = 0, goodNights = 0;
+    for (final SleepEntry e in sleep) {
+      if (e.hours < 7) continue;
+      goodNights++;
+      final DayTotals dt = FoodMath.totals(foods, e.date);
+      if (t.protein > 0 && dt.protein >= t.protein * 0.9) goodAfterGood++;
+    }
+    final String corr = goodNights >= 5
+        ? '${(goodAfterGood / goodNights * 100).round()}% of 7h+ nights you also hit protein'
+        : 'need a few more nights of sleep data';
+
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          title: const Text('ADVANCED STATS',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1))),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: <Widget>[
+          _row('Rate of change (28d)', rate, accent),
+          _row('Lean mass (28d)', lean, null),
+          _row('Fat mass (28d)', fat, null),
+          _row('Estimated TDEE', tdee > 0 ? '${tdee.round()} cal' : '—', null),
+          _row('Projected goal date', proj, accent),
+          _row('Plateau', plateau, null),
+          _row('Days logged', '${logs.length}', null),
+          _row('Runs logged', '${runs.length}', null),
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+                color: kSurface0,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: kBorder)),
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('SLEEP ↔ ADHERENCE',
+                      style: TextStyle(
+                          fontSize: 10,
+                          letterSpacing: 1.3,
+                          fontWeight: FontWeight.w800,
+                          color: accent)),
+                  const SizedBox(height: 8),
+                  Text(corr,
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          height: 1.5,
+                          color: Color(0xFFCCCCCC))),
+                ]),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _row(String label, String value, Color? c) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 9),
+        child: Row(children: <Widget>[
+          Expanded(
+              child: Text(label,
+                  style:
+                      const TextStyle(fontSize: 13.5, color: Color(0xFFAAAAAA)))),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  color: c ?? const Color(0xFFEEEEEE))),
+        ]),
+      );
+}
+
+/// Year in Review — the journey recapped, with a copyable export.
+class YearInReviewScreen extends StatelessWidget {
+  final UserCalibration cal;
+  final GoalState state;
+  final List<DailyLog> logs;
+  final List<RunRecord> runs;
+  final Color accent;
+  const YearInReviewScreen(
+      {super.key,
+      required this.cal,
+      required this.state,
+      required this.logs,
+      required this.runs,
+      required this.accent});
+
+  String _export() {
+    final StringBuffer b = StringBuffer();
+    b.writeln('BodyComp — Journey Export');
+    b.writeln('Start weight: ${cal.startWeight.toStringAsFixed(1)} lb');
+    b.writeln('Current: ${state.currentWeight.toStringAsFixed(1)} lb');
+    b.writeln('Goal: ${state.goalWeight.toStringAsFixed(1)} lb');
+    b.writeln('Journey: ${(state.journey * 100).round()}%');
+    b.writeln('Level ${state.level} (${state.rank}) — ${state.xp} XP');
+    b.writeln('Best streak: ${state.bestStreak} days');
+    b.writeln('Goals cleared: ${state.completed.length}');
+    b.writeln('Days logged: ${logs.length}');
+    b.writeln('Runs: ${runs.length}');
+    b.writeln('');
+    b.writeln('Wins:');
+    for (final Goal g in state.completed) {
+      b.writeln('  ${g.emoji} ${g.title}');
+    }
+    return b.toString();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double lost = cal.startWeight - state.currentWeight;
+    final double km =
+        runs.fold<double>(0, (double a, RunRecord r) => a + r.distanceKm);
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          title: const Text('YEAR IN REVIEW',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1))),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: <Widget>[
+          Container(
+            padding: const EdgeInsets.all(20),
+            decoration: BoxDecoration(
+                gradient: LinearGradient(
+                    colors: <Color>[accent.withValues(alpha: 0.25), kSurface1],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: accent.withValues(alpha: 0.4))),
+            child: Column(children: <Widget>[
+              Text(lost > 0 ? '${lost.toStringAsFixed(1)} lb' : '—',
+                  style: TextStyle(
+                      fontSize: 46,
+                      fontWeight: FontWeight.w900,
+                      color: accent)),
+              const Text('down from where you started',
+                  style: TextStyle(fontSize: 13, color: Color(0xFFAAAAAA))),
+            ]),
+          ),
+          const SizedBox(height: 14),
+          _big('🎖️', '${state.completed.length}', 'goals cleared'),
+          _big('🔥', '${state.bestStreak}', 'day best streak'),
+          _big('📅', '${logs.length}', 'days logged'),
+          _big('🏃', km >= 1 ? '${km.toStringAsFixed(1)} km' : '${runs.length}',
+              km >= 1 ? 'run in total' : 'runs logged'),
+          _big('⭐', 'Level ${state.level}', state.rank),
+          const SizedBox(height: 18),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: OutlinedButton.icon(
+              onPressed: () {
+                Clipboard.setData(ClipboardData(text: _export()));
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    backgroundColor: Color(0xFF2A2A2A),
+                    content: Text('Journey copied to the clipboard.')));
+              },
+              icon: const Icon(Icons.copy_rounded, size: 18),
+              label: const Text('Export journey'),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: accent,
+                  side: BorderSide(color: accent.withValues(alpha: 0.5)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12))),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _big(String emoji, String value, String label) => Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+            color: kSurface0,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: kBorder)),
+        child: Row(children: <Widget>[
+          Text(emoji, style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 14),
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFEEEEEE))),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(label,
+                style: const TextStyle(fontSize: 12.5, color: Color(0xFF999999))),
+          ),
+        ]),
+      );
+}
+
+/// The knowledge library — one card collected per level.
+class KnowledgeScreen extends StatelessWidget {
+  final int level;
+  final Color accent;
+  const KnowledgeScreen({super.key, required this.level, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final List<KnowledgeCard> got = knowledgeFor(level);
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          title: const Text('KNOWLEDGE',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1))),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: <Widget>[
+          Text('${got.length} of ${kKnowledge.length} collected — one more '
+              'every level.',
+              style: TextStyle(fontSize: 12.5, color: Colors.grey[500])),
+          const SizedBox(height: 14),
+          for (int i = 0; i < kKnowledge.length; i++)
+            _card(kKnowledge[i], i < got.length, i + 1),
+        ],
+      ),
+    );
+  }
+
+  Widget _card(KnowledgeCard k, bool owned, int lvl) => Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+            color: owned ? kSurface0 : kSurface0.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+                color: owned ? accent.withValues(alpha: 0.35) : kBorder)),
+        child: owned
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                    Row(children: <Widget>[
+                      Text(k.emoji, style: const TextStyle(fontSize: 18)),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(k.title,
+                            style: const TextStyle(
+                                fontSize: 14.5,
+                                fontWeight: FontWeight.w700,
+                                color: Color(0xFFEEEEEE))),
+                      ),
+                    ]),
+                    const SizedBox(height: 8),
+                    Text(k.text,
+                        style: const TextStyle(
+                            fontSize: 13, height: 1.5, color: Color(0xFFBBBBBB))),
+                  ])
+            : Row(children: <Widget>[
+                const Text('🔒', style: TextStyle(fontSize: 16)),
+                const SizedBox(width: 10),
+                Text('Unlocks at level $lvl',
+                    style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+              ]),
+      );
+}
+
+/// A keepsake certificate for the big wins.
+class CertificateScreen extends StatelessWidget {
+  final GoalState state;
+  final Color accent;
+  const CertificateScreen(
+      {super.key, required this.state, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    // Only the milestones worth commemorating.
+    final List<Goal> big = state.completed
+        .where((Goal g) => g.xp >= kXpBig)
+        .toList();
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          title: const Text('CERTIFICATES',
+              style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1))),
+      body: big.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Text(
+                    'Certificates are awarded for the major milestones. '
+                    'Clear a big goal and it will appear here.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+              ),
+            )
+          : ListView(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+              children: <Widget>[
+                for (final Goal g in big) _cert(g),
+              ],
+            ),
+    );
+  }
+
+  Widget _cert(Goal g) => Container(
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.symmetric(vertical: 26, horizontal: 20),
+        decoration: BoxDecoration(
+            gradient: LinearGradient(
+                colors: <Color>[kSurface1, accent.withValues(alpha: 0.14)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: accent.withValues(alpha: 0.55), width: 2)),
+        child: Column(children: <Widget>[
+          Text('CERTIFICATE OF ACHIEVEMENT',
+              style: TextStyle(
+                  fontSize: 9.5,
+                  letterSpacing: 2,
+                  fontWeight: FontWeight.w800,
+                  color: accent)),
+          const SizedBox(height: 16),
+          Text(g.emoji, style: const TextStyle(fontSize: 44)),
+          const SizedBox(height: 12),
+          Text(g.title,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFFEEEEEE))),
+          const SizedBox(height: 8),
+          Container(width: 60, height: 1, color: accent.withValues(alpha: 0.5)),
+          const SizedBox(height: 8),
+          Text(g.lane.label,
+              style: TextStyle(
+                  fontSize: 10,
+                  letterSpacing: 1.4,
+                  color: Colors.grey[500])),
+        ]),
+      );
+}
+
 // ── the celebration ─────────────────────────────────────────────────────
 
 class _WinDialog extends StatelessWidget {
@@ -2477,12 +3448,14 @@ class _WinDialog extends StatelessWidget {
   final String desc;
   final int xp;
   final Color accent;
+  final String style;
   const _WinDialog(
       {required this.emoji,
       required this.title,
       required this.desc,
       required this.xp,
-      required this.accent});
+      required this.accent,
+      this.style = 'cel_confetti'});
 
   @override
   Widget build(BuildContext context) {
@@ -2494,7 +3467,7 @@ class _WinDialog extends StatelessWidget {
         height: 260,
         width: 280,
         child: Stack(alignment: Alignment.topCenter, children: <Widget>[
-          const Positioned.fill(child: _Confetti()),
+          Positioned.fill(child: _Confetti(style: style, accent: accent)),
           Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
             _Pop(child: Text(emoji, style: const TextStyle(fontSize: 62))),
             const SizedBox(height: 14),
@@ -2588,7 +3561,9 @@ class _CountUp extends StatelessWidget {
 
 /// A cheap, dependency-free confetti burst.
 class _Confetti extends StatefulWidget {
-  const _Confetti();
+  final String style;
+  final Color accent;
+  const _Confetti({this.style = 'cel_confetti', required this.accent});
   @override
   State<_Confetti> createState() => _ConfettiState();
 }
@@ -2604,23 +3579,56 @@ class _ConfettiState extends State<_Confetti>
   void initState() {
     super.initState();
     final Random r = Random(7);
-    const List<Color> palette = <Color>[
-      Color(0xFFF0C040),
-      Color(0xFF5B8FB9),
-      Color(0xFFB44CF0),
-      Color(0xFF3CD6A3),
-      Color(0xFFF0883C),
-    ];
-    for (int i = 0; i < 34; i++) {
-      _bits.add(_Bit(
-        x: r.nextDouble(),
-        vx: (r.nextDouble() - 0.5) * 0.55,
-        vy: 0.35 + r.nextDouble() * 0.55,
-        delay: r.nextDouble() * 0.25,
-        spin: (r.nextDouble() - 0.5) * 10,
-        color: palette[i % palette.length],
-        size: 4 + r.nextDouble() * 5,
-      ));
+    // Each unlocked celebration is a different particle behaviour, not just a
+    // recolour: fireworks bloom outward, gold and signature rain down.
+    final List<Color> palette = switch (widget.style) {
+      'cel_gold' => const <Color>[
+          Color(0xFFF0C040),
+          Color(0xFFFFE08A),
+          Color(0xFFC9A227),
+        ],
+      'cel_accent' => <Color>[
+          widget.accent,
+          widget.accent.withValues(alpha: 0.7),
+          Colors.white.withValues(alpha: 0.85),
+        ],
+      _ => const <Color>[
+          Color(0xFFF0C040),
+          Color(0xFF5B8FB9),
+          Color(0xFFB44CF0),
+          Color(0xFF3CD6A3),
+          Color(0xFFF0883C),
+        ],
+    };
+    final bool fireworks = widget.style == 'cel_fireworks';
+    final bool rain = widget.style == 'cel_gold' || widget.style == 'cel_accent';
+    final int n = fireworks ? 46 : 34;
+    for (int i = 0; i < n; i++) {
+      if (fireworks) {
+        // Radial burst from the centre.
+        final double angle = (i / n) * 2 * pi + r.nextDouble() * 0.2;
+        _bits.add(_Bit(
+          x: 0.5,
+          vx: cos(angle) * (0.45 + r.nextDouble() * 0.3),
+          vy: sin(angle) * (0.45 + r.nextDouble() * 0.3),
+          delay: (i % 3) * 0.12,
+          spin: (r.nextDouble() - 0.5) * 6,
+          color: palette[i % palette.length],
+          size: 3 + r.nextDouble() * 4,
+          gravity: 0.35,
+        ));
+      } else {
+        _bits.add(_Bit(
+          x: r.nextDouble(),
+          vx: rain ? (r.nextDouble() - 0.5) * 0.12 : (r.nextDouble() - 0.5) * 0.55,
+          vy: rain ? 0.7 + r.nextDouble() * 0.5 : 0.35 + r.nextDouble() * 0.55,
+          delay: r.nextDouble() * (rain ? 0.5 : 0.25),
+          spin: (r.nextDouble() - 0.5) * 10,
+          color: palette[i % palette.length],
+          size: 4 + r.nextDouble() * 5,
+          gravity: rain ? 0.2 : 0.9,
+        ));
+      }
     }
   }
 
@@ -2639,7 +3647,7 @@ class _ConfettiState extends State<_Confetti>
 }
 
 class _Bit {
-  final double x, vx, vy, delay, spin, size;
+  final double x, vx, vy, delay, spin, size, gravity;
   final Color color;
   const _Bit({
     required this.x,
@@ -2649,6 +3657,7 @@ class _Bit {
     required this.spin,
     required this.color,
     required this.size,
+    this.gravity = 0.9,
   });
 }
 
@@ -2663,7 +3672,7 @@ class _ConfettiPainter extends CustomPainter {
       final double p = ((t - b.delay) / (1 - b.delay)).clamp(0.0, 1.0);
       if (p <= 0) continue;
       final double x = (b.x + b.vx * p) * size.width;
-      final double y = (b.vy * p + 0.9 * p * p) * size.height - 12;
+      final double y = (b.vy * p + b.gravity * p * p) * size.height - 12;
       final Paint paint = Paint()
         ..color = b.color.withValues(alpha: (1 - p).clamp(0.0, 1.0));
       canvas.save();
@@ -2686,6 +3695,7 @@ class _ConfettiPainter extends CustomPainter {
 // ═══════════════════════════════════════════════════════════════════════
 
 class DashboardScreen extends StatefulWidget {
+  final String chartSkin;
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<double> dismissed;
@@ -2700,6 +3710,7 @@ class DashboardScreen extends StatefulWidget {
   final void Function(double) onDismiss;
   const DashboardScreen(
       {super.key,
+      this.chartSkin = 'chart_classic',
       required this.cal,
       required this.logs,
       required this.dismissed,
@@ -3007,7 +4018,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                   key: ValueKey<int>(_chartRange),
                                   logs: _chartLogs,
                                   cal: widget.cal,
-                                  accent: accent)),
+                                  accent: accent,
+                                  skin: widget.chartSkin)),
                       const SizedBox(height: 8),
                       Wrap(spacing: 16, runSpacing: 4, children: [
                         _leg(const Color(0xFFEEEEEE), 'Daily Weight'),
@@ -7576,6 +8588,21 @@ class _AdvisorCardState extends State<_AdvisorCard> {
     return formatDate(n.subtract(Duration(days: n.weekday - 1)));
   }
 
+  /// The monthly review is a level-gated unlock (Deeper Coach).
+  bool get _monthlyUnlocked => hasUnlock(
+      'f_monthly',
+      GoalEngine.compute(
+              widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
+              runs: widget.runs,
+              sleep: widget.sleep,
+              trainerLevel: widget.trainerLevel)
+          .level);
+
+  bool get _monthDone {
+    final AdvisorInsight? m = _latest('monthly');
+    return m != null && m.periodKey == _todayKey.substring(0, 7);
+  }
+
   AdvisorInsight? _latest(String kind) {
     final List<AdvisorInsight> m =
         widget.insights.where((AdvisorInsight i) => i.kind == kind).toList();
@@ -7590,11 +8617,19 @@ class _AdvisorCardState extends State<_AdvisorCard> {
     try {
       final CoachFacts facts = CoachFacts.build(
           widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
-          weekly: kind == 'weekly',
+          weekly: kind != 'daily',
           sleep: widget.sleep,
           runs: widget.runs);
       String text;
-      if (kind == 'weekly') {
+      if (kind == 'monthly') {
+        final GoalState gs = GoalEngine.compute(
+            widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
+            runs: widget.runs,
+            sleep: widget.sleep,
+            trainerLevel: widget.trainerLevel);
+        text = Coach.monthly(facts,
+            goalsCleared: gs.completed.length, bestStreak: gs.bestStreak);
+      } else if (kind == 'weekly') {
         text = Coach.weekly(facts);
       } else {
         // Let the daily coach point at the nearest goal from the Goals tab.
@@ -7614,7 +8649,11 @@ class _AdvisorCardState extends State<_AdvisorCard> {
                 ? null
                 : '${closest.title}${closest.desc.isEmpty ? '' : ' (${closest.desc})'}');
       }
-      final String key = kind == 'weekly' ? _weekKey : _todayKey;
+      final String key = kind == 'daily'
+          ? _todayKey
+          : kind == 'weekly'
+              ? _weekKey
+              : _todayKey.substring(0, 7); // YYYY-MM
       final List<AdvisorInsight> updated = widget.insights
           .where((AdvisorInsight i) => i.kind != kind)
           .toList()
@@ -7713,6 +8752,17 @@ class _AdvisorCardState extends State<_AdvisorCard> {
                     accent: accent,
                     filled: false)),
           ]),
+          // Deeper Coach — the monthly review, unlocked from the Goals tab.
+          if (_monthlyUnlocked) ...<Widget>[
+            const SizedBox(height: 10),
+            _coachBtn(
+                label: _monthDone ? 'This month ✓' : '🧠 Monthly review',
+                busy: _busyKind == 'monthly',
+                enabled: _busyKind == null && !_monthDone,
+                onTap: () => _generate('monthly'),
+                accent: accent,
+                filled: false),
+          ],
           if (todayDone || weekDone) ...<Widget>[
             const SizedBox(height: 8),
             Text(
