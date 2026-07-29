@@ -22,7 +22,7 @@ import 'trainer.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
-import 'progress.dart';
+import 'goals.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -463,6 +463,35 @@ class AppStorage {
     _write(d);
   }
 
+  static List<ChallengeRun> getChallenges() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('challenges')) {
+      return (d['challenges'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map(ChallengeRun.fromJson)
+          .toList();
+    }
+    return <ChallengeRun>[];
+  }
+
+  static void saveChallenges(List<ChallengeRun> c) {
+    final Map<String, dynamic> d = _read();
+    d['challenges'] = c.map((ChallengeRun x) => x.toJson()).toList();
+    _write(d);
+  }
+
+  /// Selected accent skin id ('auto' = follow the journey phase colour).
+  static String getSkin() {
+    final Map<String, dynamic> d = _read();
+    return (d['skin'] as String?) ?? 'auto';
+  }
+
+  static void saveSkin(String id) {
+    final Map<String, dynamic> d = _read();
+    d['skin'] = id;
+    _write(d);
+  }
+
   static List<FoodEntry> getFoods() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('foods')) {
@@ -625,6 +654,13 @@ class PhaseColors {
   const PhaseColors(this.accent, this.glow, this.label);
 }
 
+/// Paint colour for the app: an unlocked skin (from the Goals tab) overrides
+/// the journey-phase colour; 'auto' keeps the phase colour.
+Color skinAccent(String skinId, Color phaseAccent) {
+  final int argb = skinArgb(skinId);
+  return argb == 0 ? phaseAccent : Color(argb);
+}
+
 const List<PhaseColors> kPhases = [
   PhaseColors(Color(0xFF5B8FB9), Color(0x4D5B8FB9), 'Phase 0: Launch'),
   PhaseColors(Color(0xFFB44CF0), Color(0x4DB44CF0), 'Phase 1: Momentum'),
@@ -694,6 +730,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<SleepEntry> _sleep = [];
   List<AdvisorInsight> _insights = [];
   List<String> _seenAchv = [];
+  List<ChallengeRun> _challenges = [];
+  String _skin = 'auto';
   bool _syncingFoods = false;
 
   @override
@@ -703,6 +741,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _logs = AppStorage.getLogs();
     _dismissed = AppStorage.getDismissedMilestones();
     _seenAchv = AppStorage.getSeenAchievements();
+    _challenges = AppStorage.getChallenges();
+    _skin = AppStorage.getSkin();
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
@@ -781,6 +821,16 @@ class _BodyCompAppState extends State<BodyCompApp> {
   void _setSeenAchievements(List<String> ids) {
     setState(() => _seenAchv = ids);
     AppStorage.saveSeenAchievements(ids);
+  }
+
+  void _setChallenges(List<ChallengeRun> c) {
+    setState(() => _challenges = c);
+    AppStorage.saveChallenges(c);
+  }
+
+  void _setSkin(String id) {
+    setState(() => _skin = id);
+    AppStorage.saveSkin(id);
   }
 
   void _setFoods(List<FoodEntry> f) {
@@ -865,7 +915,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       ph = MathEngine.phase(
           MathEngine.progress(_cal!.startBf, _logs.last.bf, _cal!.targetBf));
     }
-    final Color accent = kPhases[ph].accent;
+    final Color accent = skinAccent(_skin, kPhases[ph].accent);
 
     return MaterialApp(
       title: 'BodyComp',
@@ -902,6 +952,10 @@ class _BodyCompAppState extends State<BodyCompApp> {
               insights: _insights,
               seenAchievements: _seenAchv,
               onSetSeenAchievements: _setSeenAchievements,
+              challenges: _challenges,
+              onSetChallenges: _setChallenges,
+              skin: _skin,
+              onSetSkin: _setSkin,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
@@ -1563,6 +1617,10 @@ class HomeShell extends StatefulWidget {
   final List<AdvisorInsight> insights;
   final List<String> seenAchievements;
   final void Function(List<String>) onSetSeenAchievements;
+  final List<ChallengeRun> challenges;
+  final void Function(List<ChallengeRun>) onSetChallenges;
+  final String skin;
+  final void Function(String) onSetSkin;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
@@ -1590,6 +1648,10 @@ class HomeShell extends StatefulWidget {
       required this.insights,
       required this.seenAchievements,
       required this.onSetSeenAchievements,
+      required this.challenges,
+      required this.onSetChallenges,
+      required this.skin,
+      required this.onSetSkin,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
@@ -1615,7 +1677,7 @@ class _HomeShellState extends State<HomeShell> {
       ph = MathEngine.phase(MathEngine.progress(
           widget.cal.startBf, widget.logs.last.bf, widget.cal.targetBf));
     }
-    final Color accent = kPhases[ph].accent;
+    final Color accent = skinAccent(widget.skin, kPhases[ph].accent);
     return Scaffold(
       body: SafeArea(
           child: IndexedStack(index: _tab, children: [
@@ -1669,7 +1731,7 @@ class _HomeShellState extends State<HomeShell> {
             runs: widget.runs,
             sleep: widget.sleep,
             onSetSleep: widget.onSetSleep),
-        ProgressScreen(
+        GoalsScreen(
             active: _tab == 5,
             accent: accent,
             cal: widget.cal,
@@ -1680,7 +1742,11 @@ class _HomeShellState extends State<HomeShell> {
             sleep: widget.sleep,
             trainer: widget.trainer,
             seen: widget.seenAchievements,
-            onSetSeen: widget.onSetSeenAchievements),
+            onSetSeen: widget.onSetSeenAchievements,
+            challenges: widget.challenges,
+            onSetChallenges: widget.onSetChallenges,
+            skin: widget.skin,
+            onSetSkin: widget.onSetSkin),
         SettingsScreen(
             cal: widget.cal,
             logs: widget.logs,
@@ -1709,7 +1775,7 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
-                icon: Icon(Icons.emoji_events_rounded), label: 'RANK'),
+                icon: Icon(Icons.emoji_events_rounded), label: 'GOALS'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.settings_rounded), label: 'SETTINGS'),
           ]),
@@ -1717,13 +1783,16 @@ class _HomeShellState extends State<HomeShell> {
   }
 }
 
+
 // ═══════════════════════════════════════════════════════════════════════
-// PROGRESS / RANK — level, XP, forgiving streaks, and the trophy case.
-// All derived from real history (see progress.dart). Rewards, never nags.
+// GOALS — the ladder of small wins on the way to the goal weight. Six lanes
+// with one live goal each, opt-in challenges, XP/levels/titles, forgiving
+// streaks with earned freezes, and unlockable accent skins. The rules and
+// generation all live in goals.dart; this just renders them.
 // ═══════════════════════════════════════════════════════════════════════
 
-class ProgressScreen extends StatefulWidget {
-  final bool active; // is this the currently-selected tab?
+class GoalsScreen extends StatefulWidget {
+  final bool active;
   final Color accent;
   final UserCalibration cal;
   final List<DailyLog> logs;
@@ -1734,8 +1803,12 @@ class ProgressScreen extends StatefulWidget {
   final TrainerState trainer;
   final List<String> seen;
   final void Function(List<String>) onSetSeen;
+  final List<ChallengeRun> challenges;
+  final void Function(List<ChallengeRun>) onSetChallenges;
+  final String skin;
+  final void Function(String) onSetSkin;
 
-  const ProgressScreen({
+  const GoalsScreen({
     super.key,
     required this.active,
     required this.accent,
@@ -1748,14 +1821,20 @@ class ProgressScreen extends StatefulWidget {
     required this.trainer,
     required this.seen,
     required this.onSetSeen,
+    required this.challenges,
+    required this.onSetChallenges,
+    required this.skin,
+    required this.onSetSkin,
   });
 
   @override
-  State<ProgressScreen> createState() => _ProgressScreenState();
+  State<GoalsScreen> createState() => _GoalsScreenState();
 }
 
-class _ProgressScreenState extends State<ProgressScreen> {
-  GameStats _stats() => GameStats.compute(
+class _GoalsScreenState extends State<GoalsScreen> {
+  bool _showShelf = false;
+
+  GoalState _state() => GoalEngine.compute(
         widget.cal,
         widget.logs,
         widget.foods,
@@ -1763,300 +1842,843 @@ class _ProgressScreenState extends State<ProgressScreen> {
         runs: widget.runs,
         sleep: widget.sleep,
         trainerLevel: widget.trainer.level,
+        challenges: widget.challenges,
       );
 
   @override
   void initState() {
     super.initState();
-    // IndexedStack builds every tab up front, so only run the celebration
-    // when this tab is actually the one on screen.
     if (widget.active) {
-      WidgetsBinding.instance
-          .addPostFrameCallback((_) => _reconcileSeen());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reconcile());
     }
   }
 
   @override
-  void didUpdateWidget(ProgressScreen old) {
+  void didUpdateWidget(GoalsScreen old) {
     super.didUpdateWidget(old);
     if (widget.active && !old.active) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _reconcileSeen());
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reconcile());
     }
   }
 
-  // On opening the tab: celebrate anything unlocked since last visit, then
-  // mark all current unlocks as seen so they won't pop again.
-  void _reconcileSeen() {
+  /// On opening the tab: finish any auto-verified challenge whose conditions
+  /// are now met, celebrate anything new, then record it as seen.
+  void _reconcile() {
     if (!mounted) return;
-    final GameStats s = _stats();
-    final Set<String> seen = widget.seen.toSet();
-    final List<Achievement> fresh = s.achievements
-        .where((Achievement a) => a.unlocked && !seen.contains(a.id))
-        .toList();
-    final List<String> allUnlocked = s.achievements
-        .where((Achievement a) => a.unlocked)
-        .map((Achievement a) => a.id)
-        .toList();
-    // First-ever visit with pre-existing history: don't dump every past badge
-    // as a popup — just record them as seen.
-    if (fresh.isNotEmpty && widget.seen.isNotEmpty) {
-      _celebrate(fresh);
+    final DateTime now = DateTime.now();
+    final MacroTargets t = MacroTargets.compute(
+        widget.cal, widget.logs, widget.foods, widget.fasted.toSet());
+
+    // Auto-complete met challenges.
+    bool changed = false;
+    final List<ChallengeRun> updated = <ChallengeRun>[];
+    for (final ChallengeRun c in widget.challenges) {
+      if (c.completedAt == null &&
+          GoalEngine.challengeMet(
+              c, t, widget.foods, widget.fasted.toSet(), now)) {
+        updated.add(c.complete(formatDate(now)));
+        changed = true;
+      } else {
+        updated.add(c);
+      }
     }
-    if (!(allUnlocked.length == seen.length && seen.containsAll(allUnlocked))) {
-      widget.onSetSeen(allUnlocked);
+    if (changed) {
+      widget.onSetChallenges(updated);
+      return; // rebuild will re-enter with the new state
+    }
+
+    final GoalState st = _state();
+    final Set<String> seen = widget.seen.toSet();
+    final List<String> current = <String>[
+      for (final Goal g in st.completed) g.id,
+      for (final ChallengeRun c in st.finishedChallenges) 'ch:${c.id}',
+    ];
+    final List<String> fresh =
+        current.where((String id) => !seen.contains(id)).toList();
+
+    // First visit with existing history shouldn't fire dozens of popups.
+    if (fresh.isNotEmpty && widget.seen.isNotEmpty) {
+      final List<Goal> goals = st.completed
+          .where((Goal g) => fresh.contains(g.id))
+          .toList();
+      final List<String> chIds = fresh
+          .where((String f) => f.startsWith('ch:'))
+          .map((String f) => f.substring(3))
+          .toList();
+      _celebrate(goals, chIds);
+    }
+    if (!(current.length == seen.length && seen.containsAll(current))) {
+      widget.onSetSeen(current);
     }
   }
 
-  Future<void> _celebrate(List<Achievement> fresh) async {
-    for (final Achievement a in fresh.take(3)) {
+  Future<void> _celebrate(List<Goal> goals, List<String> challengeIds) async {
+    final List<(String, String, String, int)> items =
+        <(String, String, String, int)>[
+      for (final Goal g in goals) (g.emoji, g.title, g.desc, g.xp),
+      for (final String id in challengeIds)
+        if (challengeDef(id) != null)
+          (
+            challengeDef(id)!.emoji,
+            challengeDef(id)!.title,
+            'Challenge complete',
+            challengeDef(id)!.xp
+          ),
+    ];
+    for (final (String emoji, String title, String desc, int xp)
+        in items.take(3)) {
       if (!mounted) return;
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
       await showDialog<void>(
         context: context,
-        builder: (_) => AlertDialog(
-          backgroundColor: kSurface2,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-          content: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
-            Text(a.emoji, style: const TextStyle(fontSize: 56)),
-            const SizedBox(height: 12),
-            Text('ACHIEVEMENT UNLOCKED',
-                style: TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 1.5,
-                    fontWeight: FontWeight.w700,
-                    color: widget.accent)),
-            const SizedBox(height: 8),
-            Text(a.title,
-                style: const TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFFEEEEEE))),
-            const SizedBox(height: 6),
-            Text(a.desc,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 13, color: Color(0xFF9A9A9A))),
-          ]),
-          actions: <Widget>[
-            TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: Text('Nice',
-                    style: TextStyle(
-                        color: widget.accent, fontWeight: FontWeight.w700))),
-          ],
-        ),
+        builder: (_) => _WinDialog(
+            emoji: emoji,
+            title: title,
+            desc: desc,
+            xp: xp,
+            accent: widget.accent),
       );
     }
   }
 
+  void _accept(ChallengeDef d) {
+    HapticFeedback.selectionClick();
+    widget.onSetChallenges(<ChallengeRun>[
+      ...widget.challenges,
+      ChallengeRun(d.id, formatDate(DateTime.now())),
+    ]);
+  }
+
+  void _markDone(ChallengeRun c) {
+    final List<ChallengeRun> next = widget.challenges
+        .map((ChallengeRun x) =>
+            x.id == c.id && x.startedAt == c.startedAt && x.completedAt == null
+                ? x.complete(formatDate(DateTime.now()))
+                : x)
+        .toList();
+    widget.onSetChallenges(next);
+    final ChallengeDef? d = challengeDef(c.id);
+    if (d != null) {
+      HapticFeedback.heavyImpact();
+      SystemSound.play(SystemSoundType.click);
+      showDialog<void>(
+        context: context,
+        builder: (_) => _WinDialog(
+            emoji: d.emoji,
+            title: d.title,
+            desc: 'Challenge complete',
+            xp: d.xp,
+            accent: widget.accent),
+      );
+    }
+  }
+
+  void _abandon(ChallengeRun c) {
+    widget.onSetChallenges(widget.challenges
+        .where((ChallengeRun x) =>
+            !(x.id == c.id && x.startedAt == c.startedAt && x.completedAt == null))
+        .toList());
+  }
+
   @override
   Widget build(BuildContext context) {
-    final GameStats s = _stats();
+    final GoalState st = _state();
     final double bottomPad = 24 + MediaQuery.of(context).viewPadding.bottom;
     return Scaffold(
       backgroundColor: kBgDeep,
       appBar: AppBar(
           backgroundColor: kBgDeep,
           elevation: 0,
-          title: const Text('PROGRESS',
+          title: const Text('GOALS',
               style: TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w800, letterSpacing: 1))),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1))),
       body: ListView(
         padding: EdgeInsets.fromLTRB(16, 4, 16, bottomPad),
         children: <Widget>[
-          _levelCard(s),
+          _journeyCard(st),
           const SizedBox(height: 12),
-          _streakRow(s),
+          _levelCard(st),
           const SizedBox(height: 12),
-          _statsRow(s),
+          _streakRow(st),
           const SizedBox(height: 20),
-          Row(children: <Widget>[
-            Text('TROPHIES',
-                style: TextStyle(
-                    fontSize: 11,
-                    letterSpacing: 1.5,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.grey[500])),
-            const Spacer(),
-            Text('${s.unlockedCount}/${s.achievements.length}',
-                style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    color: widget.accent)),
-          ]),
+          _sectionLabel('ACTIVE GOALS', '${st.live.length} live'),
+          const SizedBox(height: 10),
+          for (final Goal g in st.live) _goalCard(g, st),
           const SizedBox(height: 12),
-          GridView.count(
-            crossAxisCount: 3,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            childAspectRatio: 0.82,
-            children: <Widget>[
-              for (final Achievement a in s.achievements) _badge(a),
-            ],
+          _sectionLabel('CHALLENGES',
+              st.active.isEmpty ? 'pick one' : '${st.active.length} running'),
+          const SizedBox(height: 10),
+          for (final ChallengeRun c in st.active) _activeChallenge(c),
+          if (st.available.isNotEmpty) _availableChallenges(st),
+          const SizedBox(height: 20),
+          _skinPicker(st),
+          const SizedBox(height: 16),
+          InkWell(
+            onTap: () => setState(() => _showShelf = !_showShelf),
+            child: _sectionLabel('TROPHY SHELF',
+                '${st.completed.length}  ${_showShelf ? '▾' : '▸'}'),
           ),
+          if (_showShelf) ...<Widget>[
+            const SizedBox(height: 10),
+            _shelf(st),
+          ],
         ],
       ),
     );
   }
 
-  Widget _levelCard(GameStats s) {
-    final double frac =
-        s.xpForLevel > 0 ? (s.xpIntoLevel / s.xpForLevel).clamp(0.0, 1.0) : 1.0;
+  Widget _sectionLabel(String text, String trailing) => Row(children: <Widget>[
+        Text(text,
+            style: TextStyle(
+                fontSize: 11,
+                letterSpacing: 1.5,
+                fontWeight: FontWeight.w700,
+                color: Colors.grey[500])),
+        const Spacer(),
+        Text(trailing,
+            style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: widget.accent)),
+      ]);
+
+  Widget _journeyCard(GoalState st) {
+    final double lost = widget.cal.startWeight - st.currentWeight;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Text('THE JOURNEY',
+              style: TextStyle(
+                  fontSize: 11,
+                  letterSpacing: 1.5,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey[500])),
+          const Spacer(),
+          Text('${(st.journey * 100).round()}%',
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: widget.accent)),
+        ]),
+        const SizedBox(height: 12),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+              value: st.journey,
+              minHeight: 12,
+              backgroundColor: kSurface3,
+              valueColor: AlwaysStoppedAnimation<Color>(widget.accent)),
+        ),
+        const SizedBox(height: 8),
+        Row(children: <Widget>[
+          Text('${widget.cal.startWeight.toStringAsFixed(0)} lb',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF777777))),
+          const Spacer(),
+          Text(
+              lost > 0
+                  ? '${lost.toStringAsFixed(1)} lb down · ${st.currentWeight.toStringAsFixed(1)} now'
+                  : '${st.currentWeight.toStringAsFixed(1)} lb now',
+              style: const TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFDDDDDD))),
+          const Spacer(),
+          Text('${st.goalWeight.toStringAsFixed(0)} lb',
+              style: TextStyle(fontSize: 11, color: widget.accent)),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _levelCard(GoalState st) {
+    final double frac = st.xpForLevel > 0
+        ? (st.xpIntoLevel / st.xpForLevel).clamp(0.0, 1.0)
+        : 1.0;
+    final int freezesLeft = st.freezeCapacity - st.freezesUsed;
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
           gradient: LinearGradient(
-              colors: <Color>[
-                widget.accent.withValues(alpha: 0.22),
-                kSurface1,
-              ],
+              colors: <Color>[widget.accent.withValues(alpha: 0.22), kSurface1],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: widget.accent.withValues(alpha: 0.35))),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-        Row(crossAxisAlignment: CrossAxisAlignment.center, children: <Widget>[
+        Row(children: <Widget>[
           Container(
-            width: 60,
-            height: 60,
+            width: 58,
+            height: 58,
             alignment: Alignment.center,
             decoration: BoxDecoration(
                 color: widget.accent.withValues(alpha: 0.18),
                 shape: BoxShape.circle,
                 border: Border.all(color: widget.accent, width: 2)),
-            child: Text('${s.level}',
+            child: Text('${st.level}',
                 style: TextStyle(
-                    fontSize: 26,
+                    fontSize: 25,
                     fontWeight: FontWeight.w900,
                     color: widget.accent)),
           ),
           const SizedBox(width: 14),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-            Text('LEVEL ${s.level}',
+            Text('LEVEL ${st.level}',
                 style: const TextStyle(
-                    fontSize: 12,
+                    fontSize: 11,
                     letterSpacing: 1,
                     fontWeight: FontWeight.w700,
                     color: Color(0xFFBBBBBB))),
             const SizedBox(height: 2),
-            Text(s.rank,
+            Text(st.rank,
                 style: const TextStyle(
-                    fontSize: 22,
+                    fontSize: 21,
                     fontWeight: FontWeight.w800,
                     color: Color(0xFFEEEEEE))),
           ]),
           const Spacer(),
-          Text('${s.xp} XP',
+          Text('${st.xp} XP',
               style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
                   color: widget.accent)),
         ]),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: LinearProgressIndicator(
-            value: frac,
-            minHeight: 10,
-            backgroundColor: kSurface3,
-            valueColor: AlwaysStoppedAnimation<Color>(widget.accent),
-          ),
+              value: frac,
+              minHeight: 10,
+              backgroundColor: kSurface3,
+              valueColor: AlwaysStoppedAnimation<Color>(widget.accent)),
         ),
         const SizedBox(height: 6),
-        Text(
-            s.xpForLevel > 0
-                ? '${s.xpIntoLevel} / ${s.xpForLevel} XP to level ${s.level + 1}'
-                : 'Max level',
-            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+        Row(children: <Widget>[
+          Text('${st.xpIntoLevel} / ${st.xpForLevel} XP to level ${st.level + 1}',
+              style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+          const Spacer(),
+          if (st.freezeCapacity > 0)
+            Text('🧊 $freezesLeft freeze${freezesLeft == 1 ? '' : 's'}',
+                style: TextStyle(fontSize: 11, color: Colors.grey[400])),
+        ]),
       ]),
     );
   }
 
-  Widget _streakRow(GameStats s) {
-    return Row(children: <Widget>[
-      Expanded(
-          child: _tile('🔥', '${s.currentStreak}',
-              s.currentStreak == 1 ? 'day streak' : 'day streak', widget.accent)),
-      const SizedBox(width: 12),
-      Expanded(child: _tile('🏆', '${s.bestStreak}', 'best streak', null)),
-    ]);
-  }
+  Widget _streakRow(GoalState st) => Row(children: <Widget>[
+        Expanded(
+            child: _miniTile('🔥', '${st.currentStreak}', 'day streak',
+                widget.accent)),
+        const SizedBox(width: 12),
+        Expanded(child: _miniTile('🏆', '${st.bestStreak}', 'best', null)),
+        const SizedBox(width: 12),
+        Expanded(
+            child: _miniTile('🎖️', '${st.completed.length}', 'wins', null)),
+      ]);
 
-  Widget _statsRow(GameStats s) {
-    return Row(children: <Widget>[
-      Expanded(
-          child: _tile('📉', s.fatLostLb.toStringAsFixed(1), 'lb fat lost', null)),
-      const SizedBox(width: 12),
-      Expanded(child: _tile('📆', '${s.daysLogged}', 'days logged', null)),
-      const SizedBox(width: 12),
-      Expanded(child: _tile('🏃', '${s.runsCount}', 'runs', null)),
-    ]);
-  }
+  Widget _miniTile(String emoji, String value, String label, Color? c) =>
+      Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+        decoration: BoxDecoration(
+            color: kSurface0,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: kBorder)),
+        child: Column(children: <Widget>[
+          Text(emoji, style: const TextStyle(fontSize: 18)),
+          const SizedBox(height: 4),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w800,
+                  color: c ?? const Color(0xFFEEEEEE))),
+          Text(label,
+              style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+        ]),
+      );
 
-  Widget _tile(String emoji, String value, String label, Color? valueColor) {
+  Widget _goalCard(Goal g, GoalState st) {
+    final String trim = trimFor(st.completedInLane(g.lane));
+    final Color trimColor = switch (trim) {
+      'gold' => const Color(0xFFF0C040),
+      'silver' => const Color(0xFFC0C6CC),
+      'bronze' => const Color(0xFFC08A50),
+      _ => kBorder,
+    };
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: kSurface0,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: trimColor.withValues(alpha: 0.55))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Text(g.emoji, style: const TextStyle(fontSize: 22)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(g.lane.label,
+                      style: TextStyle(
+                          fontSize: 9,
+                          letterSpacing: 1.2,
+                          fontWeight: FontWeight.w700,
+                          color: Colors.grey[600])),
+                  const SizedBox(height: 2),
+                  Text(g.title,
+                      style: const TextStyle(
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFEEEEEE))),
+                ]),
+          ),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: <Widget>[
+            Text('+${g.xp}',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    color: widget.accent)),
+            if (g.repeatable && g.timesDone > 0)
+              Text('×${g.timesDone}',
+                  style: TextStyle(fontSize: 10, color: Colors.grey[500])),
+          ]),
+        ]),
+        if (g.desc.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 8),
+          Text(g.desc,
+              style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+        ],
+        const SizedBox(height: 10),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(6),
+          child: LinearProgressIndicator(
+              value: g.progress,
+              minHeight: 6,
+              backgroundColor: kSurface3,
+              valueColor: AlwaysStoppedAnimation<Color>(
+                  widget.accent.withValues(alpha: 0.85))),
+        ),
+      ]),
+    );
+  }
+
+  Widget _activeChallenge(ChallengeRun c) {
+    final ChallengeDef? d = challengeDef(c.id);
+    if (d == null) return const SizedBox.shrink();
+    final int elapsed =
+        DateTime.now().difference(DateTime.parse(c.startedAt)).inDays;
+    final int left = (d.days - elapsed).clamp(0, d.days);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+          color: widget.accent.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: widget.accent.withValues(alpha: 0.45))),
+      child: Row(children: <Widget>[
+        Text(d.emoji, style: const TextStyle(fontSize: 22)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(d.title,
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFEEEEEE))),
+                const SizedBox(height: 2),
+                Text(
+                    d.auto
+                        ? '${d.desc} · tracked automatically'
+                        : '${d.desc} · ${left == 0 ? 'last day' : '$left day${left == 1 ? '' : 's'} left'}',
+                    style:
+                        TextStyle(fontSize: 11.5, color: Colors.grey[400])),
+              ]),
+        ),
+        if (!d.auto)
+          TextButton(
+              onPressed: () => _markDone(c),
+              child: Text('Done',
+                  style: TextStyle(
+                      color: widget.accent, fontWeight: FontWeight.w800)))
+        else
+          IconButton(
+              tooltip: 'Give up',
+              icon: Icon(Icons.close_rounded,
+                  size: 18, color: Colors.grey[600]),
+              onPressed: () => _abandon(c)),
+      ]),
+    );
+  }
+
+  Widget _availableChallenges(GoalState st) {
+    return Column(children: <Widget>[
+      for (final ChallengeDef d in st.available.take(4))
+        Container(
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+              color: kSurface0,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: kBorder)),
+          child: Row(children: <Widget>[
+            Text(d.emoji, style: const TextStyle(fontSize: 20)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(d.title,
+                        style: const TextStyle(
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.w700,
+                            color: Color(0xFFDDDDDD))),
+                    Text('${d.desc} · +${d.xp} XP',
+                        style: TextStyle(
+                            fontSize: 11, color: Colors.grey[500])),
+                  ]),
+            ),
+            OutlinedButton(
+              onPressed: () => _accept(d),
+              style: OutlinedButton.styleFrom(
+                  foregroundColor: widget.accent,
+                  side: BorderSide(
+                      color: widget.accent.withValues(alpha: 0.5)),
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  minimumSize: const Size(0, 34)),
+              child: const Text('Accept',
+                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+            ),
+          ]),
+        ),
+    ]);
+  }
+
+  Widget _skinPicker(GoalState st) {
+    final List<ThemeSkin> unlocked = st.unlockedThemes;
+    final ThemeSkin? next = kThemes
+        .where((ThemeSkin t) => t.unlockLevel > st.level)
+        .fold<ThemeSkin?>(null,
+            (ThemeSkin? a, ThemeSkin b) => a == null || b.unlockLevel < a.unlockLevel ? b : a);
+    return Container(
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
           color: kSurface0,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(color: kBorder)),
-      child: Column(children: <Widget>[
-        Text(emoji, style: const TextStyle(fontSize: 20)),
-        const SizedBox(height: 6),
-        Text(value,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text('ACCENT',
             style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-                color: valueColor ?? const Color(0xFFEEEEEE))),
-        const SizedBox(height: 2),
-        Text(label,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 10.5, color: Colors.grey[500])),
+                fontSize: 11,
+                letterSpacing: 1.5,
+                fontWeight: FontWeight.w700,
+                color: Colors.grey[500])),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: <Widget>[
+            for (final ThemeSkin s in unlocked)
+              GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  widget.onSetSkin(s.id);
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                      color: kSurface1,
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: widget.skin == s.id
+                              ? widget.accent
+                              : kBorder,
+                          width: widget.skin == s.id ? 2 : 1)),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                    Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: s.argb == 0
+                              ? widget.accent
+                              : Color(s.argb)),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(s.name,
+                        style: const TextStyle(
+                            fontSize: 12, color: Color(0xFFDDDDDD))),
+                  ]),
+                ),
+              ),
+          ],
+        ),
+        if (next != null) ...<Widget>[
+          const SizedBox(height: 8),
+          Text('🔒 ${next.name} unlocks at level ${next.unlockLevel}',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+        ],
       ]),
     );
   }
 
-  Widget _badge(Achievement a) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-      decoration: BoxDecoration(
-          color: a.unlocked
-              ? widget.accent.withValues(alpha: 0.12)
-              : kSurface0,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-              color: a.unlocked
-                  ? widget.accent.withValues(alpha: 0.5)
-                  : kBorder)),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
-        Opacity(
-          opacity: a.unlocked ? 1.0 : 0.28,
-          child: Text(a.emoji, style: const TextStyle(fontSize: 30)),
-        ),
-        const SizedBox(height: 8),
-        Text(a.title,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.w700,
-                color: a.unlocked
-                    ? const Color(0xFFEEEEEE)
-                    : const Color(0xFF777777))),
-        const SizedBox(height: 4),
-        if (a.unlocked)
-          Text('✓',
-              style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                  color: widget.accent))
-        else
-          Text('${(a.progress * 100).round()}%',
-              style: const TextStyle(fontSize: 10, color: Color(0xFF666666))),
-      ]),
+  Widget _shelf(GoalState st) {
+    final List<Goal> shelf = <Goal>[...st.tallied, ...st.completed];
+    if (shelf.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Text('No wins yet — they collect here as you clear goals.',
+            style: TextStyle(fontSize: 12.5, color: Colors.grey[600])),
+      );
+    }
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: <Widget>[
+        for (final Goal g in shelf)
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+            decoration: BoxDecoration(
+                color: widget.accent.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                    color: widget.accent.withValues(alpha: 0.35))),
+            child: Row(mainAxisSize: MainAxisSize.min, children: <Widget>[
+              Text(g.emoji, style: const TextStyle(fontSize: 13)),
+              const SizedBox(width: 6),
+              Text(g.repeatable ? '${g.title} ×${g.timesDone}' : g.title,
+                  style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFFDDDDDD))),
+            ]),
+          ),
+      ],
     );
   }
+}
+
+// ── the celebration ─────────────────────────────────────────────────────
+
+class _WinDialog extends StatelessWidget {
+  final String emoji;
+  final String title;
+  final String desc;
+  final int xp;
+  final Color accent;
+  const _WinDialog(
+      {required this.emoji,
+      required this.title,
+      required this.desc,
+      required this.xp,
+      required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: kSurface2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      contentPadding: const EdgeInsets.fromLTRB(20, 28, 20, 8),
+      content: SizedBox(
+        height: 260,
+        width: 280,
+        child: Stack(alignment: Alignment.topCenter, children: <Widget>[
+          const Positioned.fill(child: _Confetti()),
+          Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+            _Pop(child: Text(emoji, style: const TextStyle(fontSize: 62))),
+            const SizedBox(height: 14),
+            Text('GOAL COMPLETE',
+                style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 2,
+                    fontWeight: FontWeight.w800,
+                    color: accent)),
+            const SizedBox(height: 8),
+            Text(title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 23,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFFEEEEEE))),
+            if (desc.isNotEmpty) ...<Widget>[
+              const SizedBox(height: 6),
+              Text(desc,
+                  textAlign: TextAlign.center,
+                  style:
+                      const TextStyle(fontSize: 13, color: Color(0xFF9A9A9A))),
+            ],
+            const SizedBox(height: 16),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 7),
+              decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: accent.withValues(alpha: 0.5))),
+              child: _CountUp(
+                  to: xp,
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w900,
+                      color: accent)),
+            ),
+          ]),
+        ]),
+      ),
+      actions: <Widget>[
+        TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Nice',
+                style:
+                    TextStyle(color: accent, fontWeight: FontWeight.w800))),
+      ],
+    );
+  }
+}
+
+/// Badge pops in with a little overshoot.
+class _Pop extends StatefulWidget {
+  final Widget child;
+  const _Pop({required this.child});
+  @override
+  State<_Pop> createState() => _PopState();
+}
+
+class _PopState extends State<_Pop> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 620))
+    ..forward();
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ScaleTransition(
+      scale: CurvedAnimation(parent: _c, curve: Curves.elasticOut),
+      child: widget.child);
+}
+
+/// XP counts up rather than just appearing.
+class _CountUp extends StatelessWidget {
+  final int to;
+  final TextStyle style;
+  const _CountUp({required this.to, required this.style});
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 0, end: to.toDouble()),
+        duration: const Duration(milliseconds: 900),
+        curve: Curves.easeOutCubic,
+        builder: (_, double v, __) => Text('+${v.round()} XP', style: style),
+      );
+}
+
+/// A cheap, dependency-free confetti burst.
+class _Confetti extends StatefulWidget {
+  const _Confetti();
+  @override
+  State<_Confetti> createState() => _ConfettiState();
+}
+
+class _ConfettiState extends State<_Confetti>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(
+      vsync: this, duration: const Duration(milliseconds: 2200))
+    ..forward();
+  final List<_Bit> _bits = <_Bit>[];
+
+  @override
+  void initState() {
+    super.initState();
+    final Random r = Random(7);
+    const List<Color> palette = <Color>[
+      Color(0xFFF0C040),
+      Color(0xFF5B8FB9),
+      Color(0xFFB44CF0),
+      Color(0xFF3CD6A3),
+      Color(0xFFF0883C),
+    ];
+    for (int i = 0; i < 34; i++) {
+      _bits.add(_Bit(
+        x: r.nextDouble(),
+        vx: (r.nextDouble() - 0.5) * 0.55,
+        vy: 0.35 + r.nextDouble() * 0.55,
+        delay: r.nextDouble() * 0.25,
+        spin: (r.nextDouble() - 0.5) * 10,
+        color: palette[i % palette.length],
+        size: 4 + r.nextDouble() * 5,
+      ));
+    }
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+        animation: _c,
+        builder: (_, __) =>
+            CustomPaint(painter: _ConfettiPainter(_bits, _c.value)),
+      );
+}
+
+class _Bit {
+  final double x, vx, vy, delay, spin, size;
+  final Color color;
+  const _Bit({
+    required this.x,
+    required this.vx,
+    required this.vy,
+    required this.delay,
+    required this.spin,
+    required this.color,
+    required this.size,
+  });
+}
+
+class _ConfettiPainter extends CustomPainter {
+  final List<_Bit> bits;
+  final double t;
+  _ConfettiPainter(this.bits, this.t);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final _Bit b in bits) {
+      final double p = ((t - b.delay) / (1 - b.delay)).clamp(0.0, 1.0);
+      if (p <= 0) continue;
+      final double x = (b.x + b.vx * p) * size.width;
+      final double y = (b.vy * p + 0.9 * p * p) * size.height - 12;
+      final Paint paint = Paint()
+        ..color = b.color.withValues(alpha: (1 - p).clamp(0.0, 1.0));
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(b.spin * p);
+      canvas.drawRect(
+          Rect.fromCenter(
+              center: Offset.zero, width: b.size, height: b.size * 1.7),
+          paint);
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ConfettiPainter old) => old.t != t;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -6971,8 +7593,27 @@ class _AdvisorCardState extends State<_AdvisorCard> {
           weekly: kind == 'weekly',
           sleep: widget.sleep,
           runs: widget.runs);
-      final String text =
-          kind == 'weekly' ? Coach.weekly(facts) : Coach.daily(facts);
+      String text;
+      if (kind == 'weekly') {
+        text = Coach.weekly(facts);
+      } else {
+        // Let the daily coach point at the nearest goal from the Goals tab.
+        final GoalState gs = GoalEngine.compute(
+            widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
+            runs: widget.runs,
+            sleep: widget.sleep,
+            trainerLevel: widget.trainerLevel);
+        final Iterable<Goal> near =
+            gs.live.where((Goal g) => !g.repeatable && g.progress > 0);
+        final Goal? closest = near.isEmpty
+            ? null
+            : near.reduce((Goal a, Goal b) => a.progress >= b.progress ? a : b);
+        text = Coach.daily(facts,
+            streak: gs.currentStreak,
+            nextGoal: closest == null
+                ? null
+                : '${closest.title}${closest.desc.isEmpty ? '' : ' (${closest.desc})'}');
+      }
       final String key = kind == 'weekly' ? _weekKey : _todayKey;
       final List<AdvisorInsight> updated = widget.insights
           .where((AdvisorInsight i) => i.kind != kind)
