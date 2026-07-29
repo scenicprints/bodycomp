@@ -22,6 +22,7 @@ import 'trainer.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
+import 'progress.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -446,6 +447,22 @@ class AppStorage {
     _write(d);
   }
 
+  static List<String> getSeenAchievements() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('seenAchievements')) {
+      return (d['seenAchievements'] as List<dynamic>)
+          .map((dynamic e) => e as String)
+          .toList();
+    }
+    return <String>[];
+  }
+
+  static void saveSeenAchievements(List<String> ids) {
+    final Map<String, dynamic> d = _read();
+    d['seenAchievements'] = ids;
+    _write(d);
+  }
+
   static List<FoodEntry> getFoods() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('foods')) {
@@ -676,6 +693,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   TrainerState _trainer = const TrainerState();
   List<SleepEntry> _sleep = [];
   List<AdvisorInsight> _insights = [];
+  List<String> _seenAchv = [];
   bool _syncingFoods = false;
 
   @override
@@ -684,6 +702,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _cal = AppStorage.getCalibration();
     _logs = AppStorage.getLogs();
     _dismissed = AppStorage.getDismissedMilestones();
+    _seenAchv = AppStorage.getSeenAchievements();
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
@@ -757,6 +776,11 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _dismissed.add(m);
       AppStorage.saveDismissedMilestones(_dismissed);
     }
+  }
+
+  void _setSeenAchievements(List<String> ids) {
+    setState(() => _seenAchv = ids);
+    AppStorage.saveSeenAchievements(ids);
   }
 
   void _setFoods(List<FoodEntry> f) {
@@ -857,9 +881,9 @@ class _BodyCompAppState extends State<BodyCompApp> {
           unselectedItemColor: const Color(0xFF555555),
           type: BottomNavigationBarType.fixed,
           selectedLabelStyle: const TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1),
+              fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: 0.3),
           unselectedLabelStyle: const TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1),
+              fontSize: 9.5, fontWeight: FontWeight.w700, letterSpacing: 0.3),
         ),
       ),
       home: _cal == null
@@ -876,6 +900,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               trainer: _trainer,
               sleep: _sleep,
               insights: _insights,
+              seenAchievements: _seenAchv,
+              onSetSeenAchievements: _setSeenAchievements,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
@@ -1535,6 +1561,8 @@ class HomeShell extends StatefulWidget {
   final TrainerState trainer;
   final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
+  final List<String> seenAchievements;
+  final void Function(List<String>) onSetSeenAchievements;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
@@ -1560,6 +1588,8 @@ class HomeShell extends StatefulWidget {
       required this.trainer,
       required this.sleep,
       required this.insights,
+      required this.seenAchievements,
+      required this.onSetSeenAchievements,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
@@ -1639,6 +1669,18 @@ class _HomeShellState extends State<HomeShell> {
             runs: widget.runs,
             sleep: widget.sleep,
             onSetSleep: widget.onSetSleep),
+        ProgressScreen(
+            active: _tab == 5,
+            accent: accent,
+            cal: widget.cal,
+            logs: widget.logs,
+            foods: widget.foods,
+            fasted: widget.fasted,
+            runs: widget.runs,
+            sleep: widget.sleep,
+            trainer: widget.trainer,
+            seen: widget.seenAchievements,
+            onSetSeen: widget.onSetSeenAchievements),
         SettingsScreen(
             cal: widget.cal,
             logs: widget.logs,
@@ -1648,6 +1690,8 @@ class _HomeShellState extends State<HomeShell> {
       ])),
       bottomNavigationBar: BottomNavigationBar(
           currentIndex: _tab,
+          selectedFontSize: 9.5,
+          unselectedFontSize: 9.5,
           onTap: (int i) {
             setState(() {
               _tab = i;
@@ -1665,8 +1709,352 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
+                icon: Icon(Icons.emoji_events_rounded), label: 'RANK'),
+            BottomNavigationBarItem(
                 icon: Icon(Icons.settings_rounded), label: 'SETTINGS'),
           ]),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// PROGRESS / RANK — level, XP, forgiving streaks, and the trophy case.
+// All derived from real history (see progress.dart). Rewards, never nags.
+// ═══════════════════════════════════════════════════════════════════════
+
+class ProgressScreen extends StatefulWidget {
+  final bool active; // is this the currently-selected tab?
+  final Color accent;
+  final UserCalibration cal;
+  final List<DailyLog> logs;
+  final List<FoodEntry> foods;
+  final List<String> fasted;
+  final List<RunRecord> runs;
+  final List<SleepEntry> sleep;
+  final TrainerState trainer;
+  final List<String> seen;
+  final void Function(List<String>) onSetSeen;
+
+  const ProgressScreen({
+    super.key,
+    required this.active,
+    required this.accent,
+    required this.cal,
+    required this.logs,
+    required this.foods,
+    required this.fasted,
+    required this.runs,
+    required this.sleep,
+    required this.trainer,
+    required this.seen,
+    required this.onSetSeen,
+  });
+
+  @override
+  State<ProgressScreen> createState() => _ProgressScreenState();
+}
+
+class _ProgressScreenState extends State<ProgressScreen> {
+  GameStats _stats() => GameStats.compute(
+        widget.cal,
+        widget.logs,
+        widget.foods,
+        widget.fasted.toSet(),
+        runs: widget.runs,
+        sleep: widget.sleep,
+        trainerLevel: widget.trainer.level,
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    // IndexedStack builds every tab up front, so only run the celebration
+    // when this tab is actually the one on screen.
+    if (widget.active) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _reconcileSeen());
+    }
+  }
+
+  @override
+  void didUpdateWidget(ProgressScreen old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !old.active) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _reconcileSeen());
+    }
+  }
+
+  // On opening the tab: celebrate anything unlocked since last visit, then
+  // mark all current unlocks as seen so they won't pop again.
+  void _reconcileSeen() {
+    if (!mounted) return;
+    final GameStats s = _stats();
+    final Set<String> seen = widget.seen.toSet();
+    final List<Achievement> fresh = s.achievements
+        .where((Achievement a) => a.unlocked && !seen.contains(a.id))
+        .toList();
+    final List<String> allUnlocked = s.achievements
+        .where((Achievement a) => a.unlocked)
+        .map((Achievement a) => a.id)
+        .toList();
+    // First-ever visit with pre-existing history: don't dump every past badge
+    // as a popup — just record them as seen.
+    if (fresh.isNotEmpty && widget.seen.isNotEmpty) {
+      _celebrate(fresh);
+    }
+    if (!(allUnlocked.length == seen.length && seen.containsAll(allUnlocked))) {
+      widget.onSetSeen(allUnlocked);
+    }
+  }
+
+  Future<void> _celebrate(List<Achievement> fresh) async {
+    for (final Achievement a in fresh.take(3)) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (_) => AlertDialog(
+          backgroundColor: kSurface2,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+          content: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+            Text(a.emoji, style: const TextStyle(fontSize: 56)),
+            const SizedBox(height: 12),
+            Text('ACHIEVEMENT UNLOCKED',
+                style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.5,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+            const SizedBox(height: 8),
+            Text(a.title,
+                style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFFEEEEEE))),
+            const SizedBox(height: 6),
+            Text(a.desc,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13, color: Color(0xFF9A9A9A))),
+          ]),
+          actions: <Widget>[
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text('Nice',
+                    style: TextStyle(
+                        color: widget.accent, fontWeight: FontWeight.w700))),
+          ],
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final GameStats s = _stats();
+    final double bottomPad = 24 + MediaQuery.of(context).viewPadding.bottom;
+    return Scaffold(
+      backgroundColor: kBgDeep,
+      appBar: AppBar(
+          backgroundColor: kBgDeep,
+          elevation: 0,
+          title: const Text('PROGRESS',
+              style: TextStyle(
+                  fontSize: 15, fontWeight: FontWeight.w800, letterSpacing: 1))),
+      body: ListView(
+        padding: EdgeInsets.fromLTRB(16, 4, 16, bottomPad),
+        children: <Widget>[
+          _levelCard(s),
+          const SizedBox(height: 12),
+          _streakRow(s),
+          const SizedBox(height: 12),
+          _statsRow(s),
+          const SizedBox(height: 20),
+          Row(children: <Widget>[
+            Text('TROPHIES',
+                style: TextStyle(
+                    fontSize: 11,
+                    letterSpacing: 1.5,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.grey[500])),
+            const Spacer(),
+            Text('${s.unlockedCount}/${s.achievements.length}',
+                style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: widget.accent)),
+          ]),
+          const SizedBox(height: 12),
+          GridView.count(
+            crossAxisCount: 3,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: 0.82,
+            children: <Widget>[
+              for (final Achievement a in s.achievements) _badge(a),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _levelCard(GameStats s) {
+    final double frac =
+        s.xpForLevel > 0 ? (s.xpIntoLevel / s.xpForLevel).clamp(0.0, 1.0) : 1.0;
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+          gradient: LinearGradient(
+              colors: <Color>[
+                widget.accent.withValues(alpha: 0.22),
+                kSurface1,
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: widget.accent.withValues(alpha: 0.35))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(crossAxisAlignment: CrossAxisAlignment.center, children: <Widget>[
+          Container(
+            width: 60,
+            height: 60,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: widget.accent.withValues(alpha: 0.18),
+                shape: BoxShape.circle,
+                border: Border.all(color: widget.accent, width: 2)),
+            child: Text('${s.level}',
+                style: TextStyle(
+                    fontSize: 26,
+                    fontWeight: FontWeight.w900,
+                    color: widget.accent)),
+          ),
+          const SizedBox(width: 14),
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+            Text('LEVEL ${s.level}',
+                style: const TextStyle(
+                    fontSize: 12,
+                    letterSpacing: 1,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFFBBBBBB))),
+            const SizedBox(height: 2),
+            Text(s.rank,
+                style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFFEEEEEE))),
+          ]),
+          const Spacer(),
+          Text('${s.xp} XP',
+              style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: widget.accent)),
+        ]),
+        const SizedBox(height: 16),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+            value: frac,
+            minHeight: 10,
+            backgroundColor: kSurface3,
+            valueColor: AlwaysStoppedAnimation<Color>(widget.accent),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+            s.xpForLevel > 0
+                ? '${s.xpIntoLevel} / ${s.xpForLevel} XP to level ${s.level + 1}'
+                : 'Max level',
+            style: TextStyle(fontSize: 11, color: Colors.grey[500])),
+      ]),
+    );
+  }
+
+  Widget _streakRow(GameStats s) {
+    return Row(children: <Widget>[
+      Expanded(
+          child: _tile('🔥', '${s.currentStreak}',
+              s.currentStreak == 1 ? 'day streak' : 'day streak', widget.accent)),
+      const SizedBox(width: 12),
+      Expanded(child: _tile('🏆', '${s.bestStreak}', 'best streak', null)),
+    ]);
+  }
+
+  Widget _statsRow(GameStats s) {
+    return Row(children: <Widget>[
+      Expanded(
+          child: _tile('📉', s.fatLostLb.toStringAsFixed(1), 'lb fat lost', null)),
+      const SizedBox(width: 12),
+      Expanded(child: _tile('📆', '${s.daysLogged}', 'days logged', null)),
+      const SizedBox(width: 12),
+      Expanded(child: _tile('🏃', '${s.runsCount}', 'runs', null)),
+    ]);
+  }
+
+  Widget _tile(String emoji, String value, String label, Color? valueColor) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 10),
+      decoration: BoxDecoration(
+          color: kSurface0,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder)),
+      child: Column(children: <Widget>[
+        Text(emoji, style: const TextStyle(fontSize: 20)),
+        const SizedBox(height: 6),
+        Text(value,
+            style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.w800,
+                color: valueColor ?? const Color(0xFFEEEEEE))),
+        const SizedBox(height: 2),
+        Text(label,
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 10.5, color: Colors.grey[500])),
+      ]),
+    );
+  }
+
+  Widget _badge(Achievement a) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      decoration: BoxDecoration(
+          color: a.unlocked
+              ? widget.accent.withValues(alpha: 0.12)
+              : kSurface0,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: a.unlocked
+                  ? widget.accent.withValues(alpha: 0.5)
+                  : kBorder)),
+      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
+        Opacity(
+          opacity: a.unlocked ? 1.0 : 0.28,
+          child: Text(a.emoji, style: const TextStyle(fontSize: 30)),
+        ),
+        const SizedBox(height: 8),
+        Text(a.title,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w700,
+                color: a.unlocked
+                    ? const Color(0xFFEEEEEE)
+                    : const Color(0xFF777777))),
+        const SizedBox(height: 4),
+        if (a.unlocked)
+          Text('✓',
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  color: widget.accent))
+        else
+          Text('${(a.progress * 100).round()}%',
+              style: const TextStyle(fontSize: 10, color: Color(0xFF666666))),
+      ]),
     );
   }
 }
