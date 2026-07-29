@@ -152,4 +152,30 @@ void main() {
       expect(s.toLowerCase(), contains('no heart-rate'));
     });
   });
+
+  group('monthly review', () {
+    test('produces a long-view read with goals and streak folded in', () {
+      final List<DailyLog> logs = <DailyLog>[];
+      for (int i = 34; i >= 0; i--) {
+        final DateTime d = now.subtract(Duration(days: i));
+        logs.add(DailyLog(
+            date: formatDate(d), weight: 195 - (34 - i) * 0.2, bf: 0.24));
+      }
+      final CoachFacts f = CoachFacts.build(
+          cal, logs, _food(now, 20, protein: 200, fiber: 35), <String>{},
+          weekly: true, asOf: now);
+      final String s = Coach.monthly(f, goalsCleared: 4, bestStreak: 12);
+      expect(s.trim(), isNotEmpty);
+      expect(s, contains('12'));
+      expect(s.toLowerCase(), contains('goal'));
+    });
+
+    test('never blank even with no data', () {
+      final CoachFacts f = CoachFacts.build(
+          cal, <DailyLog>[], <FoodEntry>[], <String>{},
+          weekly: true, asOf: now);
+      expect(Coach.monthly(f).trim(), isNotEmpty);
+    });
+  });
+
 }
