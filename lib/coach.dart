@@ -216,9 +216,18 @@ class CoachFacts {
 
 class Coach {
   // ── Daily check-in ────────────────────────────────────────────────────
-  static String daily(CoachFacts f) {
+  // [streak] and [nextGoal] come from the Goals tab so the coach can point at
+  // the win that's actually within reach today.
+  static String daily(CoachFacts f, {int streak = 0, String? nextGoal}) {
     final List<String> out = <String>[];
     out.add(_dailyHeadline(f));
+    if (streak >= 3) {
+      out.add('✓ $streak-day streak going — that consistency is the whole '
+          'game. Protect it today.');
+    }
+    if (nextGoal != null && nextGoal.isNotEmpty) {
+      out.add('→ Closest win: $nextGoal');
+    }
 
     if (f.eatenDays >= 3) {
       // Protein — the lever that protects muscle on a cut.
@@ -264,7 +273,7 @@ class Coach {
       out.add('• Only ${f.eatenDays} logged day(s) in range — log a few days '
           'of food and weight and the read gets sharper.');
     }
-    return _cap(out, 4);
+    return _cap(out, 5);
   }
 
   static String _dailyHeadline(CoachFacts f) {
