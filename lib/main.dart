@@ -169,16 +169,32 @@ class MathEngine {
   /// Energy-balance back-calculation over days with KNOWN intake.
   /// Caller decides which days are known (food-logged, fasted, or manual) —
   /// a 0-calorie fasted day is valid here, an unlogged day must be excluded.
+  /// Maximum real-world span the 14 logged intake days may cover. Beyond this
+  /// the window is stale: the calorie side still counts 14 days while the fat
+  /// side counts the whole span, so the two halves no longer describe the same
+  /// period and the estimate becomes meaningless (it can even go negative).
+  static const int kAdaptiveMaxSpanDays = 24;
+
   static double? adaptiveTdeeFrom(List<DailyLog> intakeDays) {
     if (intakeDays.length < 14) {
       return null;
     }
     final List<DailyLog> recent =
         intakeDays.sublist(intakeDays.length - 14);
+    // Reject a stale window — e.g. logging stopped and these 14 days are
+    // smeared across months of weight change.
+    final DateTime? from = DateTime.tryParse(recent.first.date);
+    final DateTime? to = DateTime.tryParse(recent.last.date);
+    if (from == null ||
+        to == null ||
+        to.difference(from).inDays > kAdaptiveMaxSpanDays) {
+      return null;
+    }
     final int totalCal =
         recent.fold<int>(0, (int s, DailyLog l) => s + l.calories);
     final double fatLost = recent.first.fatMass - recent.last.fatMass;
-    return (totalCal + fatLost * 3500) / 14;
+    final double est = (totalCal + fatLost * 3500) / 14;
+    return est.isFinite && est > 0 ? est : null;
   }
 
   /// Backward-compatible: treats calories > 0 as the "known intake" signal.
@@ -224,14 +240,18 @@ class MathEngine {
     final List<DailyLog> intake = resolveIntake(
         logs, caloriesByDate ?? <String, double>{},
         fastedDates ?? <String>{});
-    final double? adaptive = adaptiveTdeeFrom(intake);
-    if (adaptive != null) {
-      return adaptive;
-    }
     if (logs.isEmpty) {
       return 0;
     }
-    return baselineTdee(rollingLbm(logs), mult);
+    final double baseline = baselineTdee(rollingLbm(logs), mult);
+    final double? adaptive = adaptiveTdeeFrom(intake);
+    if (adaptive == null || baseline <= 0) {
+      return baseline;
+    }
+    // Trust the measured estimate, but never let a noisy scan or a sparse log
+    // push it somewhere physiologically absurd — clamp it around the
+    // lean-mass baseline.
+    return adaptive.clamp(baseline * 0.6, baseline * 1.6);
   }
 
   static double rollingAvg(List<DailyLog> logs, int idx, {int window = 7}) {
@@ -330,7 +350,13 @@ class MacroTargets {
         ? 0
         : MathEngine.activeTdee(logs, cal.activityMult,
             caloriesByDate: FoodMath.caloriesByDate(foods), fastedDates: fasted);
-    final double calTarget = tdee > 0 ? tdee - cal.deficit : 0;
+    // Never print a target that is negative, or below what a body actually
+    // needs — whatever the deficit setting or a bad estimate would imply.
+    // The floor tracks lean mass (BMR) so it scales with the person.
+    final double floor =
+        logs.isEmpty ? 1200 : max(1200.0, MathEngine.bmr(logs.last.lbm) * 0.95);
+    final double calTarget =
+        tdee > 0 ? max(tdee - cal.deficit, min(floor, tdee)) : 0;
     final double lbm = logs.isNotEmpty ? logs.last.lbm : cal.startLbm;
     final double bw = logs.isNotEmpty ? logs.last.weight : cal.startWeight;
     final double protein = cal.proteinTarget ?? lbm * 1.0; // 1 g / lb LBM

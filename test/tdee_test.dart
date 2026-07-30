@@ -138,4 +138,115 @@ void main() {
       expect((smoothed - before).abs(), lessThan((rawSingle - before).abs()));
     });
   });
+
+  group('negative-target guard (stopped logging while gaining)', () {
+    // Reproduces the real report: food logging stopped, weight went UP, and
+    // the Dashboard printed a NEGATIVE calorie target.
+    // The real pattern behind the report: food logged only occasionally, so
+    // the "last 14 intake days" are smeared across months — months in which
+    // weight (and fat) went UP. [fatGainLb] tunes how much was gained.
+    List<DailyLog> gainingWithStaleLog(DateTime now, {double fatGainLb = 7}) {
+      final List<DailyLog> out = <DailyLog>[];
+      const int span = 98;
+      for (int k = 0; k < 14; k++) {
+        // One logged day per week across the span, oldest first.
+        final int daysAgo = span - k * 7;
+        final DateTime d = now.subtract(Duration(days: daysAgo));
+        // Weight and fat climb steadily over the whole span.
+        final double t = k / 13.0;
+        final double weight = 190 + fatGainLb * t;
+        final double fatMass = 190 * 0.20 + fatGainLb * t;
+        out.add(DailyLog(
+            date: formatDate(d),
+            weight: weight,
+            bf: fatMass / weight,
+            calories: 1800));
+      }
+      return out;
+    }
+
+    test('a stale 14-day window is rejected, not used', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      final List<DailyLog> logs = gainingWithStaleLog(now);
+      final List<DailyLog> intake = MathEngine.resolveIntake(
+          logs, <String, double>{}, <String>{});
+      // The window spans ~100 days, far past the limit.
+      expect(MathEngine.adaptiveTdeeFrom(intake), isNull);
+    });
+
+    test('TDEE falls back to the lean-mass baseline and stays positive', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      final List<DailyLog> logs = gainingWithStaleLog(now);
+      final double tdee = MathEngine.activeTdee(logs, 1.4);
+      expect(tdee, greaterThan(1000));
+    });
+
+    test('the calorie target is never negative, at any rate of gain', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      for (final double gain in <double>[3, 5, 7, 9, 12, 20]) {
+        final List<DailyLog> g = gainingWithStaleLog(now, fatGainLb: gain);
+        final UserCalibration c = UserCalibration(
+            startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 500);
+        final MacroTargets mt =
+            MacroTargets.compute(c, g, <FoodEntry>[], <String>{});
+        expect(mt.calories, greaterThan(0), reason: 'gain $gain lb');
+      }
+      final List<DailyLog> logs = gainingWithStaleLog(now);
+      final UserCalibration cal = UserCalibration(
+          startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 500);
+      final MacroTargets t =
+          MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
+      expect(t.calories, greaterThan(0));
+      expect(t.carbs, greaterThanOrEqualTo(0));
+      expect(t.fiber, greaterThan(0));
+    });
+
+    test('even an absurd deficit cannot drive the target under the floor', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      final List<DailyLog> logs = gainingWithStaleLog(now);
+      final UserCalibration cal = UserCalibration(
+          startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 99999);
+      final MacroTargets t =
+          MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
+      expect(t.calories, greaterThan(0));
+    });
+
+    test('a fresh, honest window is still used and still adaptive', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      final List<DailyLog> logs = <DailyLog>[];
+      for (int i = 13; i >= 0; i--) {
+        final DateTime d = now.subtract(Duration(days: i));
+        logs.add(DailyLog(
+            date: formatDate(d),
+            weight: 190 - (13 - i) * 0.1,
+            bf: 0.22,
+            calories: 2000));
+      }
+      final List<DailyLog> intake = MathEngine.resolveIntake(
+          logs, <String, double>{}, <String>{});
+      final double? adaptive = MathEngine.adaptiveTdeeFrom(intake);
+      expect(adaptive, isNotNull);
+      expect(adaptive, greaterThan(2000)); // losing weight => above intake
+    });
+
+    test('a wildly off estimate is clamped near the baseline', () {
+      final DateTime now = DateTime(2026, 7, 29);
+      // 14 tight days but with an implausible body-fat crash.
+      final List<DailyLog> logs = <DailyLog>[];
+      for (int i = 13; i >= 0; i--) {
+        final DateTime d = now.subtract(Duration(days: i));
+        logs.add(DailyLog(
+            date: formatDate(d),
+            weight: 190,
+            bf: 0.30 - (13 - i) * 0.01, // ~13 pts of fat in two weeks
+            calories: 2000));
+      }
+      final double baseline =
+          MathEngine.baselineTdee(MathEngine.rollingLbm(logs), 1.4);
+      final double tdee = MathEngine.activeTdee(logs, 1.4);
+      expect(tdee, lessThanOrEqualTo(baseline * 1.6 + 0.01));
+      expect(tdee, greaterThanOrEqualTo(baseline * 0.6 - 0.01));
+    });
+  });
+
 }
