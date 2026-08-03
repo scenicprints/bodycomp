@@ -24,6 +24,7 @@ import 'coach.dart';
 import 'insights.dart';
 import 'goals.dart';
 import 'unlocks.dart';
+import 'grade.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -69,6 +70,15 @@ class UserCalibration {
   final double? fatTarget;
   final double? carbTarget;
   final double? fiberTarget;
+  // Navy-method inputs (inches). Height is asked once; neck barely moves.
+  final double? heightIn;
+  final double? neckIn;
+  final bool female;
+  // The frozen goal schedule the grade is measured against.
+  final String? goalStart; // 'YYYY-MM-DD'
+  final String? goalDeadline; // 'YYYY-MM-DD'
+  // A clean slate for the TDEE estimate — data before this is ignored.
+  final String? tdeeResetDate;
 
   UserCalibration({
     required this.startWeight,
@@ -80,6 +90,12 @@ class UserCalibration {
     this.fatTarget,
     this.carbTarget,
     this.fiberTarget,
+    this.heightIn,
+    this.neckIn,
+    this.female = false,
+    this.goalStart,
+    this.goalDeadline,
+    this.tdeeResetDate,
   });
 
   double get startLbm => startWeight * (1 - startBf);
@@ -93,6 +109,12 @@ class UserCalibration {
     Object? fatTarget = _unset,
     Object? carbTarget = _unset,
     Object? fiberTarget = _unset,
+    double? heightIn,
+    double? neckIn,
+    bool? female,
+    Object? goalStart = _unset,
+    Object? goalDeadline = _unset,
+    Object? tdeeResetDate = _unset,
   }) {
     return UserCalibration(
       startWeight: startWeight,
@@ -100,6 +122,17 @@ class UserCalibration {
       targetBf: targetBf ?? this.targetBf,
       activityMult: activityMult ?? this.activityMult,
       deficit: deficit ?? this.deficit,
+      heightIn: heightIn ?? this.heightIn,
+      neckIn: neckIn ?? this.neckIn,
+      female: female ?? this.female,
+      goalStart:
+          goalStart == _unset ? this.goalStart : goalStart as String?,
+      goalDeadline: goalDeadline == _unset
+          ? this.goalDeadline
+          : goalDeadline as String?,
+      tdeeResetDate: tdeeResetDate == _unset
+          ? this.tdeeResetDate
+          : tdeeResetDate as String?,
       proteinTarget: proteinTarget == _unset
           ? this.proteinTarget
           : (proteinTarget as num?)?.toDouble(),
@@ -125,6 +158,12 @@ class UserCalibration {
       if (fatTarget != null) 'fatTarget': fatTarget,
       if (carbTarget != null) 'carbTarget': carbTarget,
       if (fiberTarget != null) 'fiberTarget': fiberTarget,
+      if (heightIn != null) 'heightIn': heightIn,
+      if (neckIn != null) 'neckIn': neckIn,
+      if (female) 'female': true,
+      if (goalStart != null) 'goalStart': goalStart,
+      if (goalDeadline != null) 'goalDeadline': goalDeadline,
+      if (tdeeResetDate != null) 'tdeeResetDate': tdeeResetDate,
     };
   }
 
@@ -139,8 +178,17 @@ class UserCalibration {
       fatTarget: (j['fatTarget'] as num?)?.toDouble(),
       carbTarget: (j['carbTarget'] as num?)?.toDouble(),
       fiberTarget: (j['fiberTarget'] as num?)?.toDouble(),
+      heightIn: (j['heightIn'] as num?)?.toDouble(),
+      neckIn: (j['neckIn'] as num?)?.toDouble(),
+      female: j['female'] == true,
+      goalStart: j['goalStart'] as String?,
+      goalDeadline: j['goalDeadline'] as String?,
+      tdeeResetDate: j['tdeeResetDate'] as String?,
     );
   }
+
+  /// True once Navy measurements are possible.
+  bool get canMeasure => (heightIn ?? 0) > 0 && (neckIn ?? 0) > 0;
 }
 
 const Object _unset = Object();
@@ -236,10 +284,19 @@ class MathEngine {
   }
 
   static double activeTdee(List<DailyLog> logs, double mult,
-      {Map<String, double>? caloriesByDate, Set<String>? fastedDates}) {
-    final List<DailyLog> intake = resolveIntake(
+      {Map<String, double>? caloriesByDate,
+      Set<String>? fastedDates,
+      String? resetDate}) {
+    List<DailyLog> intake = resolveIntake(
         logs, caloriesByDate ?? <String, double>{},
         fastedDates ?? <String>{});
+    // A recalibration is a clean slate: anything logged before it is ignored
+    // by the adaptive estimate, so a stale history can't drag it.
+    if (resetDate != null && resetDate.isNotEmpty) {
+      intake = intake
+          .where((DailyLog l) => l.date.compareTo(resetDate) >= 0)
+          .toList();
+    }
     if (logs.isEmpty) {
       return 0;
     }
@@ -529,6 +586,23 @@ class AppStorage {
   static void savePref(String key, String value) {
     final Map<String, dynamic> d = _read();
     d[key] = value;
+    _write(d);
+  }
+
+  static List<BodyMeasurement> getMeasurements() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('measurements')) {
+      return (d['measurements'] as List<dynamic>)
+          .whereType<Map<String, dynamic>>()
+          .map(BodyMeasurement.fromJson)
+          .toList();
+    }
+    return <BodyMeasurement>[];
+  }
+
+  static void saveMeasurements(List<BodyMeasurement> m) {
+    final Map<String, dynamic> d = _read();
+    d['measurements'] = m.map((BodyMeasurement x) => x.toJson()).toList();
     _write(d);
   }
 
@@ -861,6 +935,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<ChallengeRun> _challenges = [];
   Cosmetics _cos = const Cosmetics();
   Prestige _prestige = const Prestige(0);
+  List<BodyMeasurement> _measurements = [];
   bool _syncingFoods = false;
 
   @override
@@ -873,6 +948,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _challenges = AppStorage.getChallenges();
     _cos = Cosmetics.load();
     _prestige = AppStorage.getPrestige();
+    _measurements = AppStorage.getMeasurements();
     _foods = AppStorage.getFoods();
     _fasted = AppStorage.getFastedDates();
     _meals = AppStorage.getMeals();
@@ -961,6 +1037,11 @@ class _BodyCompAppState extends State<BodyCompApp> {
   void _setCosmetic(String key, String value) {
     setState(() => _cos = _cos.set(key, value));
     Cosmetics.persist(key, value);
+  }
+
+  void _setMeasurements(List<BodyMeasurement> m) {
+    setState(() => _measurements = m);
+    AppStorage.saveMeasurements(m);
   }
 
   void _setPrestige(Prestige p) {
@@ -1093,6 +1174,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               onSetCosmetic: _setCosmetic,
               prestige: _prestige,
               onSetPrestige: _setPrestige,
+              measurements: _measurements,
+              onSetMeasurements: _setMeasurements,
               onSetCal: _setCal,
               onSetLogs: _setLogs,
               onSetFoods: _setFoods,
@@ -1797,6 +1880,8 @@ class HomeShell extends StatefulWidget {
   final void Function(String, String) onSetCosmetic;
   final Prestige prestige;
   final void Function(Prestige) onSetPrestige;
+  final List<BodyMeasurement> measurements;
+  final void Function(List<BodyMeasurement>) onSetMeasurements;
   final void Function(UserCalibration) onSetCal;
   final void Function(List<DailyLog>) onSetLogs;
   final void Function(List<FoodEntry>) onSetFoods;
@@ -1830,6 +1915,8 @@ class HomeShell extends StatefulWidget {
       required this.onSetCosmetic,
       required this.prestige,
       required this.onSetPrestige,
+      required this.measurements,
+      required this.onSetMeasurements,
       required this.onSetCal,
       required this.onSetLogs,
       required this.onSetFoods,
@@ -1861,6 +1948,9 @@ class _HomeShellState extends State<HomeShell> {
           child: IndexedStack(index: _tab, children: [
         DashboardScreen(
             chartSkin: widget.cosmetics.chartSkin,
+            measurements: widget.measurements,
+            onSetMeasurements: widget.onSetMeasurements,
+            onSetCal: widget.onSetCal,
             cal: widget.cal,
             logs: widget.logs,
             dismissed: widget.dismissed,
@@ -2910,6 +3000,218 @@ class _GoalsScreenState extends State<GoalsScreen> {
   }
 }
 
+// ── Navy-method measurement sheet ───────────────────────────────────────
+
+/// Asks for a waist measurement (plus the one-time height/neck it needs) and
+/// returns the resulting body-fat reading. The Navy method is tape-and-maths,
+/// so it is the truest read available without a lab.
+class MeasureSheet extends StatefulWidget {
+  final UserCalibration cal;
+  final double weight;
+  final BodyMeasurement? previous;
+  final void Function(UserCalibration)? onSetCal;
+  final Color accent;
+  const MeasureSheet(
+      {super.key,
+      required this.cal,
+      required this.weight,
+      required this.previous,
+      required this.onSetCal,
+      required this.accent});
+
+  @override
+  State<MeasureSheet> createState() => _MeasureSheetState();
+}
+
+class _MeasureSheetState extends State<MeasureSheet> {
+  late final TextEditingController _waist = TextEditingController(
+      text: widget.previous?.waistIn.toStringAsFixed(1) ?? '');
+  late final TextEditingController _neck = TextEditingController(
+      text: (widget.cal.neckIn ?? widget.previous?.neckIn)
+              ?.toStringAsFixed(1) ??
+          '');
+  late final TextEditingController _height = TextEditingController(
+      text: widget.cal.heightIn?.toStringAsFixed(1) ?? '');
+  late final TextEditingController _hip = TextEditingController(
+      text: widget.previous?.hipIn?.toStringAsFixed(1) ?? '');
+  String? _error;
+
+  @override
+  void dispose() {
+    _waist.dispose();
+    _neck.dispose();
+    _height.dispose();
+    _hip.dispose();
+    super.dispose();
+  }
+
+  double? _d(TextEditingController c) => double.tryParse(c.text.trim());
+
+  void _save() {
+    final double? waist = _d(_waist);
+    final double? neck = _d(_neck);
+    final double? height = _d(_height);
+    final double? hip = _d(_hip);
+    if (waist == null || neck == null || height == null) {
+      setState(() => _error = 'Waist, neck and height are all needed.');
+      return;
+    }
+    final double? bf = navyBodyFat(
+        waistIn: waist,
+        neckIn: neck,
+        heightIn: height,
+        hipIn: hip,
+        female: widget.cal.female);
+    if (bf == null) {
+      setState(() => _error =
+          'Those numbers do not produce a valid reading — check the tape.');
+      return;
+    }
+    // Height and neck are stable, so remember them for next time.
+    widget.onSetCal?.call(widget.cal.copyWith(heightIn: height, neckIn: neck));
+    Navigator.pop(
+      context,
+      BodyMeasurement(
+        date: formatDate(DateTime.now()),
+        waistIn: waist,
+        neckIn: neck,
+        hipIn: hip,
+        weightAtMeasure: widget.weight,
+        bodyFat: bf,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double bottom = MediaQuery.of(context).viewInsets.bottom +
+        MediaQuery.of(context).viewPadding.bottom;
+    final double? preview = () {
+      final double? w = _d(_waist), n = _d(_neck), h = _d(_height);
+      if (w == null || n == null || h == null) return null;
+      return navyBodyFat(
+          waistIn: w,
+          neckIn: n,
+          heightIn: h,
+          hipIn: _d(_hip),
+          female: widget.cal.female);
+    }();
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottom),
+      child: Container(
+        decoration: const BoxDecoration(
+            color: kSurface2,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(22))),
+        padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
+        child: SingleChildScrollView(
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Center(
+                  child: Container(
+                      width: 38,
+                      height: 4,
+                      decoration: BoxDecoration(
+                          color: kBorderLight,
+                          borderRadius: BorderRadius.circular(2))),
+                ),
+                const SizedBox(height: 18),
+                const Text('Measure up',
+                    style: TextStyle(
+                        fontSize: 21,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFFEEEEEE))),
+                const SizedBox(height: 6),
+                Text('Relaxed tape, skin level, no sucking in. Waist at the '
+                    'navel, neck just below the Adam’s apple.',
+                    style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.45,
+                        color: Colors.grey[400])),
+                const SizedBox(height: 18),
+                _field('Waist (in)', _waist, autofocus: true),
+                _field('Neck (in)', _neck),
+                if (widget.cal.female) _field('Hips (in)', _hip),
+                _field('Height (in)', _height),
+                if (preview != null) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                        color: widget.accent.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(12)),
+                    child: Column(children: <Widget>[
+                      Text('${(preview * 100).toStringAsFixed(1)}%',
+                          style: TextStyle(
+                              fontSize: 30,
+                              fontWeight: FontWeight.w900,
+                              color: widget.accent)),
+                      Text(
+                          widget.previous == null
+                              ? 'body fat (Navy method)'
+                              : 'body fat — was '
+                                  '${(widget.previous!.bodyFat * 100).toStringAsFixed(1)}%',
+                          style: TextStyle(
+                              fontSize: 11.5, color: Colors.grey[400])),
+                    ]),
+                  ),
+                ],
+                if (_error != null) ...<Widget>[
+                  const SizedBox(height: 10),
+                  Text(_error!,
+                      style: const TextStyle(
+                          fontSize: 12, color: Color(0xFFCC8855))),
+                ],
+                const SizedBox(height: 18),
+                SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: _save,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12))),
+                    child: const Text('Save measurement',
+                        style: TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _field(String label, TextEditingController c,
+          {bool autofocus = false}) =>
+      Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: TextField(
+          controller: c,
+          autofocus: autofocus,
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          style: const TextStyle(color: Color(0xFFEEEEEE), fontSize: 16),
+          onChanged: (_) => setState(() => _error = null),
+          decoration: InputDecoration(
+            labelText: label,
+            labelStyle: TextStyle(color: Colors.grey[500], fontSize: 13),
+            filled: true,
+            fillColor: kSurface0,
+            border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: kBorder)),
+            enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(10),
+                borderSide: const BorderSide(color: kBorder)),
+          ),
+        ),
+      );
+}
+
 /// One choice in a cosmetic picker row.
 class _Opt {
   final String id;
@@ -3722,6 +4024,9 @@ class _ConfettiPainter extends CustomPainter {
 
 class DashboardScreen extends StatefulWidget {
   final String chartSkin;
+  final List<BodyMeasurement> measurements;
+  final void Function(List<BodyMeasurement>)? onSetMeasurements;
+  final void Function(UserCalibration)? onSetCal;
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<double> dismissed;
@@ -3737,6 +4042,9 @@ class DashboardScreen extends StatefulWidget {
   const DashboardScreen(
       {super.key,
       this.chartSkin = 'chart_classic',
+      this.measurements = const <BodyMeasurement>[],
+      this.onSetMeasurements,
+      this.onSetCal,
       required this.cal,
       required this.logs,
       required this.dismissed,
@@ -3904,6 +4212,267 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {});
   }
 
+  // ── goal grade ────────────────────────────────────────────────────────
+
+  /// The deadline the grade is measured against — frozen on the calibration
+  /// once set, so progress can genuinely be early or late.
+  DateTime? get _deadline => widget.cal.goalDeadline == null
+      ? null
+      : DateTime.tryParse(widget.cal.goalDeadline!);
+  DateTime? get _goalStart => widget.cal.goalStart == null
+      ? null
+      : DateTime.tryParse(widget.cal.goalStart!);
+
+  /// Compute and freeze a reachable deadline from where things stand today.
+  void _setDeadline() {
+    if (widget.logs.isEmpty || widget.onSetCal == null) {
+      return;
+    }
+    final DailyLog l = widget.logs.last;
+    final DateTime now = DateTime.now();
+    final DateTime d = goalDeadline(
+        from: now,
+        weight: l.weight,
+        lbm: l.lbm,
+        currentBf: l.bf,
+        targetBf: widget.cal.targetBf,
+        deficit: widget.cal.deficit);
+    widget.onSetCal!(widget.cal.copyWith(
+        goalStart: formatDate(now), goalDeadline: formatDate(d)));
+    HapticFeedback.mediumImpact();
+  }
+
+  Widget _gradeCard(Color accent) {
+    if (_deadline == null) {
+      return _setDeadlinePrompt(accent);
+    }
+    final GoalGrade g = gradeWithTrend(
+        cal: widget.cal,
+        logs: widget.logs,
+        startDate: _goalStart,
+        deadline: _deadline);
+    final Color gc = _gradeColor(g, accent);
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Text('ON TRACK?',
+              style: TextStyle(
+                  fontSize: 11,
+                  letterSpacing: 1.4,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.grey[500])),
+          const Spacer(),
+          Text('goal by ${_fmtShort(_deadline!)}',
+              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+        ]),
+        const SizedBox(height: 12),
+        if (!g.gradeable)
+          Text(g.summary,
+              style: TextStyle(
+                  fontSize: 13, height: 1.45, color: Colors.grey[500]))
+        else ...<Widget>[
+          Row(crossAxisAlignment: CrossAxisAlignment.center, children: <Widget>[
+            Text(g.letter,
+                style: TextStyle(
+                    fontSize: 44,
+                    height: 1,
+                    fontWeight: FontWeight.w900,
+                    color: gc)),
+            const SizedBox(width: 12),
+            Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text('${g.score}',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          color: gc)),
+                  Text('100 = on schedule',
+                      style:
+                          TextStyle(fontSize: 10, color: Colors.grey[600])),
+                ]),
+            const Spacer(),
+            if (g.deltaScore != null && g.deltaScore != 0)
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                    color: (g.improving
+                            ? const Color(0xFF3CD6A3)
+                            : const Color(0xFFCC8855))
+                        .withValues(alpha: 0.16),
+                    borderRadius: BorderRadius.circular(20)),
+                child: Text(
+                    '${g.improving ? '↑' : '↓'} ${g.deltaScore!.abs()}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: g.improving
+                            ? const Color(0xFF3CD6A3)
+                            : const Color(0xFFCC8855))),
+              ),
+          ]),
+          const SizedBox(height: 12),
+          Text(g.summary,
+              style: const TextStyle(
+                  fontSize: 12.5, height: 1.5, color: Color(0xFFBBBBBB))),
+        ],
+        if (_measureDue) ...<Widget>[
+          const SizedBox(height: 14),
+          _measurePrompt(accent),
+        ],
+      ]),
+    );
+  }
+
+  Color _gradeColor(GoalGrade g, Color accent) {
+    if (!g.gradeable) return accent;
+    if (g.score >= 98) return const Color(0xFF3CD6A3);
+    if (g.score >= 80) return accent;
+    if (g.score >= 62) return const Color(0xFFE0A458);
+    return const Color(0xFFCC6655);
+  }
+
+  Widget _setDeadlinePrompt(Color accent) => Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+            color: kSurface1,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: accent.withValues(alpha: 0.4))),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              const Text('Set your goal date',
+                  style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: Color(0xFFEEEEEE))),
+              const SizedBox(height: 6),
+              Text('The app picks a reachable date from your deficit — capped '
+                  'at a sustainable pace, with room for real life. Once set it '
+                  'is fixed, and everything gets graded against it.',
+                  style: TextStyle(
+                      fontSize: 12.5, height: 1.45, color: Colors.grey[400])),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                height: 44,
+                child: ElevatedButton(
+                  onPressed: widget.logs.isEmpty ? null : _setDeadline,
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: accent,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  child: Text(
+                      widget.logs.isEmpty
+                          ? 'Log a weigh-in first'
+                          : 'Set my goal date',
+                      style: const TextStyle(fontWeight: FontWeight.w800)),
+                ),
+              ),
+            ]),
+      );
+
+  // ── waist measurement (Navy method) ───────────────────────────────────
+
+  bool get _measureDue =>
+      widget.onSetMeasurements != null &&
+      shouldMeasure(logs: widget.logs, measurements: widget.measurements);
+
+  Widget _measurePrompt(Color accent) {
+    return InkWell(
+      onTap: _askMeasurement,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+            color: accent.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: accent.withValues(alpha: 0.45))),
+        child: Row(children: <Widget>[
+          const Text('📏', style: TextStyle(fontSize: 18)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Text(
+                      widget.measurements.isEmpty
+                          ? 'Measure your waist'
+                          : 'Time to re-measure',
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: Color(0xFFEEEEEE))),
+                  Text(
+                      widget.measurements.isEmpty
+                          ? 'The Navy method gives the truest body-fat read'
+                          : 'You have hit a new low — worth a fresh reading',
+                      style:
+                          TextStyle(fontSize: 11.5, color: Colors.grey[400])),
+                ]),
+          ),
+          Icon(Icons.chevron_right_rounded, size: 20, color: accent),
+        ]),
+      ),
+    );
+  }
+
+  Future<void> _askMeasurement() async {
+    if (widget.onSetMeasurements == null || widget.logs.isEmpty) {
+      return;
+    }
+    final BodyMeasurement? m = await showModalBottomSheet<BodyMeasurement>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => MeasureSheet(
+          cal: widget.cal,
+          weight: widget.logs.last.weight,
+          previous:
+              widget.measurements.isEmpty ? null : widget.measurements.last,
+          onSetCal: widget.onSetCal,
+          accent: kPhases[0].accent),
+    );
+    if (m == null) {
+      return;
+    }
+    widget.onSetMeasurements!(<BodyMeasurement>[...widget.measurements, m]);
+    // The measured body fat is the truest reading — write it onto today's log.
+    final String today = formatDate(DateTime.now());
+    final List<DailyLog> logs = List<DailyLog>.of(widget.logs);
+    final int i = logs.indexWhere((DailyLog l) => l.date == today);
+    final DailyLog base = i >= 0 ? logs[i] : logs.last;
+    final DailyLog updated = DailyLog(
+        date: today,
+        weight: base.weight,
+        bf: m.bodyFat,
+        calories: base.calories);
+    if (i >= 0) {
+      logs[i] = updated;
+    } else {
+      logs.add(updated);
+    }
+    widget.onSetLogs(logs);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text(
+              'Body fat updated to ${(m.bodyFat * 100).toStringAsFixed(1)}% '
+              '(Navy method).')));
+    }
+  }
+
+  static String _fmtShort(DateTime d) =>
+      '${monthName(d.month)} ${d.day}, ${d.year}';
+
+
   @override
   Widget build(BuildContext context) {
     final DailyLog? latest = widget.logs.isNotEmpty ? widget.logs.last : null;
@@ -3988,6 +4557,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       backgroundColor: const Color(0xFF1A1A1A),
                       valueColor: AlwaysStoppedAnimation<Color>(accent))),
               const SizedBox(height: 16),
+
+              // Are you going to hit the goal on time?
+              _gradeCard(accent),
+              const SizedBox(height: 14),
 
               // AI coach card
               _AdvisorCard(
@@ -5014,6 +5587,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ])),
           ],
           const SizedBox(height: 12),
+          _recalibrateCard(accent),
+          const SizedBox(height: 14),
           _advisorCard(accent),
           const SizedBox(height: 12),
           UpdateCard(accent: accent),
@@ -5106,6 +5681,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   fontWeight: FontWeight.w700,
                   color: vc ?? const Color(0xFFEEEEEE)))
         ]));
+  }
+
+  /// Recalibrate — a clean slate for the TDEE estimate, and a way to re-cut
+  /// the goal deadline if the plan genuinely changes.
+  Widget _recalibrateCard(Color accent) {
+    final String? reset = widget.cal.tdeeResetDate;
+    final String? deadline = widget.cal.goalDeadline;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Text('RESET',
+            style: TextStyle(
+                fontSize: 11,
+                letterSpacing: 1,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[600])),
+        const SizedBox(height: 8),
+        Text(
+            reset == null
+                ? 'Recalibrating TDEE gives the estimate a clean slate: '
+                    'everything logged before today is ignored, and it rebuilds '
+                    'from your fresh data.'
+                : 'TDEE has been recalibrating since $reset. Older data is '
+                    'ignored by the estimate.',
+            style: TextStyle(
+                fontSize: 12.5, height: 1.45, color: Colors.grey[400])),
+        const SizedBox(height: 12),
+        Row(children: <Widget>[
+          Expanded(
+            child: _btn(reset == null ? 'Recalibrate TDEE' : 'Recalibrate again',
+                () {
+              HapticFeedback.mediumImpact();
+              widget.onSetCal(widget.cal
+                  .copyWith(tdeeResetDate: formatDate(DateTime.now())));
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  backgroundColor: Color(0xFF2A2A2A),
+                  content: Text('TDEE reset — rebuilding from today.')));
+            }, color: accent, border: accent.withValues(alpha: 0.5)),
+          ),
+          if (reset != null) ...<Widget>[
+            const SizedBox(width: 10),
+            Expanded(
+              child: _btn('Undo', () {
+                widget.onSetCal(widget.cal.copyWith(tdeeResetDate: null));
+              }),
+            ),
+          ],
+        ]),
+        if (deadline != null) ...<Widget>[
+          const SizedBox(height: 16),
+          Text('Goal date is set to $deadline. Clearing it lets you cut a '
+              'fresh, reachable deadline from where you stand today.',
+              style: TextStyle(
+                  fontSize: 12.5, height: 1.45, color: Colors.grey[400])),
+          const SizedBox(height: 10),
+          _btn('Clear goal date', () {
+            widget.onSetCal(widget.cal
+                .copyWith(goalStart: null, goalDeadline: null));
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                backgroundColor: Color(0xFF2A2A2A),
+                content: Text('Goal date cleared — set a new one on the '
+                    'Dashboard.')));
+          }),
+        ],
+      ]),
+    );
   }
 
   Widget _advisorCard(Color accent) {
