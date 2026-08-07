@@ -3312,7 +3312,38 @@ class _GoalDetailSheet extends StatelessWidget {
                         fontWeight: FontWeight.w700,
                         color: accent)),
               ]),
-              const SizedBox(height: 22),
+              const SizedBox(height: 20),
+              // The definitive instruction: exactly what clears this goal, in
+              // countable terms, plus where you stand right now.
+              if (goal.requirement.isNotEmpty) ...<Widget>[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                      color: accent.withValues(alpha: 0.13),
+                      borderRadius: BorderRadius.circular(12),
+                      border:
+                          Border.all(color: accent.withValues(alpha: 0.45))),
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text('WHAT IT TAKES',
+                            style: TextStyle(
+                                fontSize: 10,
+                                letterSpacing: 1.4,
+                                fontWeight: FontWeight.w800,
+                                color: accent)),
+                        const SizedBox(height: 6),
+                        Text(goal.requirement,
+                            style: const TextStyle(
+                                fontSize: 14,
+                                height: 1.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFFEEEEEE))),
+                      ]),
+                ),
+                const SizedBox(height: 20),
+              ],
               _block('WHAT THIS IS', gi.what, accent),
               _block('WHY IT MATTERS', gi.why, accent),
               _block('HOW TO GET THERE', gi.how, accent),
@@ -11250,6 +11281,10 @@ class _SleepScreenState extends State<SleepScreen> {
       if (existing == null) {
         byDate[e.date] = e;
         added++;
+      } else if (e.asleepMinutes < existing.asleepMinutes) {
+        // Never let a partial re-import shrink a night we already have in
+        // full — a night's true length can only be under-reported.
+        continue;
       } else if (jsonEncode(existing.toJson()) != jsonEncode(e.toJson())) {
         byDate[e.date] = e;
         updated++;
@@ -11296,14 +11331,39 @@ class _SleepScreenState extends State<SleepScreen> {
             .where((HealthDataPoint p) =>
                 p.type == HealthDataType.SLEEP_SESSION)
             .toList();
+        // Health Connect often splits one night into several sessions (a trip
+        // to the bathroom ends one and starts another). Group them by the day
+        // they END on and treat the whole group as ONE night — otherwise the
+        // date-keyed merge below keeps a single fragment and a full night
+        // reads as 40 minutes.
+        final Map<String, List<HealthDataPoint>> byNight =
+            <String, List<HealthDataPoint>>{};
         for (final HealthDataPoint s in sessions) {
+          (byNight[formatDate(s.dateTo)] ??= <HealthDataPoint>[]).add(s);
+        }
+        for (final MapEntry<String, List<HealthDataPoint>> night
+            in byNight.entries) {
+          final List<HealthDataPoint> group = night.value
+            ..sort((HealthDataPoint a, HealthDataPoint b) =>
+                a.dateFrom.compareTo(b.dateFrom));
+          final DateTime from = group.first.dateFrom;
+          final DateTime to = group
+              .map((HealthDataPoint p) => p.dateTo)
+              .reduce((DateTime a, DateTime b) => a.isAfter(b) ? a : b);
+
+          // Stage minutes summed across every session in the night.
           int stageMinutes(HealthDataType t) {
             int m = 0;
             for (final HealthDataPoint p in all) {
-              if (p.type == t &&
-                  !p.dateFrom.isBefore(s.dateFrom) &&
-                  !p.dateTo.isAfter(s.dateTo)) {
-                m += p.dateTo.difference(p.dateFrom).inMinutes;
+              if (p.type != t) {
+                continue;
+              }
+              for (final HealthDataPoint s in group) {
+                if (!p.dateFrom.isBefore(s.dateFrom) &&
+                    !p.dateTo.isAfter(s.dateTo)) {
+                  m += p.dateTo.difference(p.dateFrom).inMinutes;
+                  break;
+                }
               }
             }
             return m;
@@ -11313,29 +11373,39 @@ class _SleepScreenState extends State<SleepScreen> {
           final int rem = stageMinutes(HealthDataType.SLEEP_REM);
           final int light = stageMinutes(HealthDataType.SLEEP_LIGHT);
           final int awake = stageMinutes(HealthDataType.SLEEP_AWAKE);
-          final int sessionMin =
-              s.dateTo.difference(s.dateFrom).inMinutes.abs();
+          // Total time actually asleep across the night's sessions.
+          final int sessionMin = group.fold<int>(
+              0,
+              (int s, HealthDataPoint p) =>
+                  s + p.dateTo.difference(p.dateFrom).inMinutes.abs());
           final int asleep =
               (deep + rem + light) > 0 ? (deep + rem + light) : sessionMin;
-          // Average heart rate during the session window.
+
+          // Average heart rate across the night's sessions.
           double hrSum = 0;
           int hrN = 0;
           for (final HealthDataPoint p in all) {
-            if (p.type == HealthDataType.HEART_RATE &&
-                !p.dateFrom.isBefore(s.dateFrom) &&
-                !p.dateTo.isAfter(s.dateTo)) {
-              final HealthValue v = p.value;
-              if (v is NumericHealthValue) {
-                hrSum += v.numericValue.toDouble();
-                hrN++;
+            if (p.type != HealthDataType.HEART_RATE) {
+              continue;
+            }
+            for (final HealthDataPoint s in group) {
+              if (!p.dateFrom.isBefore(s.dateFrom) &&
+                  !p.dateTo.isAfter(s.dateTo)) {
+                final HealthValue v = p.value;
+                if (v is NumericHealthValue) {
+                  hrSum += v.numericValue.toDouble();
+                  hrN++;
+                }
+                break;
               }
             }
           }
-          // Overnight recovery vitals — averaged over the night (± a couple
-          // hours, since watches often finalise these near wake time).
+
+          // Overnight recovery vitals — averaged over the whole night (± a
+          // couple of hours, since watches finalise these near wake time).
           double? avgVital(HealthDataType t) {
-            final DateTime a = s.dateFrom.subtract(const Duration(hours: 1));
-            final DateTime b = s.dateTo.add(const Duration(hours: 3));
+            final DateTime a = from.subtract(const Duration(hours: 1));
+            final DateTime b = to.add(const Duration(hours: 3));
             double sum = 0;
             int n = 0;
             for (final HealthDataPoint p in all) {
@@ -11355,8 +11425,8 @@ class _SleepScreenState extends State<SleepScreen> {
           String hhmm(DateTime d) =>
               '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
           found.add(SleepEntry(
-            id: 'sl_${s.dateFrom.millisecondsSinceEpoch}',
-            date: formatDate(s.dateTo),
+            id: 'sl_${from.millisecondsSinceEpoch}',
+            date: night.key,
             asleepMinutes: asleep,
             deepMin: deep > 0 ? deep : null,
             remMin: rem > 0 ? rem : null,
@@ -11366,8 +11436,8 @@ class _SleepScreenState extends State<SleepScreen> {
             restingHr: avgVital(HealthDataType.RESTING_HEART_RATE),
             hrv: avgVital(HealthDataType.HEART_RATE_VARIABILITY_RMSSD),
             respiratoryRate: avgVital(HealthDataType.RESPIRATORY_RATE),
-            bedTime: hhmm(s.dateFrom),
-            wakeTime: hhmm(s.dateTo),
+            bedTime: hhmm(from),
+            wakeTime: hhmm(to),
           ));
         }
         if (found.isEmpty) {

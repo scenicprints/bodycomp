@@ -52,6 +52,9 @@ class Goal {
   final bool done;
   final int timesDone; // repeatables show a ×N tally
   final bool repeatable;
+  /// Exactly what it takes, in plain countable terms — "Sleep 7+ hours on 3
+  /// nights in a row. You are at 1 of 3." Empty falls back to lane guidance.
+  final String requirement;
 
   const Goal({
     required this.id,
@@ -64,6 +67,7 @@ class Goal {
     required this.done,
     this.timesDone = 0,
     this.repeatable = false,
+    this.requirement = '',
   });
 }
 
@@ -604,6 +608,9 @@ class GoalEngine {
         xp: kXpMed,
         progress: ((start - cur) / max(start - tgt, 0.001)).clamp(0.0, 1.0),
         done: done,
+        requirement: 'Get the scale under ${tgt.round()} lb. You are at '
+            '${cur.toStringAsFixed(1)} lb, so that is '
+            '${(cur - tgt).toStringAsFixed(1)} lb to lose.',
       ));
       // Halfway lands inside the ladder where it belongs.
       final double half = start - (start - goalW) / 2;
@@ -635,6 +642,9 @@ class GoalEngine {
       xp: kXpHuge,
       progress: ((start - cur) / max(start - goalW, 0.001)).clamp(0.0, 1.0),
       done: lowest <= goalW,
+      requirement: 'Reach ${goalW.toStringAsFixed(1)} lb — that is your target '
+          'body fat at your current lean mass. '
+          '${(cur - goalW).toStringAsFixed(1)} lb to go.',
     ));
 
     // Repeatable: every time a weigh-in sets a new all-time low.
@@ -659,6 +669,8 @@ class GoalEngine {
       done: false,
       timesDone: lows,
       repeatable: true,
+      requirement: 'Log a weigh-in below ${lowest.toStringAsFixed(1)} lb, your '
+          'lowest so far. Fires again every time you set a new one.',
     ));
     return out;
   }
@@ -744,6 +756,9 @@ class GoalEngine {
         progress:
             ((startBf - curBf) / max(startBf - tgt, 0.001)).clamp(0.0, 1.0),
         done: done,
+        requirement: 'Get body fat under ${tgt.round()}%. You are at '
+            '${curBf.toStringAsFixed(1)}%, so that is '
+            '${(curBf - tgt).toStringAsFixed(1)} points to drop.',
       ));
     }
 
@@ -824,7 +839,14 @@ class GoalEngine {
             emoji: emoji,
             xp: xp,
             progress: prog.clamp(0.0, 1.0),
-            done: done);
+            done: done,
+            // The desc IS the definitive instruction for this lane, so state
+            // it plainly plus where the user currently stands.
+            requirement: '$desc. Right now: $count run'
+                '${count == 1 ? '' : 's'} logged, '
+                '${totalKm.toStringAsFixed(1)} km total, longest '
+                '${longestKm.toStringAsFixed(1)} km, trainer level '
+                '$trainerLevel, $thisWeek this week.');
 
     final List<Goal> out = <Goal>[
       g('r_lace_up', 'Lace Up', 'Log your first run', '👟', kXpSmall,
@@ -905,8 +927,14 @@ class GoalEngine {
       if (t.fiber > 0 && (dt.nutrients['fiber'] ?? 0) >= t.fiber) fiberDays++;
       if (tdee > 0 && dt.calories < tdee) deficitDays++;
     }
+    final String pg =
+        t.protein > 0 ? '${t.protein.round()} g' : 'your protein target';
+    final String fg =
+        t.fiber > 0 ? '${t.fiber.round()} g' : 'your fiber target';
+    final String cg =
+        tdee > 0 ? 'under ${tdee.round()} cal' : 'under your maintenance';
     Goal g(String id, String title, String desc, String emoji, int have,
-            int need, int xp) =>
+            int need, int xp, String req) =>
         Goal(
             id: id,
             lane: Lane.nutrition,
@@ -917,15 +945,23 @@ class GoalEngine {
             progress: (have / need).clamp(0.0, 1.0),
             done: have >= need,
             repeatable: true,
-            timesDone: 0);
+            timesDone: 0,
+            requirement:
+                '$req You have $have of $need — the window is the last 7 days '
+                'and it rolls forward daily.');
     return <Goal>[
-      g('n_protein_3', 'Protein x3', '', '🥩', proteinDays, 3, kXpSmall),
-      g('n_deficit_4', 'Four in Deficit', '', '🔥', deficitDays, 4, kXpSmall),
-      g('n_fiber_3', 'Fiber x3', '', '🥦', fiberDays, 3, kXpSmall),
-      g('n_protein_5', 'Protein x5', '', '💪', proteinDays, 5, kXpMed),
-      g('n_deficit_6', 'Six in Deficit', '', '🎯', deficitDays, 6, kXpMed),
+      g('n_protein_3', 'Protein x3', '', '🥩', proteinDays, 3, kXpSmall,
+          'Eat at least $pg of protein on 3 days.'),
+      g('n_deficit_4', 'Four in Deficit', '', '🔥', deficitDays, 4, kXpSmall,
+          'Finish 4 days $cg.'),
+      g('n_fiber_3', 'Fiber x3', '', '🥦', fiberDays, 3, kXpSmall,
+          'Reach $fg of fiber on 3 days.'),
+      g('n_protein_5', 'Protein x5', '', '💪', proteinDays, 5, kXpMed,
+          'Eat at least $pg of protein on 5 days.'),
+      g('n_deficit_6', 'Six in Deficit', '', '🎯', deficitDays, 6, kXpMed,
+          'Finish 6 days $cg.'),
       g('n_protein_7', 'Perfect Protein Week', '', '🏆', proteinDays, 7,
-          kXpBig),
+          kXpBig, 'Hit $pg of protein every single day for 7 straight days.'),
     ];
   }
 
@@ -947,8 +983,12 @@ class GoalEngine {
       if (weightDates.contains(d)) perfect++;
     }
 
+    final String pTarget = t.protein > 0
+        ? '${t.protein.round()} g of protein'
+        : 'your protein target';
     Goal g(String id, String title, String desc, String emoji, int have,
-            int need, int xp) =>
+            int need, int xp,
+            [String req = '']) =>
         Goal(
             id: id,
             lane: Lane.consistency,
@@ -957,7 +997,11 @@ class GoalEngine {
             emoji: emoji,
             xp: xp,
             progress: (have / need).clamp(0.0, 1.0),
-            done: have >= need);
+            done: have >= need,
+            requirement: (req.isEmpty
+                    ? 'A day counts when you log food AND hit $pTarget.'
+                    : req) +
+                ' You are at $have of $need.');
     return <Goal>[
       g('c_first', 'First Step', 'Log your first day', '👣', logged, 1,
           kXpSmall),
@@ -1005,7 +1049,7 @@ class GoalEngine {
             baselineHrv: SleepMath.baselineHrv(sleep, now));
 
     Goal g(String id, String title, String desc, String emoji, int have,
-            int need, int xp) =>
+            int need, int xp, String req) =>
         Goal(
             id: id,
             lane: Lane.sleep,
@@ -1014,18 +1058,25 @@ class GoalEngine {
             emoji: emoji,
             xp: xp,
             progress: (have / need).clamp(0.0, 1.0),
-            done: have >= need);
+            done: have >= need,
+            requirement: '$req You are at $have of $need.');
     return <Goal>[
-      g('s_first', 'Well Rested', 'A 7-hour night', '😴', good, 1, kXpSmall),
+      g('s_first', 'Well Rested', 'A 7-hour night', '😴', good, 1, kXpSmall,
+          'Sleep at least 7 hours of actual sleep on any one night.'),
       g('s_three', 'Recharged', 'Three 7h nights in a row', '🔋', bestRun, 3,
-          kXpMed),
+          kXpMed,
+          'Sleep 7+ hours on 3 nights BACK TO BACK. Miss a night and the run '
+              'restarts.'),
       g('s_ready', 'Recovery Mode', 'A high-readiness morning', '🌤️',
-          (r?.score ?? 0) >= 80 ? 1 : 0, 1, kXpMed),
-      g('s_seven', 'Rested Week', 'Seven 7h nights', '🛌', good, 7, kXpMed),
+          (r?.score ?? 0) >= 80 ? 1 : 0, 1, kXpMed,
+          'Wake with a readiness score of 80+ — that takes a full night plus a '
+              'resting heart rate near your normal.'),
+      g('s_seven', 'Rested Week', 'Seven 7h nights', '🛌', good, 7, kXpMed,
+          'Bank 7 nights of 7+ hours. They do NOT have to be consecutive.'),
       g('s_five_row', 'Sleep Streak', 'Five 7h nights in a row', '🌙', bestRun,
-          5, kXpBig),
+          5, kXpBig, 'Sleep 7+ hours on 5 consecutive nights.'),
       g('s_thirty', 'Sleep Champion', 'Thirty 7h nights', '👑', good, 30,
-          kXpBig),
+          kXpBig, 'Bank 30 nights of 7+ hours in total, in any order.'),
     ];
   }
 
