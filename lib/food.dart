@@ -873,11 +873,17 @@ class Meal {
   final List<MealIngredient> ingredients;
   final int createdAtMs; // for the 24h "leftovers" window
 
+  /// Saved to the permanent library. Leftovers expire after 24h and get
+  /// pruned; a saved meal never does, so a batch cooked for the whole week
+  /// stays available to log a different portion from every day.
+  final bool saved;
+
   Meal(
       {required this.id,
       required this.name,
       required this.ingredients,
-      this.createdAtMs = 0});
+      this.createdAtMs = 0,
+      this.saved = false});
 
   double get totalGrams =>
       ingredients.fold<double>(0, (double s, MealIngredient i) => s + i.rawGrams);
@@ -907,17 +913,22 @@ class Meal {
       createdAtMs > 0 && (nowMs - createdAtMs) < 24 * 60 * 60 * 1000;
 
   Meal copyWith(
-          {String? name, List<MealIngredient>? ingredients, int? createdAtMs}) =>
+          {String? name,
+          List<MealIngredient>? ingredients,
+          int? createdAtMs,
+          bool? saved}) =>
       Meal(
           id: id,
           name: name ?? this.name,
           ingredients: ingredients ?? this.ingredients,
-          createdAtMs: createdAtMs ?? this.createdAtMs);
+          createdAtMs: createdAtMs ?? this.createdAtMs,
+          saved: saved ?? this.saved);
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'id': id,
         'name': name,
         'createdAtMs': createdAtMs,
+        if (saved) 'saved': true,
         'ingredients':
             ingredients.map((MealIngredient i) => i.toJson()).toList(),
       };
@@ -925,6 +936,7 @@ class Meal {
         id: j['id'] as String,
         name: j['name'] as String,
         createdAtMs: (j['createdAtMs'] as num?)?.toInt() ?? 0,
+        saved: j['saved'] == true,
         ingredients: ((j['ingredients'] as List<dynamic>?) ?? <dynamic>[])
             .map((dynamic e) =>
                 MealIngredient.fromJson(e as Map<String, dynamic>))

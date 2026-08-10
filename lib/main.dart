@@ -8132,7 +8132,7 @@ class _QuantitySheetState extends State<_QuantitySheet> {
 
 String _newMealId() => DateTime.now().microsecondsSinceEpoch.toString();
 
-// ─── Cook tab: cook a meal + 24h leftovers ───
+// ─── Cook tab: cook a meal, 24h leftovers, plus a saved library ───
 class _CookScreen extends StatefulWidget {
   final Color accent;
   final List<Meal> meals;
@@ -8162,10 +8162,47 @@ class _CookScreenState extends State<_CookScreen> {
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
 
+  /// Fresh leftovers — still inside the 24h window and not saved.
   List<Meal> get _active {
-    final List<Meal> a = _meals.where((Meal m) => m.isActive(_now)).toList();
+    final List<Meal> a = _meals
+        .where((Meal m) => m.isActive(_now) && !m.saved)
+        .toList();
     a.sort((Meal x, Meal y) => y.createdAtMs.compareTo(x.createdAtMs));
     return a;
+  }
+
+  /// The permanent library. A batch cooked for the week lives here so a
+  /// different portion can be logged from it every day.
+  List<Meal> get _saved {
+    final List<Meal> a = _meals.where((Meal m) => m.saved).toList();
+    a.sort((Meal x, Meal y) => y.createdAtMs.compareTo(x.createdAtMs));
+    return a;
+  }
+
+  void _toggleSaved(Meal meal) {
+    HapticFeedback.selectionClick();
+    setState(() => _meals = _meals
+        .map((Meal x) =>
+            x.id == meal.id ? x.copyWith(saved: !x.saved) : x)
+        .toList());
+    _persist();
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        backgroundColor: const Color(0xFF2A2A2A),
+        content: Text(meal.saved
+            ? 'Removed ${meal.name} from your saved meals.'
+            : '${meal.name} saved — log a portion any day.')));
+  }
+
+  /// Cook the same thing again as a fresh batch.
+  void _cookAgain(Meal meal) {
+    final Meal fresh = Meal(
+        id: _newMealId(),
+        name: meal.name,
+        ingredients: meal.ingredients,
+        createdAtMs: _now);
+    setState(() => _meals = <Meal>[..._meals, fresh]);
+    _persist();
+    _portion(fresh);
   }
 
   void _persist() => widget.onSetMeals(_meals);
@@ -8183,9 +8220,9 @@ class _CookScreenState extends State<_CookScreen> {
     if (m == null || m.ingredients.isEmpty || !mounted) {
       return;
     }
-    // Keep only still-active leftovers, then add the fresh dish.
+    // Drop expired leftovers, but NEVER a saved meal, then add the fresh dish.
     setState(() => _meals = <Meal>[
-          ..._meals.where((Meal x) => x.isActive(_now)),
+          ..._meals.where((Meal x) => x.isActive(_now) || x.saved),
           m,
         ]);
     _persist();
@@ -8237,9 +8274,89 @@ class _CookScreenState extends State<_CookScreen> {
     );
   }
 
+  Widget _sectionHead(String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Text(text,
+            style: TextStyle(
+                fontSize: 11,
+                color: Colors.grey[600],
+                letterSpacing: 1,
+                fontWeight: FontWeight.w600)),
+      );
+
+  Widget _mealCard(Meal m, {required bool saved}) {
+    final int hLeft =
+        (24 - (_now - m.createdAtMs) / (60 * 60 * 1000)).ceil();
+    final String sub = saved
+        ? '${m.calories.round()} cal · ~${m.cookedTotalGrams.round()} g cooked · saved'
+        : '${m.calories.round()} cal · ~${m.cookedTotalGrams.round()} g cooked · ${hLeft}h left';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: kSurface0,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => _portion(m),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                    color: saved
+                        ? widget.accent.withValues(alpha: 0.4)
+                        : kBorder)),
+            child: Row(children: <Widget>[
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(m.name,
+                          style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFDDDDDD))),
+                      const SizedBox(height: 3),
+                      Text(sub,
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey[600])),
+                    ]),
+              ),
+              IconButton(
+                  tooltip: saved ? 'Remove from saved' : 'Save to library',
+                  onPressed: () => _toggleSaved(m),
+                  icon: Icon(
+                      saved
+                          ? Icons.bookmark_rounded
+                          : Icons.bookmark_border_rounded,
+                      size: 19,
+                      color: saved ? widget.accent : const Color(0xFF888888))),
+              if (saved)
+                IconButton(
+                    tooltip: 'Cook again',
+                    onPressed: () => _cookAgain(m),
+                    icon: const Icon(Icons.refresh_rounded,
+                        size: 18, color: Color(0xFF888888)))
+              else
+                IconButton(
+                    onPressed: () => _editMeal(m),
+                    icon: const Icon(Icons.edit_rounded,
+                        size: 18, color: Color(0xFF888888))),
+              IconButton(
+                  onPressed: () => _deleteMeal(m),
+                  icon: const Icon(Icons.delete_outline_rounded,
+                      size: 18, color: Color(0xFFCC5555))),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Meal> active = _active;
+    final List<Meal> saved = _saved;
     return Scaffold(
       backgroundColor: kBgDeep,
       appBar: AppBar(
@@ -8253,77 +8370,32 @@ class _CookScreenState extends State<_CookScreen> {
           icon: const Icon(Icons.outdoor_grill_rounded),
           label: const Text('COOK A MEAL',
               style: TextStyle(fontWeight: FontWeight.w800))),
-      body: active.isEmpty
+      body: (active.isEmpty && saved.isEmpty)
           ? Center(
               child: Padding(
                   padding: const EdgeInsets.all(32),
                   child: Text(
-                      'No meals cooking.\n\nTap COOK A MEAL, add your raw ingredients, and it tells you how many grams of the cooked food to eat for your calorie target.\n\nMeals stay here for 24 hours so you can grab another portion.',
+                      'No meals cooking.\n\nTap COOK A MEAL, add your raw '
+                      'ingredients, and it tells you how many grams of the '
+                      'cooked food to eat for your calorie target.\n\nMeals '
+                      'stay here for 24 hours — tap the bookmark to save one '
+                      'permanently, so a batch cooked for the week can be '
+                      'logged a portion at a time.',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                           fontSize: 14, color: Colors.grey[600], height: 1.6))))
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
               children: <Widget>[
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text('LEFTOVERS (next 24h)',
-                      style: TextStyle(
-                          fontSize: 11,
-                          color: Colors.grey[600],
-                          letterSpacing: 1,
-                          fontWeight: FontWeight.w600)),
-                ),
-                ...active.map((Meal m) {
-                  final int hLeft = (24 -
-                          (_now - m.createdAtMs) / (60 * 60 * 1000))
-                      .ceil();
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Material(
-                      color: kSurface0,
-                      borderRadius: BorderRadius.circular(12),
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(12),
-                        onTap: () => _portion(m),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 12),
-                          decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: kBorder)),
-                          child: Row(children: <Widget>[
-                            Expanded(
-                              child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: <Widget>[
-                                    Text(m.name,
-                                        style: const TextStyle(
-                                            fontSize: 15,
-                                            fontWeight: FontWeight.w600,
-                                            color: Color(0xFFDDDDDD))),
-                                    const SizedBox(height: 3),
-                                    Text(
-                                        '${m.calories.round()} cal · ~${m.cookedTotalGrams.round()} g cooked · ${hLeft}h left',
-                                        style: TextStyle(
-                                            fontSize: 11,
-                                            color: Colors.grey[600])),
-                                  ]),
-                            ),
-                            IconButton(
-                                onPressed: () => _editMeal(m),
-                                icon: const Icon(Icons.edit_rounded,
-                                    size: 18, color: Color(0xFF888888))),
-                            IconButton(
-                                onPressed: () => _deleteMeal(m),
-                                icon: const Icon(Icons.delete_outline_rounded,
-                                    size: 18, color: Color(0xFFCC5555))),
-                          ]),
-                        ),
-                      ),
-                    ),
-                  );
-                }),
+                if (active.isNotEmpty) ...<Widget>[
+                  _sectionHead('LEFTOVERS (next 24h)'),
+                  ...active.map((Meal m) => _mealCard(m, saved: false)),
+                ],
+                if (saved.isNotEmpty) ...<Widget>[
+                  if (active.isNotEmpty) const SizedBox(height: 10),
+                  _sectionHead('SAVED MEALS'),
+                  ...saved.map((Meal m) => _mealCard(m, saved: true)),
+                ],
               ]),
     );
   }
