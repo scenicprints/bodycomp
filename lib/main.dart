@@ -3008,6 +3008,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
 class MeasureSheet extends StatefulWidget {
   final UserCalibration cal;
   final double weight;
+  /// The lowest weight on record right now — the anchor the next prompt waits
+  /// to see beaten by 4 lb.
+  final double lowest;
   final BodyMeasurement? previous;
   final void Function(UserCalibration)? onSetCal;
   final Color accent;
@@ -3015,6 +3018,7 @@ class MeasureSheet extends StatefulWidget {
       {super.key,
       required this.cal,
       required this.weight,
+      required this.lowest,
       required this.previous,
       required this.onSetCal,
       required this.accent});
@@ -3077,6 +3081,7 @@ class _MeasureSheetState extends State<MeasureSheet> {
         neckIn: neck,
         hipIn: hip,
         weightAtMeasure: widget.weight,
+        lowestAtMeasure: widget.lowest,
         bodyFat: bf,
       ),
     );
@@ -4466,6 +4471,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (_) => MeasureSheet(
           cal: widget.cal,
           weight: widget.logs.last.weight,
+          lowest: widget.logs
+              .map((DailyLog l) => l.weight)
+              .reduce((double a, double b) => a < b ? a : b),
           previous:
               widget.measurements.isEmpty ? null : widget.measurements.last,
           onSetCal: widget.onSetCal,

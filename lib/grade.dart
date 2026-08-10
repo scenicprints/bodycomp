@@ -38,6 +38,12 @@ class BodyMeasurement {
   final double weightAtMeasure; // the weight this was taken at
   final double bodyFat; // 0..1
 
+  /// The LOWEST weight on record at the moment this was taken. The next prompt
+  /// waits for a new all-time low below this — which is what makes "gain 5,
+  /// lose 4" a non-event, and stops the prompt re-firing the instant you
+  /// measure while sitting above your historic low.
+  final double? lowestAtMeasure;
+
   const BodyMeasurement({
     required this.date,
     required this.waistIn,
@@ -45,7 +51,12 @@ class BodyMeasurement {
     this.hipIn,
     required this.weightAtMeasure,
     required this.bodyFat,
+    this.lowestAtMeasure,
   });
+
+  /// The low this measurement is anchored to. Older saved measurements have no
+  /// [lowestAtMeasure], so they fall back to the weight they were taken at.
+  double get anchor => lowestAtMeasure ?? weightAtMeasure;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'date': date,
@@ -54,6 +65,7 @@ class BodyMeasurement {
         if (hipIn != null) 'hipIn': hipIn,
         'weightAtMeasure': weightAtMeasure,
         'bodyFat': bodyFat,
+        if (lowestAtMeasure != null) 'lowestAtMeasure': lowestAtMeasure,
       };
 
   factory BodyMeasurement.fromJson(Map<String, dynamic> j) => BodyMeasurement(
@@ -63,6 +75,7 @@ class BodyMeasurement {
         hipIn: (j['hipIn'] as num?)?.toDouble(),
         weightAtMeasure: (j['weightAtMeasure'] as num?)?.toDouble() ?? 0,
         bodyFat: (j['bodyFat'] as num).toDouble(),
+        lowestAtMeasure: (j['lowestAtMeasure'] as num?)?.toDouble(),
       );
 }
 
@@ -121,9 +134,10 @@ bool shouldMeasure({
   if (measurements.isEmpty) {
     return true; // never measured — ask once to establish the baseline
   }
-  final BodyMeasurement last = measurements.last;
-  final double since = last.weightAtMeasure - lowest;
-  return since >= everyLb;
+  // New progress = how far the all-time low has fallen since the last
+  // measurement was anchored. Zero right after measuring, and unmoved by
+  // regaining and re-losing the same pounds.
+  return measurements.last.anchor - lowest >= everyLb;
 }
 
 /// How many pounds until the next measurement prompt (0 when it's due).
@@ -138,8 +152,7 @@ double lbUntilMeasure({
   final double lowest = logs
       .map((DailyLog l) => l.weight)
       .reduce((double a, double b) => min(a, b));
-  final double since = measurements.last.weightAtMeasure - lowest;
-  return max(0, everyLb - since);
+  return max(0, everyLb - (measurements.last.anchor - lowest));
 }
 
 // ── the hard-set deadline ───────────────────────────────────────────────
@@ -270,8 +283,18 @@ GoalGrade computeGrade({
   final double curBf = avg(recent, (DailyLog l) => l.bf);
   final double curW = avg(recent, (DailyLog l) => l.weight);
 
-  final double startBf = cal.startBf;
-  final double startW = cal.startWeight;
+  // Baseline from where things stood WHEN THE GOAL DATE WAS SET, not from the
+  // original calibration. Elapsed time is measured from that same moment, so
+  // both halves of the ratio have to share it — otherwise progress made long
+  // before the deadline existed inflates the score and can hide recent gain.
+  final String startKey = formatDate(startDate);
+  final List<DailyLog> atStart =
+      sorted.where((DailyLog l) => l.date.compareTo(startKey) <= 0).toList();
+  final List<DailyLog> baseline = atStart.isEmpty
+      ? sorted.take(min(7, sorted.length)).toList()
+      : atStart.sublist(max(0, atStart.length - 7));
+  final double startBf = avg(baseline, (DailyLog l) => l.bf);
+  final double startW = avg(baseline, (DailyLog l) => l.weight);
   final double goalBf = cal.targetBf;
   final double goalW = MathEngine.dynamicTargetWeight(
       avg(recent, (DailyLog l) => l.lbm), goalBf);
@@ -287,9 +310,22 @@ GoalGrade computeGrade({
   final double fW = frac(startW, curW, goalW);
   final double actual = fBf * bfWeight + fW * (1 - bfWeight);
 
-  // How far along you should be by now.
-  final int totalDays = deadline.difference(startDate).inDays;
-  final int elapsed = now.difference(startDate).inDays;
+  // Compare like with like. A smoothed reading describes the MIDDLE of its
+  // window, not today, so the schedule has to be sampled at that same moment —
+  // otherwise a perfectly on-pace journey scores a few points short forever.
+  double meanDay(List<DailyLog> xs) =>
+      xs
+          .map((DailyLog l) =>
+              DateTime.parse(l.date).millisecondsSinceEpoch.toDouble())
+          .reduce((double a, double b) => a + b) /
+      xs.length;
+  final DateTime baseAt =
+      DateTime.fromMillisecondsSinceEpoch(meanDay(baseline).round());
+  final DateTime nowAt =
+      DateTime.fromMillisecondsSinceEpoch(meanDay(recent).round());
+
+  final int totalDays = deadline.difference(baseAt).inDays;
+  final int elapsed = nowAt.difference(baseAt).inDays;
   if (totalDays <= 0) {
     return const GoalGrade(
       letter: '',
@@ -303,7 +339,7 @@ GoalGrade computeGrade({
   final double expected = (elapsed / totalDays).clamp(0.0, 1.0);
 
   // Too early to judge fairly — a few days in, any number is noise.
-  if (elapsed < 7) {
+  if (now.difference(baseAt).inDays < 7) {
     return GoalGrade(
       letter: '',
       score: 0,
@@ -323,7 +359,7 @@ GoalGrade computeGrade({
   int daysEarly = 0;
   if (actual > 0.01) {
     final int projDays = (elapsed / actual).round();
-    projected = startDate.add(Duration(days: projDays));
+    projected = baseAt.add(Duration(days: projDays));
     daysEarly = deadline.difference(projected).inDays;
   }
 
