@@ -82,6 +82,18 @@
         <!-- Required by ota_update: lets the system installer read the
              downloaded APK from the app's private storage. Without this the
              app crashes the moment a download finishes. -->
+        <!-- CAMPAIGN home-screen widget: today's fight on the launcher. -->
+        <receiver
+            android:name=".CampaignWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/campaign_widget_info" />
+        </receiver>
+
         <provider
             android:name="sk.fourq.otaupdate.OtaUpdateFileProvider"
             android:authorities="${applicationId}.ota_update_provider"

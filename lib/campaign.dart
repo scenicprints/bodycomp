@@ -551,8 +551,7 @@ class CampaignEngine {
       enemyMaxHp = tdeeUpTo(date) * enemy.sizeMult;
       enemyHp = enemyMaxHp;
       spawnDate = date;
-      logEvent(date, 'spawn',
-          '${enemy.name} blocks the road. ${enemy.flavor}');
+      logEvent(date, 'spawn', '${enemy.name} blocks the road.');
     }
 
     void onKill(String date) {
@@ -1129,19 +1128,121 @@ const List<List<String>> _kChadLines = <List<String>>[
   ],
 ];
 
+/// One anchor-relative week of the race, judged: did you drop the pound?
+class RivalRound {
+  final int index; // week number since the anchor, 1-based
+  final String start; // first day of the block
+  final double? delta; // your trend change over the week (null = no data)
+  const RivalRound(this.index, this.start, this.delta);
+
+  /// 'won' | 'lost' | 'none'. Chad always drops exactly 1.0.
+  String get result =>
+      delta == null ? 'none' : (delta! <= -1.0 ? 'won' : 'lost');
+}
+
 class RivalEngine {
-  /// [campaignStart] is the stored race-start date; a recalibration
-  /// ([resetDate]) after it re-anchors the race there.
-  static RivalState compute(List<DailyLog> logs,
+  /// Chad's mood and today's line for a given gap — one formula, so the
+  /// dashboard card and the archive can never disagree.
+  static (int, String) moodLine(double gap, DateTime day,
+      {bool recentKo = false, bool newLow = false}) {
+    final int mood = gap <= 0
+        ? 3
+        : gap < 0.75
+            ? 2
+            : gap <= 3
+                ? 1
+                : 0;
+    final int dayOrdinal = day.difference(DateTime(2026, 1, 1)).inDays.abs();
+    if (recentKo) {
+      const List<String> ko = <String>[
+        'Heard you got knocked out. I never get knocked out.',
+        'A whole enemy healed to full? Rough. Anyway — pound\'s off.',
+        'You K.O.\'d. I jogged. We are not the same.',
+      ];
+      return (mood, ko[dayOrdinal % ko.length]);
+    }
+    if (newLow && mood >= 2) {
+      const List<String> low = <String>[
+        'A new low. Adorable. I set one every Sunday.',
+        'Congrats on the new low. I\'d clap but I\'m mid-set.',
+        'New low, huh. Enjoy the view — briefly.',
+      ];
+      return (mood, low[dayOrdinal % low.length]);
+    }
+    final List<String> lines = _kChadLines[mood];
+    return (mood, lines[dayOrdinal % lines.length]);
+  }
+
+  /// The effective race anchor: campaign start, moved up by a later
+  /// recalibration.
+  static String anchorFor(String campaignStart, String? resetDate) {
+    if (resetDate != null &&
+        resetDate.isNotEmpty &&
+        resetDate.compareTo(campaignStart) > 0) {
+      return resetDate;
+    }
+    return campaignStart;
+  }
+
+  /// Week-by-week rounds since the anchor: you win a week by dropping at
+  /// least the pound Chad always drops. Weeks with no weigh-in judge
+  /// nothing ('none').
+  static List<RivalRound> rounds(List<DailyLog> logs,
       {required String campaignStart, String? resetDate, DateTime? asOf}) {
     final DateTime now = asOf ?? DateTime.now();
     final DateTime today = DateTime(now.year, now.month, now.day);
-    String anchor = campaignStart;
-    if (resetDate != null &&
-        resetDate.isNotEmpty &&
-        resetDate.compareTo(anchor) > 0) {
-      anchor = resetDate;
+    final String anchor = anchorFor(campaignStart, resetDate);
+    final DateTime? a = DateTime.tryParse(anchor);
+    if (a == null || logs.isEmpty) {
+      return <RivalRound>[];
     }
+    final List<DailyLog> sorted = List<DailyLog>.of(logs)
+      ..sort((DailyLog x, DailyLog y) => x.date.compareTo(y.date));
+    double trendAt(DateTime d) {
+      final List<double> w = <double>[];
+      for (int i = sorted.length - 1; i >= 0 && w.length < 7; i--) {
+        if (DateTime.parse(sorted[i].date).isAfter(d)) {
+          continue;
+        }
+        w.add(sorted[i].weight);
+      }
+      return w.isEmpty
+          ? double.nan
+          : w.reduce((double x, double y) => x + y) / w.length;
+    }
+
+    final List<RivalRound> out = <RivalRound>[];
+    int i = 1;
+    for (DateTime start = a;
+        !start.add(const Duration(days: 7)).isAfter(today);
+        start = start.add(const Duration(days: 7)), i++) {
+      final DateTime end = start.add(const Duration(days: 7));
+      final bool hasData = sorted.any((DailyLog l) {
+        final DateTime d = DateTime.parse(l.date);
+        return !d.isBefore(start) && d.isBefore(end);
+      });
+      final double t0 = trendAt(start);
+      final double t1 = trendAt(end);
+      out.add(RivalRound(
+          i,
+          formatDate(start),
+          !hasData || t0.isNaN || t1.isNaN ? null : t1 - t0));
+    }
+    return out;
+  }
+
+  /// [campaignStart] is the stored race-start date; a recalibration
+  /// ([resetDate]) after it re-anchors the race there. [historyDays] caps
+  /// the chart series; [koDates] lets Chad gloat about recent knockouts.
+  static RivalState compute(List<DailyLog> logs,
+      {required String campaignStart,
+      String? resetDate,
+      DateTime? asOf,
+      int historyDays = 60,
+      List<String> koDates = const <String>[]}) {
+    final DateTime now = asOf ?? DateTime.now();
+    final DateTime today = DateTime(now.year, now.month, now.day);
+    final String anchor = anchorFor(campaignStart, resetDate);
     final List<DailyLog> sorted = List<DailyLog>.of(logs)
       ..sort((DailyLog a, DailyLog b) => a.date.compareTo(b.date));
     if (sorted.isEmpty || anchor.isEmpty) {
@@ -1193,19 +1294,26 @@ class RivalEngine {
     final double yourTrend = trendAt(today);
     final double chadNow = chadAt(today);
     final double gap = yourTrend - chadNow;
-    final int mood = gap <= 0
-        ? 3
-        : gap < 0.75
-            ? 2
-            : gap <= 3
-                ? 1
-                : 0;
-    final List<String> lines = _kChadLines[mood];
-    final int dayOrdinal = today.difference(DateTime(2026, 1, 1)).inDays;
-    final String line = lines[dayOrdinal.abs() % lines.length];
+
+    // Something worth gloating about?
+    final String twoDaysAgo =
+        formatDate(today.subtract(const Duration(days: 2)));
+    final bool recentKo =
+        koDates.any((String d) => d.compareTo(twoDaysAgo) >= 0);
+    bool newLow = false;
+    if (sorted.length >= 2 &&
+        sorted.last.date.compareTo(twoDaysAgo) >= 0 &&
+        sorted.last.date.compareTo(anchor) >= 0) {
+      newLow = sorted
+          .sublist(0, sorted.length - 1)
+          .every((DailyLog l) => l.weight > sorted.last.weight);
+    }
+    final (int mood, String line) =
+        moodLine(gap, today, recentKo: recentKo, newLow: newLow);
 
     final List<RivalPoint> series = <RivalPoint>[];
-    final DateTime from = today.subtract(const Duration(days: 59));
+    final DateTime from =
+        today.subtract(Duration(days: max(historyDays - 1, 1)));
     final DateTime lo = from.isBefore(anchorDay) ? anchorDay : from;
     for (DateTime d = lo;
         !d.isAfter(today);

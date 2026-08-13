@@ -52,6 +52,7 @@ class CreatureSpec {
   final Color base;
   final Color belly;
   final bool guardian;
+  final int seed; // desyncs the idle animation between creatures
 
   const CreatureSpec({
     required this.shape,
@@ -69,6 +70,7 @@ class CreatureSpec {
     required this.base,
     required this.belly,
     required this.guardian,
+    this.seed = 0,
   });
 
   /// The one look every enemy at [index] will always have.
@@ -168,6 +170,7 @@ class CreatureSpec {
       base: deepBase,
       belly: Color.lerp(pal.belly, deepBase, e.depth == 0 ? 0.0 : 0.35)!,
       guardian: e.guardian,
+      seed: e.index,
     );
   }
 
@@ -191,6 +194,7 @@ class CreatureSpec {
           const Color(0xFF5A2D6E), rng.nextDouble())!,
       belly: const Color(0xFFE0A9B4),
       guardian: true,
+      seed: 1000 + rosterIndex,
     );
   }
 }
@@ -199,7 +203,22 @@ class CreaturePainter extends CustomPainter {
   final CreatureSpec spec;
   /// 0..1 — how hurt it is. Hurt creatures dim and their eyes shrink.
   final double damage;
-  const CreaturePainter(this.spec, {this.damage = 0});
+  /// Continuous seconds for the idle loop (breathe/blink/bob). 0 = still.
+  final double anim;
+  /// 0..1 recoil from a fresh hit landing.
+  final double flinch;
+  const CreaturePainter(this.spec,
+      {this.damage = 0, this.anim = 0, this.flinch = 0});
+
+  /// True in the short eyes-shut window of this creature's own blink rhythm.
+  bool get _blinking {
+    if (anim <= 0) {
+      return false;
+    }
+    final double period = 2.6 + (spec.seed % 17) * 0.13;
+    final double t = (anim + spec.seed * 0.7) % period;
+    return t < 0.12;
+  }
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -209,6 +228,29 @@ class CreaturePainter extends CustomPainter {
     canvas.scale(s);
 
     final double hurt = damage.clamp(0.0, 1.0);
+
+    // ── idle life ──
+    if (anim > 0) {
+      if (spec.ghost) {
+        // Ghosts hover.
+        canvas.translate(0, 2.6 * sin(anim * 2 * pi / 3.7 + spec.seed));
+      } else if (!spec.wall) {
+        // Everything else breathes.
+        final double breath =
+            1 + 0.022 * sin(anim * 2 * pi / 3.1 + spec.seed * 1.3);
+        canvas.translate(50, 88);
+        canvas.scale(1 / breath, breath);
+        canvas.translate(-50, -88);
+      }
+      if (hurt > 0.7) {
+        // Below 30% HP it trembles.
+        canvas.translate(0.9 * sin(anim * 34 + spec.seed), 0);
+      }
+    }
+    if (flinch > 0) {
+      canvas.translate(-7 * flinch, 1.5 * flinch);
+      canvas.rotate(-0.05 * flinch);
+    }
     final double alpha = spec.ghost ? 0.72 : 1.0;
     final Color body =
         Color.lerp(spec.base, const Color(0xFF2A2A2A), hurt * 0.35)!
@@ -370,11 +412,22 @@ class CreaturePainter extends CustomPainter {
   void _face(Canvas canvas, double hurt, Color outline) {
     final double eyeY = spec.wall ? 42 : 48;
     final double eyeR = (5.5 - hurt * 1.5) * (spec.bulk * 0.9);
+    final bool shut = _blinking;
     final int n = spec.eyes;
     for (int i = 0; i < n; i++) {
       final double t = n == 1 ? 0.5 : i / (n - 1);
       final double ex = 50 + (t - 0.5) * (n > 3 ? 30 : 22) * spec.bulk;
       final double ey = eyeY - sin(t * pi) * 3;
+      if (shut) {
+        canvas.drawLine(
+            Offset(ex - eyeR, ey),
+            Offset(ex + eyeR, ey),
+            Paint()
+              ..color = outline
+              ..strokeWidth = 2.4
+              ..strokeCap = StrokeCap.round);
+        continue;
+      }
       canvas.drawCircle(
           Offset(ex, ey), eyeR, Paint()..color = const Color(0xFFF4F1E8));
       canvas.drawCircle(Offset(ex + 0.8, ey + (spec.droopy ? 1.6 : 0.4)),
@@ -512,7 +565,10 @@ class CreaturePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(CreaturePainter old) =>
-      old.spec != spec || old.damage != damage;
+      old.spec != spec ||
+      old.damage != damage ||
+      old.anim != anim ||
+      old.flinch != flinch;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -523,7 +579,19 @@ class CreaturePainter extends CustomPainter {
 
 class ChadPainter extends CustomPainter {
   final int mood;
-  const ChadPainter(this.mood);
+  /// Continuous seconds for idle life (blink, sweat, the drink). 0 = still.
+  final double anim;
+  const ChadPainter(this.mood, {this.anim = 0});
+
+  static const Color _skin = Color(0xFFE8BE95);
+  static const Color _skinShade = Color(0xFFD1A276);
+  static const Color _hair = Color(0xFF5E3F22);
+  static const Color _hairShine = Color(0xFF7A5530);
+  static const Color _polo = Color(0xFF3A6EA5);
+  static const Color _poloDark = Color(0xFF2E5884);
+  static const Color _ink = Color(0xFF241A10);
+
+  bool get _blink => anim > 0 && (anim % 3.3) < 0.12;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -532,134 +600,232 @@ class ChadPainter extends CustomPainter {
     canvas.translate((size.width - 100 * s) / 2, (size.height - 100 * s) / 2);
     canvas.scale(s);
 
-    const Color skin = Color(0xFFE3B68C);
-    const Color hair = Color(0xFF6B4A2B);
-    const Color shirt = Color(0xFF3A6EA5);
     final Paint lineP = Paint()
-      ..color = const Color(0xFF2A1E14)
+      ..color = _ink
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.2
+      ..strokeWidth = 2.0
       ..strokeCap = StrokeCap.round;
 
-    // Shoulders + popped collar.
+    // ── shoulders, chest, crossed arms ──
     final Path torso = Path()
-      ..moveTo(18, 100)
-      ..quadraticBezierTo(20, 72, 38, 68)
-      ..lineTo(62, 68)
-      ..quadraticBezierTo(80, 72, 82, 100)
+      ..moveTo(14, 100)
+      ..quadraticBezierTo(15, 74, 34, 68)
+      ..lineTo(66, 68)
+      ..quadraticBezierTo(85, 74, 86, 100)
       ..close();
-    canvas.drawPath(torso, Paint()..color = shirt);
+    canvas.drawPath(torso, Paint()..color = _polo);
+    // Chest shading down the middle.
     canvas.drawPath(
         Path()
-          ..moveTo(38, 68)
-          ..lineTo(44, 76)
-          ..lineTo(50, 69)
-          ..lineTo(56, 76)
-          ..lineTo(62, 68),
+          ..moveTo(50, 72)
+          ..lineTo(50, 84),
         Paint()
-          ..color = const Color(0xFF2E5884)
+          ..color = _poloDark
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 3);
+          ..strokeWidth = 2);
+    // Popped collar.
+    final Paint collar = Paint()..color = _poloDark;
+    canvas.drawPath(
+        Path()
+          ..moveTo(36, 66)
+          ..lineTo(45, 78)
+          ..lineTo(48, 66)
+          ..close(),
+        collar);
+    canvas.drawPath(
+        Path()
+          ..moveTo(64, 66)
+          ..lineTo(55, 78)
+          ..lineTo(52, 66)
+          ..close(),
+        collar);
+    // The chain.
+    canvas.drawArc(
+        const Rect.fromLTWH(42, 70, 16, 10),
+        0,
+        pi,
+        false,
+        Paint()
+          ..color = const Color(0xFFF0C040)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.8);
 
-    // Crossed arms (mood 3 pulls them tighter).
-    final double armY = mood == 3 ? 84 : 87;
+    // Crossed forearms with actual biceps — he does, in fact, lift.
+    final double armY = mood == 3 ? 83 : 86;
+    final Paint sleeve = Paint()..color = _poloDark;
+    canvas.drawOval(Rect.fromCenter(
+        center: Offset(24, armY - 4), width: 15, height: 18), sleeve);
+    canvas.drawOval(Rect.fromCenter(
+        center: Offset(76, armY - 4), width: 15, height: 18), sleeve);
+    final Paint arm = Paint()..color = _skin;
     canvas.drawRRect(
         RRect.fromRectAndRadius(
-            Rect.fromCenter(
-                center: Offset(50, armY + 5), width: 52, height: 13),
-            const Radius.circular(7)),
-        Paint()..color = const Color(0xFF335F8E));
-    canvas.drawCircle(Offset(30, armY + 5), 5.5, Paint()..color = skin);
-    canvas.drawCircle(Offset(70, armY + 5), 5.5, Paint()..color = skin);
+            Rect.fromCenter(center: Offset(47, armY + 4), width: 44, height: 11),
+            const Radius.circular(6)),
+        arm);
+    canvas.drawRRect(
+        RRect.fromRectAndRadius(
+            Rect.fromCenter(center: Offset(53, armY + 9), width: 44, height: 11),
+            const Radius.circular(6)),
+        Paint()..color = _skinShade);
 
-    // Head + neck.
-    canvas.drawRect(const Rect.fromLTWH(44, 58, 12, 12), Paint()..color = skin);
-    canvas.drawOval(const Rect.fromLTWH(29, 18, 42, 46), Paint()..color = skin);
-
-    // The swoop.
-    final Path swoop = Path()
-      ..moveTo(27, 38)
-      ..quadraticBezierTo(26, 16, 50, 14)
-      ..quadraticBezierTo(74, 14, 73, 34)
-      ..quadraticBezierTo(64, 20, 46, 24)
-      ..quadraticBezierTo(32, 27, 30, 42)
+    // ── neck + head ──
+    canvas.drawRect(const Rect.fromLTWH(44, 56, 12, 12), Paint()..color = _skinShade);
+    // Face: oval with a squarer jaw.
+    final Path face = Path()
+      ..moveTo(31, 34)
+      ..quadraticBezierTo(31, 15, 50, 15)
+      ..quadraticBezierTo(69, 15, 69, 34)
+      ..quadraticBezierTo(69, 48, 62, 56)
+      ..quadraticBezierTo(56, 62, 50, 62)
+      ..quadraticBezierTo(44, 62, 38, 56)
+      ..quadraticBezierTo(31, 48, 31, 34)
       ..close();
-    canvas.drawPath(swoop, Paint()..color = hair);
+    canvas.drawPath(face, Paint()..color = _skin);
+    // Side shadow for depth.
+    canvas.drawPath(
+        Path()
+          ..moveTo(62, 22)
+          ..quadraticBezierTo(69, 32, 65, 48)
+          ..quadraticBezierTo(62, 56, 56, 60)
+          ..quadraticBezierTo(63, 52, 63, 40)
+          ..quadraticBezierTo(64, 28, 62, 22)
+          ..close(),
+        Paint()..color = _skinShade.withValues(alpha: 0.7));
+    // Ears.
+    canvas.drawOval(const Rect.fromLTWH(27.5, 34, 6, 9), Paint()..color = _skin);
+    canvas.drawOval(const Rect.fromLTWH(66.5, 34, 6, 9), Paint()..color = _skin);
 
-    // Eyes / sunglasses.
+    // ── the swoop, with a shine ──
+    final Path swoop = Path()
+      ..moveTo(29, 36)
+      ..quadraticBezierTo(27, 13, 52, 11)
+      ..quadraticBezierTo(76, 11, 71, 32)
+      ..quadraticBezierTo(70, 22, 58, 20)
+      ..lineTo(60, 26)
+      ..quadraticBezierTo(52, 19, 41, 24)
+      ..quadraticBezierTo(32, 28, 31, 42)
+      ..close();
+    canvas.drawPath(swoop, Paint()..color = _hair);
+    canvas.drawPath(
+        Path()
+          ..moveTo(36, 18)
+          ..quadraticBezierTo(48, 13, 60, 16),
+        Paint()
+          ..color = _hairShine
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3
+          ..strokeCap = StrokeCap.round);
+
+    // ── eyes ──
     if (mood == 0) {
+      // Aviators.
       final Paint dark = Paint()..color = const Color(0xFF17141A);
       canvas.drawRRect(
-          RRect.fromRectAndRadius(const Rect.fromLTWH(33, 33, 15, 9),
-              const Radius.circular(4)),
+          RRect.fromRectAndRadius(
+              const Rect.fromLTWH(33, 32, 15, 10), const Radius.circular(5)),
           dark);
       canvas.drawRRect(
-          RRect.fromRectAndRadius(const Rect.fromLTWH(52, 33, 15, 9),
-              const Radius.circular(4)),
+          RRect.fromRectAndRadius(
+              const Rect.fromLTWH(52, 32, 15, 10), const Radius.circular(5)),
           dark);
-      canvas.drawLine(const Offset(48, 36), const Offset(52, 36), lineP);
+      canvas.drawLine(const Offset(48, 35), const Offset(52, 35), lineP);
+      canvas.drawLine(const Offset(33, 35), const Offset(29, 33), lineP);
+      canvas.drawLine(const Offset(67, 35), const Offset(71, 33), lineP);
+      // Lens glint.
+      canvas.drawLine(
+          const Offset(36, 34),
+          const Offset(40, 39),
+          Paint()
+            ..color = Colors.white.withValues(alpha: 0.35)
+            ..strokeWidth = 1.6);
+    } else if (_blink) {
+      canvas.drawLine(const Offset(35, 37), const Offset(45, 37), lineP);
+      canvas.drawLine(const Offset(55, 37), const Offset(65, 37), lineP);
     } else {
-      // Half-lidded smugness; worried lift when sweating; knit when annoyed.
-      final double lidTilt = mood == 3 ? 3 : 0;
       for (final double ex in <double>[40, 60]) {
         final double dir = ex < 50 ? 1 : -1;
-        canvas.drawArc(Rect.fromCircle(center: Offset(ex, 38), radius: 5),
-            mood == 2 ? -pi * 0.9 : -pi, pi, false, lineP);
-        canvas.drawCircle(Offset(ex + 1, 39),
-            2.1, Paint()..color = const Color(0xFF17141A));
-        canvas.drawLine(Offset(ex - 5 * dir, 30 + lidTilt * dir),
-            Offset(ex + 5 * dir, 28 - lidTilt * dir), lineP);
+        // The permanent half-lid. Sweating lifts it; annoyed knits it.
+        canvas.drawOval(Rect.fromCenter(
+                center: Offset(ex, 37.5), width: 9.5, height: mood == 2 ? 7 : 5),
+            Paint()..color = const Color(0xFFF7F3E9));
+        canvas.drawCircle(Offset(ex + 1.2, 38),
+            2.2, Paint()..color = const Color(0xFF17141A));
+        if (mood != 2) {
+          canvas.drawLine(Offset(ex - 4.5, 34.5), Offset(ex + 4.5, 34.5),
+              Paint()
+                ..color = _skinShade
+                ..strokeWidth = 3);
+        }
+        // Brows.
+        final double knit = mood == 3 ? 2.5 : (mood == 2 ? -1.5 : 0.5);
+        canvas.drawLine(Offset(ex - 5 * dir, 31 + knit * dir * 0 + (mood == 2 ? -1 : 0)),
+            Offset(ex + 5 * dir, 30 - knit), lineP..strokeWidth = 2.4);
       }
     }
 
     // Nose.
-    canvas.drawLine(const Offset(50, 40), const Offset(52, 47), lineP);
+    canvas.drawPath(
+        Path()
+          ..moveTo(50, 39)
+          ..quadraticBezierTo(53.5, 45, 50, 47.5),
+        lineP..strokeWidth = 2.0);
 
-    // Mouth by mood.
+    // ── mouth by mood ──
     final Path mouth = Path();
     switch (mood) {
-      case 2: // flat, tight
+      case 2:
         mouth.moveTo(43, 54);
-        mouth.lineTo(57, 54);
+        mouth.lineTo(57, 54.5);
         break;
-      case 3: // frown
+      case 3:
         mouth.moveTo(42, 56);
-        mouth.quadraticBezierTo(50, 51, 58, 56);
+        mouth.quadraticBezierTo(50, 51.5, 58, 56);
         break;
-      default: // the smirk
-        mouth.moveTo(41, 53);
-        mouth.quadraticBezierTo(52, 57, 60, 50);
+      default:
+        mouth.moveTo(41, 52.5);
+        mouth.quadraticBezierTo(52, 57.5, 61, 50.5);
+        mouth.moveTo(58, 51.8);
+        mouth.lineTo(59.5, 54);
     }
     canvas.drawPath(mouth, lineP);
 
-    // Sweat when you're closing in.
+    // ── mood extras ──
     if (mood == 2) {
+      // Sweat sliding down the temple.
+      final double fall = anim > 0 ? (anim % 1.6) / 1.6 : 0.4;
       final Paint drop = Paint()..color = const Color(0xFF7FB8E8);
-      for (final Offset o in <Offset>[const Offset(72, 26), const Offset(76, 34)]) {
-        final Path p = Path()
-          ..moveTo(o.dx, o.dy - 4)
-          ..quadraticBezierTo(o.dx + 3.4, o.dy + 2, o.dx, o.dy + 3.4)
-          ..quadraticBezierTo(o.dx - 3.4, o.dy + 2, o.dx, o.dy - 4);
-        canvas.drawPath(p, drop);
-      }
+      final Offset o = Offset(70, 22 + fall * 16);
+      canvas.drawPath(
+          Path()
+            ..moveTo(o.dx, o.dy - 4)
+            ..quadraticBezierTo(o.dx + 3.2, o.dy + 2, o.dx, o.dy + 3.2)
+            ..quadraticBezierTo(o.dx - 3.2, o.dy + 2, o.dx, o.dy - 4),
+          drop);
+      canvas.drawCircle(Offset(75, 30 + ((fall + 0.5) % 1.0) * 12), 1.8, drop);
     }
-
-    // The relaxed one gets a drink.
     if (mood == 0) {
+      // The drink, raised in a slow toast.
+      final double lift = anim > 0 ? 3 * sin(anim * 2 * pi / 4.2) : 0;
+      canvas.save();
+      canvas.translate(0, -lift.abs());
       canvas.drawRRect(
           RRect.fromRectAndRadius(
-              const Rect.fromLTWH(76, 78, 10, 14), const Radius.circular(2)),
+              const Rect.fromLTWH(78, 74, 11, 15), const Radius.circular(2.5)),
           Paint()..color = const Color(0xFFE05B4B));
-      canvas.drawLine(const Offset(81, 78), const Offset(84, 70),
+      canvas.drawRect(const Rect.fromLTWH(78, 74, 11, 4),
+          Paint()..color = const Color(0xFFF4F1E8).withValues(alpha: 0.7));
+      canvas.drawLine(const Offset(83.5, 74), const Offset(87, 66),
           Paint()
             ..color = const Color(0xFFF4F1E8)
             ..strokeWidth = 2);
+      canvas.restore();
     }
     canvas.restore();
   }
 
   @override
-  bool shouldRepaint(ChadPainter old) => old.mood != mood;
+  bool shouldRepaint(ChadPainter old) => old.mood != mood || old.anim != anim;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

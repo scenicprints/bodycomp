@@ -192,6 +192,51 @@ void main() {
     });
   });
 
+  group('projected goal — live trend pace', () {
+    // 30 daily logs losing ~0.1 lb fat/day at steady weight composition.
+    List<DailyLog> losing({double perDay = 0.1, int days = 30}) => <DailyLog>[
+          for (int i = 0; i < days; i++)
+            DailyLog(
+                date: d(i),
+                weight: 200 - i * perDay,
+                bf: (50 - i * perDay) / (200 - i * perDay))
+        ];
+
+    test('a steady loss projects a finite date', () {
+      final int? days = MathEngine.daysToGoal(losing(), 0.15);
+      expect(days, isNotNull);
+      expect(days, greaterThan(0));
+    });
+
+    test('a bad scale morning moves the projection modestly, not wildly', () {
+      final List<DailyLog> base = losing();
+      final int a = MathEngine.daysToGoal(base, 0.15)!;
+      // Same day, BF reads 1 point high (~2 lb of phantom fat — a typical
+      // impedance-scale bad morning).
+      final DailyLog last = base.removeLast();
+      base.add(DailyLog(
+          date: last.date, weight: last.weight, bf: last.bf + 0.01));
+      final int b = MathEngine.daysToGoal(base, 0.15)!;
+      // Every reading in the window votes on the fitted trend, so the
+      // swing stays bounded. (The OLD endpoint math flipped the pace
+      // negative on this input and made the card vanish entirely.)
+      expect((a - b).abs() / a, lessThan(0.25));
+      expect(b, greaterThan(0));
+    });
+
+    test('gaining means no projection, not a lie', () {
+      expect(MathEngine.daysToGoal(losing(perDay: -0.1), 0.15), isNull);
+    });
+
+    test('already at goal is zero days', () {
+      final List<DailyLog> logs = <DailyLog>[
+        for (int i = 0; i < 10; i++)
+          DailyLog(date: d(i), weight: 170 - i * 0.05, bf: 0.14)
+      ];
+      expect(MathEngine.daysToGoal(logs, 0.15), 0);
+    });
+  });
+
   group('macro targets still floor correctly', () {
     test('derive from body composition; overrides win', () {
       final UserCalibration cal =

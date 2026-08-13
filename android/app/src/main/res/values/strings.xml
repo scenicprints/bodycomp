@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="campaign_widget_desc">Today\'s fight: the enemy, its health bar, and your pending hit.</string>
+</resources>
