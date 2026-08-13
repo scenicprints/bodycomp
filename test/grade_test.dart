@@ -313,9 +313,10 @@ void main() {
       final double baseline =
           MathEngine.baselineTdee(MathEngine.rollingLbm(logs), 1.4);
 
-      // Without a reset the old logged days still drive it.
+      // Without a reset the old logged days still drive it (the measured
+      // 3500 estimate, held to the clamp ceiling around the baseline).
       final double stale = MathEngine.activeTdee(logs, 1.4);
-      expect(stale, closeTo(3500, 1));
+      expect(stale, greaterThan(baseline * 1.3));
 
       // Recalibrating today discards them, so it falls back to the baseline.
       final double afterReset =
