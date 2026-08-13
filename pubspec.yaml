@@ -5,7 +5,7 @@ publish_to: 'none'
 # Version is the single source of truth for the app's version.
 # The publish script bumps this, and the in-app updater compares it
 # against the latest GitHub Release.
-version: 1.29.0+54
+version: 1.30.0+55
 
 environment:
   sdk: ^3.12.2
@@ -31,6 +31,10 @@ dependencies:
   flutter_tts: ^4.2.0       # optional spoken "run" / "walk" cues
   health: ^13.0.0           # import runs from Android Health Connect
   flutter_foreground_task: ^9.2.2  # keep the run timer alive with screen off
+  flutter_local_notifications: ^22.3.0
+  flutter_timezone: ^5.1.0
+  timezone: ^0.11.1
+  home_widget: ^0.9.3
 
 dev_dependencies:
   flutter_test:

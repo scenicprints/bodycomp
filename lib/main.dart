@@ -27,7 +27,9 @@ import 'unlocks.dart';
 import 'grade.dart';
 import 'campaign.dart';
 import 'campaign_screen.dart';
-import 'creatures.dart';
+import 'rival_screen.dart';
+import 'boss_alerts.dart';
+import 'campaign_widget.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -402,20 +404,49 @@ class MathEngine {
     return (avgR - avgO).abs() < 0.5;
   }
 
+  /// Days to goal at the pace the scale is ACTUALLY showing — pure live
+  /// data, deliberately untouched by recalibration. Pace comes from trend
+  /// anchors (the average of the first and last few readings in the
+  /// window) so one noisy scale morning can't swing the projection, and
+  /// the span is real calendar days, not entry count.
   static int? daysToGoal(List<DailyLog> logs, double targetBf) {
     if (logs.length < 7) {
       return null;
     }
     final int window = min(30, logs.length);
     final List<DailyLog> slice = logs.sublist(logs.length - window);
-    final double fatLost = slice.first.fatMass - slice.last.fatMass;
-    if (fatLost <= 0) {
+    // Least-squares fat-mass trend across the window: every reading votes,
+    // so a single bad morning has almost no leverage.
+    final List<double> xs = <double>[];
+    final List<double> ys = <double>[];
+    for (final DailyLog l in slice) {
+      final DateTime? dt = DateTime.tryParse(l.date);
+      if (dt == null) {
+        return null;
+      }
+      xs.add(dt.millisecondsSinceEpoch / 86400000.0);
+      ys.add(l.fatMass);
+    }
+    final double xBar = xs.reduce((double a, double b) => a + b) / xs.length;
+    final double yBar = ys.reduce((double a, double b) => a + b) / ys.length;
+    double sxy = 0, sxx = 0;
+    for (int i = 0; i < xs.length; i++) {
+      sxy += (xs[i] - xBar) * (ys[i] - yBar);
+      sxx += (xs[i] - xBar) * (xs[i] - xBar);
+    }
+    if (sxx < 1e-9) {
       return null;
     }
-    final double fatPerDay = fatLost / window.toDouble();
+    final double slope = sxy / sxx; // lb fat per day (negative = losing)
+    final double fatPerDay = -slope;
+    if (fatPerDay <= 0) {
+      return null;
+    }
+    // Remaining fat measured from the FITTED value today, not one reading.
+    final double fittedNow = yBar + slope * (xs.last - xBar);
     final DailyLog current = logs.last;
     final double targetFat = current.lbm * (targetBf / (1 - targetBf));
-    final double fatRemaining = current.fatMass - targetFat;
+    final double fatRemaining = fittedNow - targetFat;
     if (fatRemaining <= 0) {
       return 0;
     }
@@ -990,6 +1021,34 @@ class _BodyCompAppState extends State<BodyCompApp> {
   bool _syncingFoods = false;
   String _campaignStart = '';
 
+  Timer? _widgetTimer;
+
+  /// Re-render the launcher widget shortly after anything that moves a
+  /// campaign number. Debounced so a burst of edits paints once.
+  void _pushWidget() {
+    if (_cal == null || _campaignStart.isEmpty) {
+      return;
+    }
+    _widgetTimer?.cancel();
+    _widgetTimer = Timer(const Duration(seconds: 2), () {
+      final UserCalibration cal = _cal!;
+      int ph = 0;
+      if (_logs.isNotEmpty) {
+        ph = MathEngine.phase(
+            MathEngine.progress(cal.startBf, _logs.last.bf, cal.targetBf));
+      }
+      final CampaignState c = CampaignEngine.compute(
+          cal: cal,
+          logs: _logs,
+          foods: _foods,
+          fasted: _fasted.toSet(),
+          runs: _runs,
+          sleep: _sleep,
+          startDate: _campaignStart);
+      CampaignWidget.push(c, skinAccent(_cos.skin, kPhases[ph].accent));
+    });
+  }
+
   /// The campaign (and Chad's race) starts the first day the app runs with
   /// a calibration in place — stamped once, then permanent.
   void _ensureCampaignStart() {
@@ -1020,6 +1079,11 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _sleep = AppStorage.getSleep();
     _insights = AppStorage.getInsights();
     _ensureCampaignStart();
+    if (_cal != null) {
+      BossAlerts.sync(
+          enabled: AppStorage.getPref('bossReminders', 'on') == 'on');
+      WidgetsBinding.instance.addPostFrameCallback((_) => _pushWidget());
+    }
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
   }
@@ -1081,6 +1145,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _logs = l;
     });
     AppStorage.saveLogs(l);
+    _pushWidget();
   }
 
   void _dismiss(double m) {
@@ -1120,6 +1185,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _foods = f;
     });
     AppStorage.saveFoods(f);
+    _pushWidget();
   }
 
   void _setFasted(List<String> dates) {
@@ -1127,6 +1193,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _fasted = dates;
     });
     AppStorage.saveFastedDates(dates);
+    _pushWidget();
   }
 
   void _setMeals(List<Meal> m) {
@@ -2041,6 +2108,7 @@ class _HomeShellState extends State<HomeShell> {
       body: SafeArea(
           child: IndexedStack(index: _tab, children: [
         CampaignScreen(
+            active: _tab == 0,
             accent: accent,
             cal: widget.cal,
             logs: widget.logs,
@@ -4744,9 +4812,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
               // The rival — Chad lives where the coach used to.
               _RivalCard(
+                  cal: widget.cal,
                   logs: widget.logs,
+                  foods: widget.foods,
+                  fasted: widget.fasted,
+                  runs: widget.runs,
+                  sleep: widget.sleep,
                   campaignStart: widget.campaignStart,
-                  resetDate: widget.cal.tdeeResetDate,
                   accent: accent),
               const SizedBox(height: 14),
 
@@ -5931,6 +6003,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _advisorCard(Color accent) {
+    final bool reminders = AppStorage.getPref('bossReminders', 'on') == 'on';
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -5939,19 +6012,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
           border: Border.all(color: kBorder)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
         Row(children: <Widget>[
-          Icon(Icons.psychology_rounded, size: 15, color: accent),
+          Icon(Icons.sports_kabaddi_rounded, size: 15, color: accent),
           const SizedBox(width: 6),
-          Text('COACH',
+          Text('CAMPAIGN',
               style: TextStyle(
                   fontSize: 11,
                   color: Colors.grey[600],
                   letterSpacing: 1,
                   fontWeight: FontWeight.w600)),
         ]),
-        const SizedBox(height: 8),
-        Text('Coaching runs entirely on your device from your own numbers — '
-            'no AI, no API key, no cost. Nothing to configure.',
-            style: TextStyle(fontSize: 12, color: Colors.grey[500], height: 1.4)),
+        const SizedBox(height: 4),
+        Row(children: <Widget>[
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  const Text('Boss weekend reminders',
+                      style: TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFFDDDDDD))),
+                  Text(
+                      'Saturday mark and Monday verdict — the two weigh-ins '
+                      'the boss fight runs on. Nothing else ever notifies.',
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey[600], height: 1.35)),
+                ]),
+          ),
+          Switch(
+              value: reminders,
+              activeTrackColor: accent.withValues(alpha: 0.5),
+              onChanged: (bool v) {
+                AppStorage.savePref('bossReminders', v ? 'on' : 'off');
+                BossAlerts.sync(enabled: v);
+                setState(() {});
+              }),
+        ]),
       ]),
     );
   }
@@ -9456,22 +9552,41 @@ class _ScrollTimeSheetState extends State<_ScrollTimeSheet> {
 // ═══════════════════════════════════════════════════════════════════════
 
 class _RivalCard extends StatelessWidget {
+  final UserCalibration cal;
   final List<DailyLog> logs;
+  final List<FoodEntry> foods;
+  final List<String> fasted;
+  final List<RunRecord> runs;
+  final List<SleepEntry> sleep;
   final String campaignStart;
-  final String? resetDate;
   final Color accent;
   const _RivalCard(
-      {required this.logs,
+      {required this.cal,
+      required this.logs,
+      required this.foods,
+      required this.fasted,
+      required this.runs,
+      required this.sleep,
       required this.campaignStart,
-      required this.resetDate,
       required this.accent});
 
   @override
   Widget build(BuildContext context) {
     final RivalState r = RivalEngine.compute(logs,
-        campaignStart: campaignStart, resetDate: resetDate);
+        campaignStart: campaignStart, resetDate: cal.tdeeResetDate);
     final bool ahead = r.gap > 0;
-    return Container(
+    return GestureDetector(
+      onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => RivalScreen(
+              cal: cal,
+              logs: logs,
+              foods: foods,
+              fasted: fasted,
+              runs: runs,
+              sleep: sleep,
+              campaignStart: campaignStart,
+              accent: accent))),
+      child: Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
           color: kSurface1,
@@ -9479,11 +9594,7 @@ class _RivalCard extends StatelessWidget {
           border: Border.all(color: kBorder)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
         Row(children: <Widget>[
-          SizedBox(
-              width: 58,
-              height: 58,
-              child: CustomPaint(
-                  size: const Size(58, 58), painter: ChadPainter(r.mood))),
+          ChadAvatarLive(mood: r.mood, size: 58),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -9532,10 +9643,15 @@ class _RivalCard extends StatelessWidget {
           SizedBox(
               height: 56,
               width: double.infinity,
-              child:
-                  CustomPaint(painter: _RivalChartPainter(r.series, accent))),
+              child: RivalChart(series: r.series, accent: accent)),
+          const SizedBox(height: 6),
+          Row(mainAxisAlignment: MainAxisAlignment.center, children: <Widget>[
+            Text('tap for the full rivalry',
+                style: TextStyle(fontSize: 9.5, color: Colors.grey[700])),
+          ]),
         ],
       ]),
+      ),
     );
   }
 
@@ -9545,58 +9661,6 @@ class _RivalCard extends StatelessWidget {
   }
 }
 
-/// Your trend line vs Chad's straight −1 lb/week, on one tiny chart.
-class _RivalChartPainter extends CustomPainter {
-  final List<RivalPoint> series;
-  final Color accent;
-  const _RivalChartPainter(this.series, this.accent);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (series.length < 2) {
-      return;
-    }
-    double lo = double.infinity, hi = -double.infinity;
-    for (final RivalPoint p in series) {
-      lo = min(lo, min(p.you, p.chad));
-      hi = max(hi, max(p.you, p.chad));
-    }
-    final double span = (hi - lo).abs() < 1e-9 ? 1 : hi - lo;
-    Path build(double Function(RivalPoint) pick) {
-      final Path path = Path();
-      for (int i = 0; i < series.length; i++) {
-        final double x = size.width * i / (series.length - 1);
-        final double y = size.height -
-            ((pick(series[i]) - lo) / span) * (size.height - 4) -
-            2;
-        if (i == 0) {
-          path.moveTo(x, y);
-        } else {
-          path.lineTo(x, y);
-        }
-      }
-      return path;
-    }
-
-    canvas.drawPath(
-        build((RivalPoint p) => p.chad),
-        Paint()
-          ..color = const Color(0xFFCE4257).withValues(alpha: 0.8)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.6);
-    canvas.drawPath(
-        build((RivalPoint p) => p.you),
-        Paint()
-          ..color = accent
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.2
-          ..strokeCap = StrokeCap.round);
-  }
-
-  @override
-  bool shouldRepaint(_RivalChartPainter old) =>
-      old.series != series || old.accent != accent;
-}
 
 // ═══════════════════════════════════════════════════════════════════════
 // 5K TRAINER UI

@@ -1,6 +1,7 @@
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 
 import 'campaign.dart';
 import 'creatures.dart';
@@ -17,6 +18,7 @@ import 'unlocks.dart';
 // ═══════════════════════════════════════════════════════════════════════
 
 class CampaignScreen extends StatefulWidget {
+  final bool active; // this tab is fronted — safe to fire celebrations
   final Color accent;
   final UserCalibration cal;
   final List<DailyLog> logs;
@@ -31,6 +33,7 @@ class CampaignScreen extends StatefulWidget {
 
   const CampaignScreen({
     super.key,
+    this.active = false,
     required this.accent,
     required this.cal,
     required this.logs,
@@ -50,6 +53,69 @@ class CampaignScreen extends StatefulWidget {
 
 class _CampaignScreenState extends State<CampaignScreen> {
   int _page = 0;
+  // Rises whenever today's pending hit visibly grows — the portrait flinches.
+  double _lastPending = 0;
+  int _flinchTick = 0;
+  bool _celebrating = false;
+
+  /// Fire a win popup for any kill/boss-win that has not been celebrated
+  /// yet — only while this tab is fronted (IndexedStack builds every tab,
+  /// so an ungated dialog would pop over the Dashboard).
+  void _maybeCelebrate(CampaignState c) {
+    if (!widget.active || _celebrating || !mounted) {
+      return;
+    }
+    final int total = c.kills.length + c.bossWins;
+    final String stored = AppStorage.getPref('campaignCelebrated', '');
+    if (stored.isEmpty) {
+      // First run with history: baseline silently, never replay the past.
+      AppStorage.savePref('campaignCelebrated', '$total');
+      return;
+    }
+    final int seen = int.tryParse(stored) ?? 0;
+    if (total <= seen) {
+      return;
+    }
+    AppStorage.savePref('campaignCelebrated', '$total');
+    // Celebrate the most recent event only.
+    final KillRecord? lastKill = c.kills.isNotEmpty ? c.kills.last : null;
+    BossRecord? lastBossWin;
+    for (final BossRecord b in c.bossLedger.reversed) {
+      if (b.result == 'won') {
+        lastBossWin = b;
+        break;
+      }
+    }
+    final bool bossNewer = lastBossWin != null &&
+        (lastKill == null ||
+            lastBossWin.saturday.compareTo(lastKill.killDate) > 0);
+    _celebrating = true;
+    showDialog<void>(
+      context: context,
+      builder: (_) => bossNewer
+          ? _WinPop(
+              title: 'BOSS DOWN',
+              name: lastBossWin!.boss.name,
+              sub: lastBossWin.gain == null
+                  ? 'the weekend held'
+                  : '${lastBossWin.gain! >= 0 ? '+' : ''}'
+                      '${lastBossWin.gain!.toStringAsFixed(1)} lb vs '
+                      '+${lastBossWin.threshold.toStringAsFixed(1)} allowed',
+              xp: kBossWinXp,
+              spec: CreatureSpec.forBoss(kWeekendBosses.indexWhere(
+                      (BossDef d) => d.name == lastBossWin!.boss.name)
+                  .clamp(0, kWeekendBosses.length - 1)),
+              accent: widget.accent)
+          : _WinPop(
+              title: 'SLAIN',
+              name: lastKill!.enemy.name,
+              sub: 'after ${lastKill.fightDays} '
+                  'day${lastKill.fightDays == 1 ? '' : 's'} of fighting',
+              xp: (lastKill.enemy.sizeMult * 100).round().clamp(50, 500),
+              spec: CreatureSpec.forEnemy(lastKill.enemy),
+              accent: widget.accent),
+    ).then((_) => _celebrating = false);
+  }
 
   static String _num(double v) {
     final String s = v.round().toString();
@@ -90,6 +156,8 @@ class _CampaignScreenState extends State<CampaignScreen> {
       prestige: widget.prestige,
       extraXp: c.xp,
     );
+
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeCelebrate(c));
 
     return Column(children: <Widget>[
       _fatBossStrip(c),
@@ -208,6 +276,12 @@ class _CampaignScreenState extends State<CampaignScreen> {
   Widget _enemyCard(CampaignState c) {
     final double frac =
         c.enemyMaxHp <= 0 ? 0 : (c.enemyHp / c.enemyMaxHp).clamp(0.0, 1.0);
+    final double pending =
+        !c.weekendMode && (c.pendingDamage ?? 0) > 0 ? c.pendingDamage! : 0;
+    if (pending > _lastPending + 25) {
+      _flinchTick++;
+    }
+    _lastPending = pending;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -222,38 +296,22 @@ class _CampaignScreenState extends State<CampaignScreen> {
                 letterSpacing: 1.4,
                 color: Colors.grey[600])),
         const SizedBox(height: 6),
-        SizedBox(
-            height: 150,
-            child: CustomPaint(
-                size: const Size(150, 150),
-                painter: CreaturePainter(CreatureSpec.forEnemy(c.enemy),
-                    damage: 1 - frac))),
+        _LivePortrait(
+            spec: CreatureSpec.forEnemy(c.enemy),
+            damage: 1 - frac,
+            flinchTick: _flinchTick,
+            size: 150),
         const SizedBox(height: 4),
         Text(c.enemy.name,
             style: const TextStyle(
                 fontSize: 19,
                 fontWeight: FontWeight.w800,
                 color: Color(0xFFEEEEEE))),
-        const SizedBox(height: 2),
-        Text(c.enemy.flavor,
-            textAlign: TextAlign.center,
-            style: TextStyle(
-                fontSize: 11.5,
-                fontStyle: FontStyle.italic,
-                color: Colors.grey[500])),
         const SizedBox(height: 12),
         Row(children: <Widget>[
           Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                  value: frac,
-                  minHeight: 12,
-                  backgroundColor: const Color(0xFF241417),
-                  valueColor: const AlwaysStoppedAnimation<Color>(
-                      Color(0xFFCE4257))),
-            ),
-          ),
+              child: _HpBar(
+                  hp: c.enemyHp, maxHp: c.enemyMaxHp, pending: pending)),
           const SizedBox(width: 10),
           Text('${_num(c.enemyHp)} / ${_num(c.enemyMaxHp)}',
               style: TextStyle(
@@ -293,11 +351,11 @@ class _CampaignScreenState extends State<CampaignScreen> {
                 letterSpacing: 1.4,
                 color: Color(0xFFCE4257))),
         const SizedBox(height: 6),
-        SizedBox(
-            height: 150,
-            child: CustomPaint(
-                size: const Size(150, 150),
-                painter: CreaturePainter(CreatureSpec.forBoss(idx)))),
+        _LivePortrait(
+            spec: CreatureSpec.forBoss(idx),
+            damage: 0,
+            flinchTick: 0,
+            size: 150),
         Text(b.boss.name,
             style: const TextStyle(
                 fontSize: 19,
@@ -380,6 +438,10 @@ class _CampaignScreenState extends State<CampaignScreen> {
       text = 'Nothing logged yet. Log food to swing — a silent weekday '
           'costs ${kUnloggedHit.round()} HP at midnight.';
       color = Colors.grey[400]!;
+    } else if (p >= c.enemyHp && c.enemyHp > 0) {
+      text = 'LETHAL — today\'s swing of ${_num(p)} finishes ${c.enemy.name} '
+          'at midnight. Hold the line.';
+      color = const Color(0xFFF0C040);
     } else if (p >= 0) {
       text = 'TODAY\'S SWING — ${_num(p)} pending. Settles at midnight.';
       color = widget.accent;
@@ -967,6 +1029,292 @@ class _CampaignScreenState extends State<CampaignScreen> {
           SizedBox(height: 90, width: double.infinity, child: chart),
         ]),
       );
+}
+
+// ── the win popup ──────────────────────────────────────────────────────
+
+class _WinPop extends StatefulWidget {
+  final String title;
+  final String name;
+  final String sub;
+  final int xp;
+  final CreatureSpec spec;
+  final Color accent;
+  const _WinPop(
+      {required this.title,
+      required this.name,
+      required this.sub,
+      required this.xp,
+      required this.spec,
+      required this.accent});
+
+  @override
+  State<_WinPop> createState() => _WinPopState();
+}
+
+class _WinPopState extends State<_WinPop>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1400))
+      ..forward();
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: kSurface2,
+      shape:
+          RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: AnimatedBuilder(
+        animation: _ctl,
+        builder: (BuildContext ctx, Widget? _) {
+          final double t = _ctl.value;
+          final double pop =
+              Curves.elasticOut.transform(min(1, t * 1.6)).clamp(0.0, 1.2);
+          final int xpShown =
+              (widget.xp * Curves.easeOut.transform(min(1, t * 1.3))).round();
+          return Stack(alignment: Alignment.topCenter, children: <Widget>[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 22, 20, 16),
+              child: Column(mainAxisSize: MainAxisSize.min, children: <Widget>[
+                Text(widget.title,
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 3,
+                        color: widget.accent)),
+                const SizedBox(height: 8),
+                Transform.scale(
+                  scale: pop,
+                  child: SizedBox(
+                      height: 110,
+                      child: CustomPaint(
+                          size: const Size(110, 110),
+                          painter: CreaturePainter(widget.spec, damage: 1))),
+                ),
+                Text(widget.name,
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFFEEEEEE))),
+                Text(widget.sub,
+                    style:
+                        TextStyle(fontSize: 11.5, color: Colors.grey[500])),
+                const SizedBox(height: 10),
+                Text('+$xpShown XP',
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                        color: widget.accent)),
+                const SizedBox(height: 10),
+                TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    child: Text('ONWARD',
+                        style: TextStyle(
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.5,
+                            color: widget.accent))),
+              ]),
+            ),
+            IgnorePointer(
+              child: SizedBox(
+                  height: 260,
+                  width: 300,
+                  child: CustomPaint(
+                      painter: _ConfettiPainter(t, widget.accent))),
+            ),
+          ]);
+        },
+      ),
+    );
+  }
+}
+
+class _ConfettiPainter extends CustomPainter {
+  final double t; // 0..1
+  final Color accent;
+  const _ConfettiPainter(this.t, this.accent);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (t <= 0) {
+      return;
+    }
+    final Random rng = Random(7);
+    final List<Color> colors = <Color>[
+      accent,
+      const Color(0xFFF0C040),
+      const Color(0xFFCE4257),
+      const Color(0xFF3CD6A3),
+    ];
+    for (int i = 0; i < 36; i++) {
+      final double x0 = rng.nextDouble() * size.width;
+      final double vy = 60 + rng.nextDouble() * 140;
+      final double sway = (rng.nextDouble() - 0.5) * 50;
+      final double y = -10 + t * (size.height * 0.6 + vy);
+      final double x = x0 + sin(t * 6 + i) * 8 + sway * t;
+      final double fade = (1 - t).clamp(0.0, 1.0);
+      final Paint p = Paint()
+        ..color = colors[i % colors.length].withValues(alpha: 0.85 * fade);
+      canvas.save();
+      canvas.translate(x, y);
+      canvas.rotate(t * 8 + i.toDouble());
+      canvas.drawRect(
+          Rect.fromCenter(
+              center: Offset.zero,
+              width: 5 + (i % 3).toDouble(),
+              height: 3.4),
+          p);
+      canvas.restore();
+    }
+  }
+
+  @override
+  bool shouldRepaint(_ConfettiPainter old) =>
+      old.t != t || old.accent != accent;
+}
+
+// ── living portrait ───────────────────────────────────────────────────
+// Owns its own ticker so 60fps idle life never re-runs the engine — only
+// this little CustomPaint repaints.
+
+class _LivePortrait extends StatefulWidget {
+  final CreatureSpec spec;
+  final double damage;
+  final int flinchTick; // bump it and the creature recoils once
+  final double size;
+  const _LivePortrait(
+      {required this.spec,
+      required this.damage,
+      required this.flinchTick,
+      required this.size});
+
+  @override
+  State<_LivePortrait> createState() => _LivePortraitState();
+}
+
+class _LivePortraitState extends State<_LivePortrait>
+    with TickerProviderStateMixin {
+  late final Ticker _ticker;
+  late final AnimationController _flinch;
+  double _t = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticker = createTicker((Duration d) {
+      setState(() => _t = d.inMicroseconds / 1e6);
+    })
+      ..start();
+    _flinch = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 380));
+  }
+
+  @override
+  void didUpdateWidget(_LivePortrait old) {
+    super.didUpdateWidget(old);
+    if (widget.flinchTick != old.flinchTick) {
+      _flinch.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _ticker.dispose();
+    _flinch.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final double recoil =
+        _flinch.isAnimating ? 1 - Curves.easeOut.transform(_flinch.value) : 0;
+    return SizedBox(
+        height: widget.size,
+        child: CustomPaint(
+            size: Size(widget.size, widget.size),
+            painter: CreaturePainter(widget.spec,
+                damage: widget.damage, anim: _t, flinch: recoil)));
+  }
+}
+
+// ── enemy HP bar with the ghost segment ───────────────────────────────
+// The hatched slice is today's pending hit, being carved off live as food
+// gets logged. It becomes real at midnight.
+
+class _HpBar extends StatelessWidget {
+  final double hp;
+  final double maxHp;
+  final double pending;
+  const _HpBar(
+      {required this.hp, required this.maxHp, this.pending = 0});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+        height: 12,
+        width: double.infinity,
+        child: CustomPaint(painter: _HpBarPainter(hp, maxHp, pending)));
+  }
+}
+
+class _HpBarPainter extends CustomPainter {
+  final double hp;
+  final double maxHp;
+  final double pending;
+  const _HpBarPainter(this.hp, this.maxHp, this.pending);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final RRect frame = RRect.fromRectAndRadius(
+        Offset.zero & size, const Radius.circular(4));
+    canvas.drawRRect(frame, Paint()..color = const Color(0xFF241417));
+    if (maxHp <= 0) {
+      return;
+    }
+    final double ghostFrac = (hp / maxHp).clamp(0.0, 1.0);
+    final double solidFrac = ((hp - pending) / maxHp).clamp(0.0, 1.0);
+    canvas.save();
+    canvas.clipRRect(frame);
+    // What will remain after midnight.
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width * solidFrac, size.height),
+        Paint()..color = const Color(0xFFCE4257));
+    // The slice being carved off today: dimmed + hatched.
+    if (ghostFrac > solidFrac) {
+      final Rect ghost = Rect.fromLTWH(size.width * solidFrac, 0,
+          size.width * (ghostFrac - solidFrac), size.height);
+      canvas.drawRect(
+          ghost, Paint()..color = const Color(0xFFCE4257).withValues(alpha: 0.30));
+      final Paint stripe = Paint()
+        ..color = const Color(0xFFE88A98).withValues(alpha: 0.55)
+        ..strokeWidth = 1.6;
+      canvas.save();
+      canvas.clipRect(ghost);
+      for (double x = ghost.left - size.height;
+          x < ghost.right + size.height;
+          x += 6) {
+        canvas.drawLine(Offset(x, size.height + 2),
+            Offset(x + size.height + 4, -2), stripe);
+      }
+      canvas.restore();
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_HpBarPainter old) =>
+      old.hp != hp || old.maxHp != maxHp || old.pending != pending;
 }
 
 // ── chart painters ────────────────────────────────────────────────────

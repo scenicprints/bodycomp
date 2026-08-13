@@ -301,5 +301,50 @@ void main() {
       expect(r.hasData, false);
       expect(r.line, isNotEmpty);
     });
+
+    test('rounds: drop the pound or lose the week', () {
+      // Daily weigh-ins, losing 0.2/day (1.4/wk) for 2 weeks, then flat.
+      final List<DailyLog> logs = <DailyLog>[
+        for (int i = 0; i <= 20; i++)
+          log(i, i <= 14 ? 200 - i * 0.2 : 197.2)
+      ];
+      final List<RivalRound> rounds = RivalEngine.rounds(logs,
+          campaignStart: d(0), asOf: mon.add(const Duration(days: 21)));
+      expect(rounds, hasLength(3));
+      // Week 1 reads short on TREND (the 7-day average lags a standing
+      // start — that's the water-weight protection, not a bug). By week 2
+      // the lag cancels and the true −1.4/wk pace shows.
+      expect(rounds[1].result, 'won');
+      expect(rounds[1].delta, closeTo(-1.4, 0.01));
+      expect(rounds[2].result, 'lost'); // flat week
+    });
+
+    test('a week with no weigh-ins judges nothing', () {
+      final List<DailyLog> logs = <DailyLog>[log(0, 200), log(14, 198)];
+      final List<RivalRound> rounds = RivalEngine.rounds(logs,
+          campaignStart: d(0), asOf: mon.add(const Duration(days: 14)));
+      expect(rounds[1].result, 'none'); // days 7..13 empty
+    });
+
+    test('a fresh K.O. is gloating material', () {
+      final (int _, String line) = RivalEngine.moodLine(
+          2.0, DateTime(2026, 6, 15),
+          recentKo: true);
+      expect(line.toLowerCase(), contains('k'));
+      // And the same day without one reads from the normal pool.
+      final (int _, String normal) =
+          RivalEngine.moodLine(2.0, DateTime(2026, 6, 15));
+      expect(normal, isNot(line));
+    });
+
+    test('the anchor moves only forward, and only on recalibration', () {
+      expect(RivalEngine.anchorFor(d(0), null), d(0));
+      expect(RivalEngine.anchorFor(d(0), d(5)), d(5));
+      // A reset BEFORE the campaign started cannot drag the race back.
+      expect(
+          RivalEngine.anchorFor(
+              d(0), formatDate(mon.subtract(const Duration(days: 30)))),
+          d(0));
+    });
   });
 }
