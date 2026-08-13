@@ -25,6 +25,9 @@ import 'insights.dart';
 import 'goals.dart';
 import 'unlocks.dart';
 import 'grade.dart';
+import 'campaign.dart';
+import 'campaign_screen.dart';
+import 'creatures.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // DATA MODELS
@@ -197,6 +200,22 @@ const Object _unset = Object();
 // MATH ENGINE
 // ═══════════════════════════════════════════════════════════════════════
 
+/// What the TDEE estimate is actually standing on, so the UI can say
+/// "2,410 · from 24 valid days" instead of printing a bare number.
+class TdeeInfo {
+  final double tdee; // resolved: adaptive when trustworthy, else baseline
+  final double baseline; // lean-mass Katch-McArdle × activity multiplier
+  final double? adaptive; // measured estimate (null = not enough valid days)
+  final int validDays; // fully-known days backing the measured estimate
+  const TdeeInfo(
+      {required this.tdee,
+      required this.baseline,
+      required this.adaptive,
+      required this.validDays});
+
+  bool get measured => adaptive != null;
+}
+
 class MathEngine {
   static double leanBodyMass(double w, double bf) {
     return w * (1 - bf);
@@ -214,40 +233,9 @@ class MathEngine {
     return bmr(lbmLbs) * mult;
   }
 
-  /// Energy-balance back-calculation over days with KNOWN intake.
-  /// Caller decides which days are known (food-logged, fasted, or manual) —
-  /// a 0-calorie fasted day is valid here, an unlogged day must be excluded.
-  /// Maximum real-world span the 14 logged intake days may cover. Beyond this
-  /// the window is stale: the calorie side still counts 14 days while the fat
-  /// side counts the whole span, so the two halves no longer describe the same
-  /// period and the estimate becomes meaningless (it can even go negative).
-  static const int kAdaptiveMaxSpanDays = 24;
-
-  static double? adaptiveTdeeFrom(List<DailyLog> intakeDays) {
-    if (intakeDays.length < 14) {
-      return null;
-    }
-    final List<DailyLog> recent =
-        intakeDays.sublist(intakeDays.length - 14);
-    // Reject a stale window — e.g. logging stopped and these 14 days are
-    // smeared across months of weight change.
-    final DateTime? from = DateTime.tryParse(recent.first.date);
-    final DateTime? to = DateTime.tryParse(recent.last.date);
-    if (from == null ||
-        to == null ||
-        to.difference(from).inDays > kAdaptiveMaxSpanDays) {
-      return null;
-    }
-    final int totalCal =
-        recent.fold<int>(0, (int s, DailyLog l) => s + l.calories);
-    final double fatLost = recent.first.fatMass - recent.last.fatMass;
-    final double est = (totalCal + fatLost * 3500) / 14;
-    return est.isFinite && est > 0 ? est : null;
-  }
-
-  /// Backward-compatible: treats calories > 0 as the "known intake" signal.
-  static double? adaptiveTdee(List<DailyLog> logs) =>
-      adaptiveTdeeFrom(logs.where((DailyLog l) => l.calories > 0).toList());
+  /// Minimum fully-known days of history before the measured estimate is
+  /// trusted at all. Below this the baseline formula is shown instead.
+  static const int kMinValidDays = 10;
 
   /// Lean body mass averaged over the most recent [window] logs, so the
   /// baseline TDEE rides a smoothed trend instead of a single noisy weigh-in.
@@ -261,54 +249,117 @@ class MathEngine {
         slice.length;
   }
 
-  /// Resolves each weigh-in day's effective intake:
+  /// Every date whose intake is genuinely KNOWN:
   ///  • food-logged day  → that date's food total
   ///  • fasted day       → 0 kcal (an intentional fast IS known intake)
   ///  • manual cal > 0   → the typed number (legacy)
-  ///  • otherwise        → excluded (we genuinely don't know)
-  static List<DailyLog> resolveIntake(List<DailyLog> logs,
+  /// Days with none of those are absent — we genuinely don't know.
+  static Map<String, int> knownIntakeByDate(List<DailyLog> logs,
       Map<String, double> caloriesByDate, Set<String> fastedDates) {
-    final List<DailyLog> out = <DailyLog>[];
+    final Map<String, int> out = <String, int>{};
+    for (final MapEntry<String, double> e in caloriesByDate.entries) {
+      if (e.value > 0) {
+        out[e.key] = e.value.round();
+      }
+    }
+    for (final String d in fastedDates) {
+      out.putIfAbsent(d, () => 0);
+    }
     for (final DailyLog l in logs) {
-      final double? f = caloriesByDate[l.date];
-      if (f != null && f > 0) {
-        out.add(DailyLog(
-            date: l.date, weight: l.weight, bf: l.bf, calories: f.round()));
-      } else if (fastedDates.contains(l.date)) {
-        out.add(DailyLog(date: l.date, weight: l.weight, bf: l.bf, calories: 0));
-      } else if (l.calories > 0) {
-        out.add(l);
+      if (l.calories > 0) {
+        out.putIfAbsent(l.date, () => l.calories);
       }
     }
     return out;
+  }
+
+  /// Segment-based energy-balance estimate. A day of history only counts
+  /// when the balance across it is fully known: a weigh-in on each end of
+  /// the span and calories logged for every day inside it. Anything else is
+  /// thrown out entirely instead of smeared into the estimate.
+  ///
+  /// Within a valid segment the intermediate weigh-ins cancel algebraically,
+  /// so overnight water noise divides by the segment length — a 20-day
+  /// unbroken run is worth ±175 cal/day, not ±3500. Segments pool by length
+  /// (a 3-day scrap barely counts against a 3-week run). Uses body weight,
+  /// never the BF-scale's fat reading — a 1% BF misread is 7000 phantom
+  /// calories.
+  static TdeeInfo tdeeInfo(List<DailyLog> logs, double mult,
+      {Map<String, double>? caloriesByDate,
+      Set<String>? fastedDates,
+      String? resetDate}) {
+    final double baseline =
+        logs.isEmpty ? 0 : baselineTdee(rollingLbm(logs), mult);
+    final Map<String, int> intake = knownIntakeByDate(logs,
+        caloriesByDate ?? const <String, double>{},
+        fastedDates ?? const <String>{});
+    // A recalibration is a clean slate: anything logged before it is ignored
+    // by the adaptive estimate, so a stale history can't drag it.
+    List<DailyLog> weighIns = logs;
+    if (resetDate != null && resetDate.isNotEmpty) {
+      weighIns = weighIns
+          .where((DailyLog l) => l.date.compareTo(resetDate) >= 0)
+          .toList();
+    }
+    double totalCal = 0;
+    double totalDrop = 0;
+    int totalDays = 0;
+    for (int i = 0; i + 1 < weighIns.length; i++) {
+      final DateTime? a = DateTime.tryParse(weighIns[i].date);
+      final DateTime? b = DateTime.tryParse(weighIns[i + 1].date);
+      if (a == null || b == null) {
+        continue;
+      }
+      final int gap = b.difference(a).inDays;
+      if (gap < 1) {
+        continue;
+      }
+      double segCal = 0;
+      bool known = true;
+      for (int d = 0; d < gap; d++) {
+        final int? cal = intake[formatDate(a.add(Duration(days: d)))];
+        if (cal == null) {
+          known = false;
+          break;
+        }
+        segCal += cal;
+      }
+      if (!known) {
+        continue;
+      }
+      totalCal += segCal;
+      totalDrop += weighIns[i].weight - weighIns[i + 1].weight;
+      totalDays += gap;
+    }
+    double? adaptive;
+    if (totalDays >= kMinValidDays) {
+      final double est = (totalCal + totalDrop * 3500) / totalDays;
+      if (est.isFinite && est > 0) {
+        adaptive = est;
+      }
+    }
+    double tdee = baseline;
+    if (adaptive != null && baseline > 0) {
+      // Trust the measured estimate, but never let sparse or noisy data push
+      // it somewhere physiologically absurd — clamp around the baseline.
+      tdee = adaptive.clamp(baseline * 0.75, baseline * 1.35);
+    }
+    return TdeeInfo(
+        tdee: tdee,
+        baseline: baseline,
+        adaptive: adaptive,
+        validDays: totalDays);
   }
 
   static double activeTdee(List<DailyLog> logs, double mult,
       {Map<String, double>? caloriesByDate,
       Set<String>? fastedDates,
       String? resetDate}) {
-    List<DailyLog> intake = resolveIntake(
-        logs, caloriesByDate ?? <String, double>{},
-        fastedDates ?? <String>{});
-    // A recalibration is a clean slate: anything logged before it is ignored
-    // by the adaptive estimate, so a stale history can't drag it.
-    if (resetDate != null && resetDate.isNotEmpty) {
-      intake = intake
-          .where((DailyLog l) => l.date.compareTo(resetDate) >= 0)
-          .toList();
-    }
-    if (logs.isEmpty) {
-      return 0;
-    }
-    final double baseline = baselineTdee(rollingLbm(logs), mult);
-    final double? adaptive = adaptiveTdeeFrom(intake);
-    if (adaptive == null || baseline <= 0) {
-      return baseline;
-    }
-    // Trust the measured estimate, but never let a noisy scan or a sparse log
-    // push it somewhere physiologically absurd — clamp it around the
-    // lean-mass baseline.
-    return adaptive.clamp(baseline * 0.6, baseline * 1.6);
+    return tdeeInfo(logs, mult,
+            caloriesByDate: caloriesByDate,
+            fastedDates: fastedDates,
+            resetDate: resetDate)
+        .tdee;
   }
 
   static double rollingAvg(List<DailyLog> logs, int idx, {int window = 7}) {
@@ -937,6 +988,17 @@ class _BodyCompAppState extends State<BodyCompApp> {
   Prestige _prestige = const Prestige(0);
   List<BodyMeasurement> _measurements = [];
   bool _syncingFoods = false;
+  String _campaignStart = '';
+
+  /// The campaign (and Chad's race) starts the first day the app runs with
+  /// a calibration in place — stamped once, then permanent.
+  void _ensureCampaignStart() {
+    _campaignStart = AppStorage.getPref('campaignStart', '');
+    if (_campaignStart.isEmpty && _cal != null) {
+      _campaignStart = formatDate(DateTime.now());
+      AppStorage.savePref('campaignStart', _campaignStart);
+    }
+  }
 
   @override
   void initState() {
@@ -957,6 +1019,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _trainer = AppStorage.getTrainerState();
     _sleep = AppStorage.getSleep();
     _insights = AppStorage.getInsights();
+    _ensureCampaignStart();
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
   }
@@ -1008,6 +1071,9 @@ class _BodyCompAppState extends State<BodyCompApp> {
       _cal = c;
     });
     AppStorage.saveCalibration(c);
+    if (_campaignStart.isEmpty) {
+      _ensureCampaignStart();
+    }
   }
 
   void _setLogs(List<DailyLog> l) {
@@ -1110,6 +1176,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   void _resetAll() {
     AppStorage.clearAll();
     setState(() {
+      _campaignStart = '';
       _cal = null;
       _logs = [];
       _dismissed = [];
@@ -1155,6 +1222,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
       home: _cal == null
           ? SetupScreen(onDone: _setCal)
           : HomeShell(
+              campaignStart: _campaignStart,
               cal: _cal!,
               logs: _logs,
               dismissed: _dismissed,
@@ -1861,6 +1929,7 @@ class _SetupScreenState extends State<SetupScreen> {
 // ═══════════════════════════════════════════════════════════════════════
 
 class HomeShell extends StatefulWidget {
+  final String campaignStart;
   final UserCalibration cal;
   final List<DailyLog> logs;
   final List<double> dismissed;
@@ -1896,6 +1965,7 @@ class HomeShell extends StatefulWidget {
   final VoidCallback onReset;
   const HomeShell(
       {super.key,
+      required this.campaignStart,
       required this.cal,
       required this.logs,
       required this.dismissed,
@@ -1934,7 +2004,31 @@ class HomeShell extends StatefulWidget {
 }
 
 class _HomeShellState extends State<HomeShell> {
-  int _tab = 0;
+  // Dashboard is still home; CAMPAIGN sits to its left.
+  int _tab = 1;
+
+  void _openSettings(BuildContext context) {
+    Navigator.of(context).push(MaterialPageRoute<void>(
+        builder: (_) => Scaffold(
+              appBar: AppBar(
+                  title: const Text('SETTINGS',
+                      style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.5)),
+                  backgroundColor: kBgDeep,
+                  elevation: 0),
+              body: SafeArea(
+                child: SettingsScreen(
+                    cal: widget.cal,
+                    logs: widget.logs,
+                    onSetCal: widget.onSetCal,
+                    onSetLogs: widget.onSetLogs,
+                    onReset: widget.onReset),
+              ),
+            )));
+  }
+
   @override
   Widget build(BuildContext context) {
     int ph = 0;
@@ -1946,8 +2040,22 @@ class _HomeShellState extends State<HomeShell> {
     return Scaffold(
       body: SafeArea(
           child: IndexedStack(index: _tab, children: [
+        CampaignScreen(
+            accent: accent,
+            cal: widget.cal,
+            logs: widget.logs,
+            foods: widget.foods,
+            fasted: widget.fasted,
+            runs: widget.runs,
+            sleep: widget.sleep,
+            trainer: widget.trainer,
+            challenges: widget.challenges,
+            prestige: widget.prestige,
+            campaignStart: widget.campaignStart),
         DashboardScreen(
             chartSkin: widget.cosmetics.chartSkin,
+            campaignStart: widget.campaignStart,
+            onOpenSettings: () => _openSettings(context),
             measurements: widget.measurements,
             onSetMeasurements: widget.onSetMeasurements,
             onSetCal: widget.onSetCal,
@@ -2001,7 +2109,8 @@ class _HomeShellState extends State<HomeShell> {
             sleep: widget.sleep,
             onSetSleep: widget.onSetSleep),
         GoalsScreen(
-            active: _tab == 5,
+            active: _tab == 6,
+            campaignStart: widget.campaignStart,
             accent: accent,
             cal: widget.cal,
             logs: widget.logs,
@@ -2018,12 +2127,6 @@ class _HomeShellState extends State<HomeShell> {
             onSetCosmetic: widget.onSetCosmetic,
             prestige: widget.prestige,
             onSetPrestige: widget.onSetPrestige),
-        SettingsScreen(
-            cal: widget.cal,
-            logs: widget.logs,
-            onSetCal: widget.onSetCal,
-            onSetLogs: widget.onSetLogs,
-            onReset: widget.onReset),
       ])),
       bottomNavigationBar: BottomNavigationBar(
           currentIndex: _tab,
@@ -2036,6 +2139,8 @@ class _HomeShellState extends State<HomeShell> {
           },
           items: const [
             BottomNavigationBarItem(
+                icon: Icon(Icons.sports_kabaddi_rounded), label: 'CAMPAIGN'),
+            BottomNavigationBarItem(
                 icon: Icon(Icons.dashboard_rounded), label: 'DASHBOARD'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.restaurant_rounded), label: 'FOOD'),
@@ -2047,8 +2152,6 @@ class _HomeShellState extends State<HomeShell> {
                 icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.emoji_events_rounded), label: 'GOALS'),
-            BottomNavigationBarItem(
-                icon: Icon(Icons.settings_rounded), label: 'SETTINGS'),
           ]),
     );
   }
@@ -2064,6 +2167,7 @@ class _HomeShellState extends State<HomeShell> {
 
 class GoalsScreen extends StatefulWidget {
   final bool active;
+  final String campaignStart;
   final Color accent;
   final UserCalibration cal;
   final List<DailyLog> logs;
@@ -2084,6 +2188,7 @@ class GoalsScreen extends StatefulWidget {
   const GoalsScreen({
     super.key,
     required this.active,
+    this.campaignStart = '',
     required this.accent,
     required this.cal,
     required this.logs,
@@ -2109,6 +2214,22 @@ class GoalsScreen extends StatefulWidget {
 class _GoalsScreenState extends State<GoalsScreen> {
   bool _showShelf = false;
 
+  /// Campaign XP (kills, boss wins) feeds the same level — one economy.
+  int _campaignXp() {
+    if (widget.campaignStart.isEmpty) {
+      return 0;
+    }
+    return CampaignEngine.compute(
+      cal: widget.cal,
+      logs: widget.logs,
+      foods: widget.foods,
+      fasted: widget.fasted.toSet(),
+      runs: widget.runs,
+      sleep: widget.sleep,
+      startDate: widget.campaignStart,
+    ).xp;
+  }
+
   GoalState _state() => GoalEngine.compute(
         widget.cal,
         widget.logs,
@@ -2119,6 +2240,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
         trainerLevel: widget.trainer.level,
         challenges: widget.challenges,
         prestige: widget.prestige,
+        extraXp: _campaignXp(),
       );
 
   @override
@@ -4060,6 +4182,8 @@ class _ConfettiPainter extends CustomPainter {
 
 class DashboardScreen extends StatefulWidget {
   final String chartSkin;
+  final String campaignStart;
+  final VoidCallback? onOpenSettings;
   final List<BodyMeasurement> measurements;
   final void Function(List<BodyMeasurement>)? onSetMeasurements;
   final void Function(UserCalibration)? onSetCal;
@@ -4078,6 +4202,8 @@ class DashboardScreen extends StatefulWidget {
   const DashboardScreen(
       {super.key,
       this.chartSkin = 'chart_classic',
+      this.campaignStart = '',
+      this.onOpenSettings,
       this.measurements = const <BodyMeasurement>[],
       this.onSetMeasurements,
       this.onSetCal,
@@ -4521,10 +4647,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       targetWt = MathEngine.dynamicTargetWeight(lbm, widget.cal.targetBf);
     }
     double? tdee;
+    TdeeInfo? tdeeDetail;
     if (widget.logs.isNotEmpty) {
-      tdee = MathEngine.activeTdee(widget.logs, widget.cal.activityMult,
+      tdeeDetail = MathEngine.tdeeInfo(widget.logs, widget.cal.activityMult,
           caloriesByDate: FoodMath.caloriesByDate(widget.foods),
           fastedDates: widget.fasted.toSet());
+      tdee = tdeeDetail.tdee;
     }
     double? delta;
     if (widget.logs.length >= 2) {
@@ -4580,12 +4708,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Text('${(_progress * 100).toStringAsFixed(0)}% to goal',
                       style: TextStyle(fontSize: 11, color: Colors.grey[700])),
                 ]),
-                Text('BODYCOMP',
-                    style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: -1,
-                        color: Colors.grey[700])),
+                Row(children: <Widget>[
+                  Text('BODYCOMP',
+                      style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -1,
+                          color: Colors.grey[700])),
+                  if (widget.onOpenSettings != null) ...<Widget>[
+                    const SizedBox(width: 6),
+                    GestureDetector(
+                      onTap: widget.onOpenSettings,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(Icons.settings_rounded,
+                            size: 20, color: Colors.grey[600]),
+                      ),
+                    ),
+                  ],
+                ]),
               ]),
               const SizedBox(height: 8),
               ClipRRect(
@@ -4601,17 +4742,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
               _gradeCard(accent),
               const SizedBox(height: 14),
 
-              // AI coach card
-              _AdvisorCard(
-                  cal: widget.cal,
+              // The rival — Chad lives where the coach used to.
+              _RivalCard(
                   logs: widget.logs,
-                  foods: widget.foods,
-                  fasted: widget.fasted,
-                  sleep: widget.sleep,
-                  runs: widget.runs,
-                  trainerLevel: widget.trainer.level,
-                  insights: widget.insights,
-                  onSetInsights: widget.onSetInsights,
+                  campaignStart: widget.campaignStart,
+                  resetDate: widget.cal.tdeeResetDate,
                   accent: accent),
               const SizedBox(height: 14),
 
@@ -4705,9 +4840,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         numValue:
                             tdee != null ? tdee - widget.cal.deficit : null,
                         decimals: 0,
-                        sub: tdee != null
-                            ? 'cal (−${widget.cal.deficit})'
-                            : null,
+                        sub: tdeeDetail == null
+                            ? null
+                            : tdeeDetail.measured
+                                ? 'cal (−${widget.cal.deficit}) · '
+                                    '${tdeeDetail.validDays}d measured'
+                                : 'cal (−${widget.cal.deficit}) · baseline',
                         accent: accent,
                         bg: kSurface0)),
                 const SizedBox(width: 10),
@@ -9312,359 +9450,152 @@ class _ScrollTimeSheetState extends State<_ScrollTimeSheet> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// FOOD ADVISOR UI
+// THE RIVAL — Chad. Loses 1 lb a week, every week, rain or shine.
+// Sits where the coach used to. Cumulative from the race anchor; only a
+// recalibration resets him.
 // ═══════════════════════════════════════════════════════════════════════
 
-String _agoLabel(int ms) {
-  if (ms == 0) {
-    return '';
-  }
-  final int mins =
-      (DateTime.now().millisecondsSinceEpoch - ms) ~/ 60000;
-  if (mins < 1) {
-    return 'just now';
-  }
-  if (mins < 60) {
-    return '${mins}m ago';
-  }
-  final int h = mins ~/ 60;
-  if (h < 24) {
-    return '${h}h ago';
-  }
-  return '${h ~/ 24}d ago';
-}
-
-class _AdvisorCard extends StatefulWidget {
-  final UserCalibration cal;
+class _RivalCard extends StatelessWidget {
   final List<DailyLog> logs;
-  final List<FoodEntry> foods;
-  final List<String> fasted;
-  final List<SleepEntry> sleep;
-  final List<RunRecord> runs;
-  final int trainerLevel;
-  final List<AdvisorInsight> insights;
-  final void Function(List<AdvisorInsight>) onSetInsights;
+  final String campaignStart;
+  final String? resetDate;
   final Color accent;
-  const _AdvisorCard(
-      {required this.cal,
-      required this.logs,
-      required this.foods,
-      required this.fasted,
-      required this.sleep,
-      required this.runs,
-      required this.trainerLevel,
-      required this.insights,
-      required this.onSetInsights,
+  const _RivalCard(
+      {required this.logs,
+      required this.campaignStart,
+      required this.resetDate,
       required this.accent});
-  @override
-  State<_AdvisorCard> createState() => _AdvisorCardState();
-}
-
-class _AdvisorCardState extends State<_AdvisorCard> {
-  String? _busyKind;
-  String? _error;
-
-  String get _todayKey => formatDate(DateTime.now());
-  String get _weekKey {
-    final DateTime n = DateTime.now();
-    return formatDate(n.subtract(Duration(days: n.weekday - 1)));
-  }
-
-  /// The monthly review is a level-gated unlock (Deeper Coach).
-  bool get _monthlyUnlocked => hasUnlock(
-      'f_monthly',
-      GoalEngine.compute(
-              widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
-              runs: widget.runs,
-              sleep: widget.sleep,
-              trainerLevel: widget.trainerLevel)
-          .level);
-
-  bool get _monthDone {
-    final AdvisorInsight? m = _latest('monthly');
-    return m != null && m.periodKey == _todayKey.substring(0, 7);
-  }
-
-  AdvisorInsight? _latest(String kind) {
-    final List<AdvisorInsight> m =
-        widget.insights.where((AdvisorInsight i) => i.kind == kind).toList();
-    return m.isEmpty ? null : m.last;
-  }
-
-  void _generate(String kind) {
-    setState(() {
-      _busyKind = kind;
-      _error = null;
-    });
-    try {
-      final CoachFacts facts = CoachFacts.build(
-          widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
-          weekly: kind != 'daily',
-          sleep: widget.sleep,
-          runs: widget.runs);
-      String text;
-      if (kind == 'monthly') {
-        final GoalState gs = GoalEngine.compute(
-            widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
-            runs: widget.runs,
-            sleep: widget.sleep,
-            trainerLevel: widget.trainerLevel);
-        text = Coach.monthly(facts,
-            goalsCleared: gs.completed.length, bestStreak: gs.bestStreak);
-      } else if (kind == 'weekly') {
-        text = Coach.weekly(facts);
-      } else {
-        // Let the daily coach point at the nearest goal from the Goals tab.
-        final GoalState gs = GoalEngine.compute(
-            widget.cal, widget.logs, widget.foods, widget.fasted.toSet(),
-            runs: widget.runs,
-            sleep: widget.sleep,
-            trainerLevel: widget.trainerLevel);
-        final Iterable<Goal> near =
-            gs.live.where((Goal g) => !g.repeatable && g.progress > 0);
-        final Goal? closest = near.isEmpty
-            ? null
-            : near.reduce((Goal a, Goal b) => a.progress >= b.progress ? a : b);
-        text = Coach.daily(facts,
-            streak: gs.currentStreak,
-            nextGoal: closest == null
-                ? null
-                : '${closest.title}${closest.desc.isEmpty ? '' : ' (${closest.desc})'}');
-      }
-      final String key = kind == 'daily'
-          ? _todayKey
-          : kind == 'weekly'
-              ? _weekKey
-              : _todayKey.substring(0, 7); // YYYY-MM
-      final List<AdvisorInsight> updated = widget.insights
-          .where((AdvisorInsight i) => i.kind != kind)
-          .toList()
-        ..add(AdvisorInsight(
-            kind: kind,
-            periodKey: key,
-            text: text,
-            createdAtMs: DateTime.now().millisecondsSinceEpoch));
-      widget.onSetInsights(updated);
-    } catch (_) {
-      setState(() => _error = 'Could not build a read from your data yet.');
-    } finally {
-      if (mounted) {
-        setState(() => _busyKind = null);
-      }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
-    final Color accent = widget.accent;
-    final AdvisorInsight? daily = _latest('daily');
-    final AdvisorInsight? weekly = _latest('weekly');
-    final bool todayDone = daily != null && daily.periodKey == _todayKey;
-    final bool weekDone = weekly != null && weekly.periodKey == _weekKey;
-
+    final RivalState r = RivalEngine.compute(logs,
+        campaignStart: campaignStart, resetDate: resetDate);
+    final bool ahead = r.gap > 0;
     return Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
           color: kSurface1,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: kBorder)),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: <Widget>[
-          Row(children: <Widget>[
-            Icon(Icons.psychology_rounded, size: 16, color: accent),
-            const SizedBox(width: 6),
-            Text('COACH',
-                style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey[500],
-                    letterSpacing: 1,
-                    fontWeight: FontWeight.w700)),
-          ]),
-          Text('on-device',
-              style: TextStyle(fontSize: 10, color: Colors.grey[600])),
-        ]),
-        const SizedBox(height: 10),
-        ...<Widget>[
-          if (daily != null)
-            InkWell(
-              onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(
-                  builder: (_) => _AdvisorDetailScreen(
-                      daily: daily, weekly: weekly, accent: accent))),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(daily.text,
-                        maxLines: 5,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 13.5,
-                            color: Color(0xFFDDDDDD),
-                            height: 1.5)),
-                    const SizedBox(height: 4),
-                    Text('tap to read in full · ${_agoLabel(daily.createdAtMs)}',
+        Row(children: <Widget>[
+          SizedBox(
+              width: 58,
+              height: 58,
+              child: CustomPaint(
+                  size: const Size(58, 58), painter: ChadPainter(r.mood))),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: <Widget>[
+                  Row(children: <Widget>[
+                    const Text('CHAD',
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.2,
+                            color: Color(0xFFEEEEEE))),
+                    const SizedBox(width: 8),
+                    Text('−1 lb/week, every week',
                         style:
-                            TextStyle(fontSize: 11, color: Colors.grey[600])),
+                            TextStyle(fontSize: 9.5, color: Colors.grey[600])),
                   ]),
-            )
-          else
-            Text('No coaching yet today. Tap below for a check-in.',
-                style: TextStyle(fontSize: 13, color: Colors.grey[500])),
-          if (_error != null) ...<Widget>[
-            const SizedBox(height: 8),
-            Text(_error!,
-                style: const TextStyle(fontSize: 12, color: Color(0xFFCC8855))),
-          ],
-          const SizedBox(height: 12),
-          Row(children: <Widget>[
-            Expanded(
-                child: _coachBtn(
-                    label: todayDone ? 'Today ✓' : "Today's coaching",
-                    busy: _busyKind == 'daily',
-                    enabled: _busyKind == null && !todayDone,
-                    onTap: () => _generate('daily'),
-                    accent: accent,
-                    filled: true)),
-            const SizedBox(width: 10),
-            Expanded(
-                child: _coachBtn(
-                    label: weekDone ? 'This week ✓' : 'Weekly review',
-                    busy: _busyKind == 'weekly',
-                    enabled: _busyKind == null && !weekDone,
-                    onTap: () => _generate('weekly'),
-                    accent: accent,
-                    filled: false)),
-          ]),
-          // Deeper Coach — the monthly review, unlocked from the Goals tab.
-          if (_monthlyUnlocked) ...<Widget>[
-            const SizedBox(height: 10),
-            _coachBtn(
-                label: _monthDone ? 'This month ✓' : '🧠 Monthly review',
-                busy: _busyKind == 'monthly',
-                enabled: _busyKind == null && !_monthDone,
-                onTap: () => _generate('monthly'),
-                accent: accent,
-                filled: false),
-          ],
-          if (todayDone || weekDone) ...<Widget>[
-            const SizedBox(height: 8),
-            Text(
-                todayDone && weekDone
-                    ? 'Your coach checks in once a day and once a week — fresh reads roll in tomorrow.'
-                    : (todayDone
-                        ? 'Daily coaching is a once-a-day check-in — a fresh read tomorrow.'
-                        : 'Weekly review runs once a week — a fresh one next week.'),
-                style: TextStyle(
-                    fontSize: 11, color: Colors.grey[600], height: 1.4)),
-          ],
+                  const SizedBox(height: 3),
+                  Text('“${r.line}”',
+                      style: TextStyle(
+                          fontSize: 11.5,
+                          fontStyle: FontStyle.italic,
+                          height: 1.35,
+                          color: Colors.grey[400])),
+                ]),
+          ),
+        ]),
+        if (r.hasData) ...<Widget>[
+          const SizedBox(height: 10),
+          Text(
+              ahead
+                  ? 'He\'s ${r.gap.toStringAsFixed(1)} lb ahead'
+                  : 'You lead by ${(-r.gap).toStringAsFixed(1)} lb',
+              style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: ahead
+                      ? const Color(0xFFCE4257)
+                      : const Color(0xFF3CD6A3))),
+          Text(
+              'you ${r.yourTrend.toStringAsFixed(1)} (trend) · '
+              'him ${r.chadWeight.toStringAsFixed(1)} · '
+              'racing since ${_rivalDate(r.anchorDate)}',
+              style: TextStyle(fontSize: 10, color: Colors.grey[600])),
+          const SizedBox(height: 8),
+          SizedBox(
+              height: 56,
+              width: double.infinity,
+              child:
+                  CustomPaint(painter: _RivalChartPainter(r.series, accent))),
         ],
       ]),
     );
   }
 
-  Widget _coachBtn(
-      {required String label,
-      required bool busy,
-      required bool enabled,
-      required VoidCallback onTap,
-      required Color accent,
-      required bool filled}) {
-    final Widget child = busy
-        ? SizedBox(
-            height: 16,
-            width: 16,
-            child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: filled ? Colors.black : accent))
-        : Text(label,
-            style: TextStyle(
-                fontSize: 12.5,
-                fontWeight: FontWeight.w700,
-                color: !enabled
-                    ? Colors.grey[600]
-                    : (filled ? Colors.black : accent)));
-    return SizedBox(
-      height: 42,
-      child: filled
-          ? ElevatedButton(
-              onPressed: enabled ? onTap : null,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: accent,
-                  disabledBackgroundColor: const Color(0xFF2A2A2A),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              child: child)
-          : OutlinedButton(
-              onPressed: enabled ? onTap : null,
-              style: OutlinedButton.styleFrom(
-                  side: BorderSide(
-                      color: enabled
-                          ? Color.fromRGBO(
-                              accent.red, accent.green, accent.blue, 0.4)
-                          : const Color(0xFF2A2A2A)),
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10))),
-              child: child),
-    );
+  static String _rivalDate(String iso) {
+    final DateTime? d = DateTime.tryParse(iso);
+    return d == null ? iso : '${monthName(d.month)} ${d.day}';
   }
 }
 
-class _AdvisorDetailScreen extends StatelessWidget {
-  final AdvisorInsight? daily;
-  final AdvisorInsight? weekly;
+/// Your trend line vs Chad's straight −1 lb/week, on one tiny chart.
+class _RivalChartPainter extends CustomPainter {
+  final List<RivalPoint> series;
   final Color accent;
-  const _AdvisorDetailScreen(
-      {required this.daily, required this.weekly, required this.accent});
+  const _RivalChartPainter(this.series, this.accent);
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBgDeep,
-      appBar: AppBar(
-          backgroundColor: kBgDeep,
-          foregroundColor: const Color(0xFFEEEEEE),
-          title: const Text('Coach')),
-      body: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
-        children: <Widget>[
-          if (daily != null) _section('TODAY', daily!, accent),
-          if (weekly != null) _section('THIS WEEK', weekly!, accent),
-          if (daily == null && weekly == null)
-            Padding(
-                padding: const EdgeInsets.all(32),
-                child: Text('No coaching yet.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.grey[600]))),
-        ],
-      ),
-    );
+  void paint(Canvas canvas, Size size) {
+    if (series.length < 2) {
+      return;
+    }
+    double lo = double.infinity, hi = -double.infinity;
+    for (final RivalPoint p in series) {
+      lo = min(lo, min(p.you, p.chad));
+      hi = max(hi, max(p.you, p.chad));
+    }
+    final double span = (hi - lo).abs() < 1e-9 ? 1 : hi - lo;
+    Path build(double Function(RivalPoint) pick) {
+      final Path path = Path();
+      for (int i = 0; i < series.length; i++) {
+        final double x = size.width * i / (series.length - 1);
+        final double y = size.height -
+            ((pick(series[i]) - lo) / span) * (size.height - 4) -
+            2;
+        if (i == 0) {
+          path.moveTo(x, y);
+        } else {
+          path.lineTo(x, y);
+        }
+      }
+      return path;
+    }
+
+    canvas.drawPath(
+        build((RivalPoint p) => p.chad),
+        Paint()
+          ..color = const Color(0xFFCE4257).withValues(alpha: 0.8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6);
+    canvas.drawPath(
+        build((RivalPoint p) => p.you),
+        Paint()
+          ..color = accent
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2.2
+          ..strokeCap = StrokeCap.round);
   }
 
-  Widget _section(String title, AdvisorInsight i, Color accent) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 14),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-          color: kSurface1,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: kBorder)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: <Widget>[
-          Text(title,
-              style: TextStyle(
-                  fontSize: 11,
-                  color: accent,
-                  letterSpacing: 1,
-                  fontWeight: FontWeight.w700)),
-          Text(_agoLabel(i.createdAtMs),
-              style: TextStyle(fontSize: 11, color: Colors.grey[600])),
-        ]),
-        const SizedBox(height: 10),
-        SelectableText(i.text,
-            style: const TextStyle(
-                fontSize: 14, color: Color(0xFFDDDDDD), height: 1.6)),
-      ]),
-    );
-  }
+  @override
+  bool shouldRepaint(_RivalChartPainter old) =>
+      old.series != series || old.accent != accent;
 }
 
 // ═══════════════════════════════════════════════════════════════════════

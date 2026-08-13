@@ -344,6 +344,7 @@ class GoalEngine {
     List<ChallengeRun> challenges = const <ChallengeRun>[],
     Prestige prestige = const Prestige(0),
     DateTime? asOf,
+    int extraXp = 0, // campaign kills/boss wins — one shared economy
   }) {
     final DateTime now = asOf ?? DateTime.now();
     final MacroTargets t = MacroTargets.compute(cal, logs, foods, fasted);
@@ -407,6 +408,7 @@ class GoalEngine {
     for (final ChallengeRun c in finished) {
       xp += challengeDef(c.id)?.xp ?? 0;
     }
+    xp += extraXp;
 
     final int level = levelForXp(xp);
     final int base = xpToReach(level);

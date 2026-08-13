@@ -2,86 +2,197 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:bodycomp/main.dart';
 import 'package:bodycomp/food.dart';
 
-// Builds 14 fully-logged days (weight trending down, calories present).
-List<DailyLog> _loggedDays() {
-  final List<DailyLog> logs = <DailyLog>[];
-  for (int i = 0; i < 14; i++) {
-    final double weight = 200.0 - i * 0.3;
-    logs.add(DailyLog(
-      date: '2026-01-${(i + 1).toString().padLeft(2, '0')}',
-      weight: weight,
-      bf: 0.25 - i * 0.001,
-      calories: 2000,
-    ));
-  }
-  return logs;
+// ═══════════════════════════════════════════════════════════════════════
+// Segment-based TDEE engine.
+//
+// A day of history only counts when the energy balance across it is fully
+// known: a weigh-in on each end and calories logged for every day between.
+// Everything else is thrown away, never smeared into the estimate.
+// ═══════════════════════════════════════════════════════════════════════
+
+String d(int day) => formatDate(DateTime(2026, 1, 1).add(Duration(days: day)));
+
+/// [days] weigh-ins on consecutive dates, weight falling [dropPerDay]/day,
+/// [cal] manual calories on every day (0 = weight-only entry).
+List<DailyLog> chain(int days,
+    {double startW = 200, double dropPerDay = 0.3, int cal = 2000}) {
+  return <DailyLog>[
+    for (int i = 0; i < days; i++)
+      DailyLog(
+          date: d(i), weight: startW - i * dropPerDay, bf: 0.25, calories: cal)
+  ];
 }
 
 void main() {
-  group('adaptiveTdee ignores weight-only (no-calorie) days', () {
-    test('a weight-only entry does not change the adaptive TDEE', () {
-      final List<DailyLog> base = _loggedDays();
-      final double? before = MathEngine.adaptiveTdee(base);
-      expect(before, isNotNull);
+  group('valid-day accounting', () {
+    test('an unbroken daily chain counts every spanned day', () {
+      // 15 weigh-ins = 14 spanned days, all with calories.
+      final TdeeInfo t = MathEngine.tdeeInfo(chain(15), 1.4);
+      expect(t.validDays, 14);
+      expect(t.adaptive, isNotNull);
+      // (2000 + 0.3 × 3500) = 3050/day before the clamp.
+      expect(t.adaptive, closeTo(3050, 1e-6));
+    });
 
-      // Log a new day with weight but NO calories (the reported scenario).
-      final List<DailyLog> withWeightOnly = <DailyLog>[
-        ...base,
-        DailyLog(date: '2026-01-15', weight: 195.0, bf: 0.235, calories: 0),
+    test('a day without calories costs exactly the days it breaks', () {
+      final List<DailyLog> logs = chain(15);
+      // Day 7 weighed but no calories -> the segment day7->day8 is unknown.
+      logs[7] = DailyLog(date: d(7), weight: logs[7].weight, bf: 0.25);
+      final TdeeInfo t = MathEngine.tdeeInfo(logs, 1.4);
+      expect(t.validDays, 13);
+    });
+
+    test('a missing weigh-in does not break a fully-logged span', () {
+      // Weigh-ins day 0 and day 3 only, but calories logged on days 0,1,2
+      // via the food log -> one valid 3-day segment.
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: d(0), weight: 200, bf: 0.25),
+        DailyLog(date: d(3), weight: 199.1, bf: 0.25),
       ];
-      final double? after = MathEngine.adaptiveTdee(withWeightOnly);
-
-      expect(after, isNotNull);
-      expect(after, closeTo(before!, 1e-9),
-          reason: 'TDEE must be unchanged by a weight-only log');
-    });
-
-    test('fewer than 14 calorie-logged days -> no adaptive value', () {
-      final List<DailyLog> base = _loggedDays();
-      // Strip calories from one day -> only 13 logged days remain.
-      base[3] = DailyLog(
-          date: base[3].date, weight: base[3].weight, bf: base[3].bf);
-      expect(MathEngine.adaptiveTdee(base), isNull);
-    });
-
-    test('adding calories to that day later resumes counting it', () {
-      final List<DailyLog> base = _loggedDays();
-      final double? before = MathEngine.adaptiveTdee(base);
-      final List<DailyLog> edited = <DailyLog>[
-        ...base,
-        DailyLog(date: '2026-01-15', weight: 195.0, bf: 0.235, calories: 1600),
-      ];
-      // Now the new day counts, so the value should move.
-      expect(MathEngine.adaptiveTdee(edited), isNot(closeTo(before!, 1e-6)));
-    });
-  });
-
-  group('fasting vs. didn\'t-log', () {
-    String pad(int i) => i.toString().padLeft(2, '0');
-
-    test('a fasted day is counted (0 cal); an unlogged day is not', () {
-      final List<DailyLog> logs = <DailyLog>[];
-      for (int i = 0; i < 13; i++) {
-        logs.add(DailyLog(
-            date: '2026-03-${pad(i + 1)}', weight: 200 - i * 0.2, bf: 0.25));
-      }
-      logs.add(DailyLog(date: '2026-03-14', weight: 197, bf: 0.24)); // bare day
-      final Map<String, double> byDate = <String, double>{
-        for (int i = 0; i < 13; i++) '2026-03-${pad(i + 1)}': 2000
+      final Map<String, double> food = <String, double>{
+        d(0): 2000.0,
+        d(1): 2000.0,
+        d(2): 2000.0,
       };
+      final TdeeInfo t = MathEngine.tdeeInfo(logs, 1.4, caloriesByDate: food);
+      expect(t.validDays, 3);
+    });
 
-      // Unlogged bare day → excluded (13 known days).
-      expect(MathEngine.resolveIntake(logs, byDate, <String>{}).length, 13);
+    test('an unlogged day inside a span throws the whole segment out', () {
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: d(0), weight: 200, bf: 0.25),
+        DailyLog(date: d(3), weight: 199.1, bf: 0.25),
+      ];
+      final Map<String, double> food = <String, double>{
+        d(0): 2000.0,
+        // d(1) missing — we genuinely don't know what was eaten.
+        d(2): 2000.0,
+      };
+      final TdeeInfo t = MathEngine.tdeeInfo(logs, 1.4, caloriesByDate: food);
+      expect(t.validDays, 0);
+      expect(t.adaptive, isNull);
+    });
 
-      // Marked fasted → included as a real 0-cal day (14 known days).
-      final List<DailyLog> withFast =
-          MathEngine.resolveIntake(logs, byDate, <String>{'2026-03-14'});
-      expect(withFast.length, 14);
-      expect(withFast.last.calories, 0);
+    test('a fasted day is known intake (0 cal); the chain holds', () {
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: d(0), weight: 200, bf: 0.25),
+        DailyLog(date: d(2), weight: 199.4, bf: 0.25),
+      ];
+      final TdeeInfo t = MathEngine.tdeeInfo(logs, 1.4,
+          caloriesByDate: <String, double>{d(0): 2000.0},
+          fastedDates: <String>{d(1)});
+      expect(t.validDays, 2);
     });
   });
 
-  group('macro targets', () {
+  group('trust threshold and fallback', () {
+    test('below 10 valid days there is no adaptive number at all', () {
+      final TdeeInfo t = MathEngine.tdeeInfo(chain(10), 1.4); // 9 valid days
+      expect(t.validDays, 9);
+      expect(t.adaptive, isNull);
+      expect(t.tdee, closeTo(t.baseline, 1e-9));
+    });
+
+    test('at 10 valid days the measured estimate takes over', () {
+      final TdeeInfo t = MathEngine.tdeeInfo(chain(11), 1.4);
+      expect(t.validDays, 10);
+      expect(t.adaptive, isNotNull);
+    });
+
+    test('no data at all -> baseline only', () {
+      final TdeeInfo t = MathEngine.tdeeInfo(<DailyLog>[], 1.4);
+      expect(t.tdee, 0);
+      expect(t.adaptive, isNull);
+    });
+  });
+
+  group('noise immunity', () {
+    test('the BF-scale reading cannot move the estimate at all', () {
+      // Identical weights/calories, wildly different body-fat readings.
+      final List<DailyLog> a = chain(15);
+      final List<DailyLog> b = <DailyLog>[
+        for (final DailyLog l in a)
+          DailyLog(
+              date: l.date,
+              weight: l.weight,
+              bf: 0.10 + (l.date.hashCode % 20) / 100.0,
+              calories: l.calories)
+      ];
+      // Baseline shifts (it rides lean mass), but the MEASURED estimate is
+      // weight-only by design — a 1% BF misread is 7000 phantom calories.
+      expect(MathEngine.tdeeInfo(b, 1.4).adaptive,
+          closeTo(MathEngine.tdeeInfo(a, 1.4).adaptive!, 1e-6));
+    });
+
+    test('intermediate water zigzag cancels; only endpoints matter', () {
+      final List<DailyLog> smooth = chain(15);
+      final List<DailyLog> zigzag = <DailyLog>[
+        for (int i = 0; i < smooth.length; i++)
+          DailyLog(
+              date: smooth[i].date,
+              // ±1.5 lb of overnight water on every intermediate day.
+              weight: smooth[i].weight +
+                  ((i == 0 || i == smooth.length - 1) ? 0 : (i.isEven ? 1.5 : -1.5)),
+              bf: 0.25,
+              calories: 2000)
+      ];
+      expect(MathEngine.tdeeInfo(zigzag, 1.4).adaptive,
+          closeTo(MathEngine.tdeeInfo(smooth, 1.4).adaptive!, 1e-6));
+    });
+  });
+
+  group('clamp and reset', () {
+    test('an implausible crash clamps to 1.35x baseline', () {
+      // 2 lb/day "lost" — mostly water, not 7000 cal/day of burn.
+      final TdeeInfo t = MathEngine.tdeeInfo(chain(15, dropPerDay: 2), 1.4);
+      expect(t.adaptive, closeTo(9000, 1e-6));
+      expect(t.tdee, closeTo(t.baseline * 1.35, 1e-6));
+    });
+
+    test('a gaining stretch clamps to 0.75x baseline, never 300', () {
+      final TdeeInfo t =
+          MathEngine.tdeeInfo(chain(15, dropPerDay: -0.4), 1.4);
+      expect(t.tdee, closeTo(t.baseline * 0.75, 1e-6));
+      expect(t.tdee, greaterThan(1200));
+    });
+
+    test('recalibrating discards everything before the reset date', () {
+      final List<DailyLog> logs = chain(15);
+      final TdeeInfo t =
+          MathEngine.tdeeInfo(logs, 1.4, resetDate: d(10));
+      expect(t.validDays, 4); // only day10..day14 survive
+      expect(t.adaptive, isNull);
+      expect(t.tdee, closeTo(t.baseline, 1e-9));
+    });
+  });
+
+  group('known intake resolution', () {
+    test('food log wins over a legacy manual number', () {
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: d(0), weight: 200, bf: 0.25, calories: 1500),
+      ];
+      final Map<String, int> known = MathEngine.knownIntakeByDate(
+          logs, <String, double>{d(0): 2200.0}, <String>{});
+      expect(known[d(0)], 2200);
+    });
+
+    test('fasted marks a day 0 even with a manual number absent', () {
+      final Map<String, int> known = MathEngine.knownIntakeByDate(
+          <DailyLog>[], <String, double>{}, <String>{d(0)});
+      expect(known[d(0)], 0);
+    });
+
+    test('a bare weigh-in day is simply unknown', () {
+      final List<DailyLog> logs = <DailyLog>[
+        DailyLog(date: d(0), weight: 200, bf: 0.25),
+      ];
+      final Map<String, int> known =
+          MathEngine.knownIntakeByDate(logs, <String, double>{}, <String>{});
+      expect(known.containsKey(d(0)), false);
+    });
+  });
+
+  group('macro targets still floor correctly', () {
     test('derive from body composition; overrides win', () {
       final UserCalibration cal =
           UserCalibration(startWeight: 200, startBf: 0.25, targetBf: 0.15);
@@ -97,156 +208,13 @@ void main() {
           cal.copyWith(proteinTarget: 180), logs, <FoodEntry>[], <String>{});
       expect(t2.protein, 180);
     });
-  });
 
-  group('baseline TDEE rides smoothed lean mass', () {
-    // Below 14 calorie-logged days, activeTdee falls back to the baseline.
-    List<DailyLog> _shortRun() {
-      final List<DailyLog> logs = <DailyLog>[];
-      for (int i = 0; i < 7; i++) {
-        logs.add(DailyLog(
-            date: '2026-02-${(i + 1).toString().padLeft(2, '0')}',
-            weight: 200.0,
-            bf: 0.25));
-      }
-      return logs;
-    }
-
-    test('baseline uses 7-day average lean mass, not the latest reading', () {
-      final List<DailyLog> logs = _shortRun();
-      final double tdee = MathEngine.activeTdee(logs, 1.4);
-      final double expected =
-          MathEngine.baselineTdee(MathEngine.rollingLbm(logs), 1.4);
-      expect(tdee, closeTo(expected, 1e-9));
-    });
-
-    test('one noisy weigh-in moves baseline far less than a raw single reading',
-        () {
-      final List<DailyLog> logs = _shortRun();
-      final double before = MathEngine.activeTdee(logs, 1.4);
-
-      // A +5 lb water-weight spike on a single day.
-      final List<DailyLog> spiked = <DailyLog>[
-        ...logs,
-        DailyLog(date: '2026-02-08', weight: 205.0, bf: 0.25),
-      ];
-      final double smoothed = MathEngine.activeTdee(spiked, 1.4);
-      final double rawSingle =
-          MathEngine.baselineTdee(spiked.last.lbm, 1.4);
-
-      // Smoothed reacts; raw-single reacts ~8x harder over an 8-day window.
-      expect((smoothed - before).abs(), lessThan((rawSingle - before).abs()));
-    });
-  });
-
-  group('negative-target guard (stopped logging while gaining)', () {
-    // Reproduces the real report: food logging stopped, weight went UP, and
-    // the Dashboard printed a NEGATIVE calorie target.
-    // The real pattern behind the report: food logged only occasionally, so
-    // the "last 14 intake days" are smeared across months — months in which
-    // weight (and fat) went UP. [fatGainLb] tunes how much was gained.
-    List<DailyLog> gainingWithStaleLog(DateTime now, {double fatGainLb = 7}) {
-      final List<DailyLog> out = <DailyLog>[];
-      const int span = 98;
-      for (int k = 0; k < 14; k++) {
-        // One logged day per week across the span, oldest first.
-        final int daysAgo = span - k * 7;
-        final DateTime d = now.subtract(Duration(days: daysAgo));
-        // Weight and fat climb steadily over the whole span.
-        final double t = k / 13.0;
-        final double weight = 190 + fatGainLb * t;
-        final double fatMass = 190 * 0.20 + fatGainLb * t;
-        out.add(DailyLog(
-            date: formatDate(d),
-            weight: weight,
-            bf: fatMass / weight,
-            calories: 1800));
-      }
-      return out;
-    }
-
-    test('a stale 14-day window is rejected, not used', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      final List<DailyLog> logs = gainingWithStaleLog(now);
-      final List<DailyLog> intake = MathEngine.resolveIntake(
-          logs, <String, double>{}, <String>{});
-      // The window spans ~100 days, far past the limit.
-      expect(MathEngine.adaptiveTdeeFrom(intake), isNull);
-    });
-
-    test('TDEE falls back to the lean-mass baseline and stays positive', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      final List<DailyLog> logs = gainingWithStaleLog(now);
-      final double tdee = MathEngine.activeTdee(logs, 1.4);
-      expect(tdee, greaterThan(1000));
-    });
-
-    test('the calorie target is never negative, at any rate of gain', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      for (final double gain in <double>[3, 5, 7, 9, 12, 20]) {
-        final List<DailyLog> g = gainingWithStaleLog(now, fatGainLb: gain);
-        final UserCalibration c = UserCalibration(
-            startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 500);
-        final MacroTargets mt =
-            MacroTargets.compute(c, g, <FoodEntry>[], <String>{});
-        expect(mt.calories, greaterThan(0), reason: 'gain $gain lb');
-      }
-      final List<DailyLog> logs = gainingWithStaleLog(now);
-      final UserCalibration cal = UserCalibration(
-          startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 500);
-      final MacroTargets t =
-          MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
-      expect(t.calories, greaterThan(0));
-      expect(t.carbs, greaterThanOrEqualTo(0));
-      expect(t.fiber, greaterThan(0));
-    });
-
-    test('even an absurd deficit cannot drive the target under the floor', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      final List<DailyLog> logs = gainingWithStaleLog(now);
+    test('the printed calorie target can never go below the floor', () {
       final UserCalibration cal = UserCalibration(
           startWeight: 200, startBf: 0.25, targetBf: 0.15, deficit: 99999);
-      final MacroTargets t =
-          MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
-      expect(t.calories, greaterThan(0));
-    });
-
-    test('a fresh, honest window is still used and still adaptive', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      final List<DailyLog> logs = <DailyLog>[];
-      for (int i = 13; i >= 0; i--) {
-        final DateTime d = now.subtract(Duration(days: i));
-        logs.add(DailyLog(
-            date: formatDate(d),
-            weight: 190 - (13 - i) * 0.1,
-            bf: 0.22,
-            calories: 2000));
-      }
-      final List<DailyLog> intake = MathEngine.resolveIntake(
-          logs, <String, double>{}, <String>{});
-      final double? adaptive = MathEngine.adaptiveTdeeFrom(intake);
-      expect(adaptive, isNotNull);
-      expect(adaptive, greaterThan(2000)); // losing weight => above intake
-    });
-
-    test('a wildly off estimate is clamped near the baseline', () {
-      final DateTime now = DateTime(2026, 7, 29);
-      // 14 tight days but with an implausible body-fat crash.
-      final List<DailyLog> logs = <DailyLog>[];
-      for (int i = 13; i >= 0; i--) {
-        final DateTime d = now.subtract(Duration(days: i));
-        logs.add(DailyLog(
-            date: formatDate(d),
-            weight: 190,
-            bf: 0.30 - (13 - i) * 0.01, // ~13 pts of fat in two weeks
-            calories: 2000));
-      }
-      final double baseline =
-          MathEngine.baselineTdee(MathEngine.rollingLbm(logs), 1.4);
-      final double tdee = MathEngine.activeTdee(logs, 1.4);
-      expect(tdee, lessThanOrEqualTo(baseline * 1.6 + 0.01));
-      expect(tdee, greaterThanOrEqualTo(baseline * 0.6 - 0.01));
+      final MacroTargets t = MacroTargets.compute(
+          cal, chain(15, dropPerDay: -0.4), <FoodEntry>[], <String>{});
+      expect(t.calories, greaterThanOrEqualTo(1200));
     });
   });
-
 }
