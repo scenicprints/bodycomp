@@ -117,14 +117,18 @@ void main() {
       expect(t.protein100, 30);
     });
 
-    test('returns null without energy data', () {
+    test('macros without an energy row are kept, energy derived', () {
+      // This used to return null — and silently deleted every Foundation
+      // food that reports energy as 957/958 instead of 208 (bell peppers).
       final Map<String, dynamic> noCal = <String, dynamic>{
         'description': 'Mystery',
         'foodNutrients': <dynamic>[
           <String, dynamic>{'nutrientNumber': '203', 'unitName': 'G', 'value': 5}
         ],
       };
-      expect(Usda.parseFood(noCal), isNull);
+      final FoodTemplate? t = Usda.parseFood(noCal);
+      expect(t, isNotNull);
+      expect(t!.kcal100, 20.0); // 5 g protein × 4
     });
   });
 
@@ -297,6 +301,78 @@ void rankingTests() {
 
     test('irrelevant items score zero', () {
       expect(Usda.matchScore('plantain', _raw('Milk, whole', 'SR Legacy')), 0);
+    });
+
+    test('"bell peppers" — modifier after the comma still counts as the head',
+        () {
+      // USDA taxonomy: "Peppers, bell, green, raw". The whole food must
+      // outrank a brand that merely starts with "Bell" and any packaged
+      // product named bell peppers.
+      final int whole = Usda.matchScore(
+          'bell peppers', _raw('Peppers, bell, green, raw', 'Foundation'));
+      final int brandCoincidence = Usda.matchScore('bell peppers',
+          _raw('Chicken Breast Tenders', 'Branded', brand: 'Bell & Evans'));
+      final int packaged = Usda.matchScore(
+          'bell peppers', _raw('BELL PEPPERS, RED', 'Branded', brand: 'Kroger'));
+      final int tacoBell = Usda.matchScore(
+          'bell peppers', _raw('TACO BELL, Nachos', 'SR Legacy'));
+      final int hotPeppers = Usda.matchScore(
+          'bell peppers', _raw('Peppers, hot, raw', 'Survey (FNDDS)'));
+      expect(whole, greaterThanOrEqualTo(100));
+      expect(whole, greaterThan(brandCoincidence));
+      expect(whole, greaterThan(packaged));
+      expect(tacoBell, 0);
+      expect(hotPeppers, 0);
+    });
+  });
+
+  group('USDA energy fallbacks (Foundation Foods without nutrient 208)', () {
+    Map<String, dynamic> food(List<Map<String, dynamic>> nutrients) =>
+        <String, dynamic>{
+          'description': 'Peppers, bell, green, raw',
+          'dataType': 'Foundation',
+          'foodNutrients': nutrients,
+        };
+    Map<String, dynamic> n(String number, double value, [String unit = 'G']) =>
+        <String, dynamic>{'nutrientNumber': number, 'value': value, 'unitName': unit};
+
+    test('the real bell-pepper shape: 957/958 only, no 208 → NOT dropped', () {
+      // Mirrors what FDC returns for fdcId 2258588 — Atwater energies present,
+      // "Energy" 208 absent. The old parser returned null here.
+      final FoodTemplate? t = Usda.parseFood(food(<Map<String, dynamic>>[
+        n('203', 0.86),
+        n('204', 0.13),
+        n('205', 4.71),
+        n('957', 20.0, 'KCAL'),
+        n('958', 19.0, 'KCAL'),
+      ]));
+      expect(t, isNotNull);
+      expect(t!.kcal100, 20.0); // Atwater general wins over specific
+      expect(t.protein100, closeTo(0.86, 1e-9));
+    });
+
+    test('208 still wins when present', () {
+      final FoodTemplate? t = Usda.parseFood(food(<Map<String, dynamic>>[
+        n('208', 25.0, 'KCAL'),
+        n('957', 20.0, 'KCAL'),
+        n('203', 1.0),
+      ]));
+      expect(t!.kcal100, 25.0);
+    });
+
+    test('no energy row at all → derived from the macros', () {
+      final FoodTemplate? t = Usda.parseFood(food(<Map<String, dynamic>>[
+        n('203', 10.0),
+        n('204', 5.0),
+        n('205', 20.0),
+      ]));
+      expect(t, isNotNull);
+      expect(t!.kcal100, closeTo(10 * 4 + 5 * 9 + 20 * 4, 1e-9));
+    });
+
+    test('nothing usable at all is still dropped', () {
+      expect(Usda.parseFood(food(<Map<String, dynamic>>[n('291', 2.0)])),
+          isNull);
     });
   });
 }
