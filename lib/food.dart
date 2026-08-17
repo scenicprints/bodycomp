@@ -508,7 +508,10 @@ class Usda {
   }
 
   /// Relevance of one raw foods/search result for [query]. Public for tests.
-  ///   +100 the head noun IS the queried food ("Plantains, raw" → "plantain")
+  ///   +100 the head noun IS the queried food ("Plantains, raw" → "plantain";
+  ///        "Peppers, bell, green, raw" → "bell peppers" — USDA puts the
+  ///        modifier AFTER the comma, so the head only needs to carry one of
+  ///        the query words as long as the full name carries them all)
   ///    +30 …and the head is an exact match, nothing extra
   ///    +40 the query only appears deeper in the name (chips, sauces, dishes)
   ///    +50 the query names the product's BRAND — brands surface when asked
@@ -530,9 +533,9 @@ class Usda {
     // The head-noun tier is only meaningful for curated generic entries
     // ("Plantains, raw"). A branded product's name has no taxonomy — without
     // this gate "Plantain Chips Sea Salt" would score like the whole food.
-    if (generic && _wordsIn(q, head)) {
+    if (generic && _wordsIn(q, head, any: true) && _wordsIn(q, desc)) {
       s += 100;
-      if (_words(head).length == q.length) {
+      if (_words(head).length == q.length && _wordsIn(q, head)) {
         s += 30;
       }
     } else if (_wordsIn(q, desc)) {
@@ -624,7 +627,12 @@ class Usda {
     final List<dynamic> nutrients =
         (food['foodNutrients'] as List<dynamic>?) ?? <dynamic>[];
     double? kcal;
+    // Foundation Foods often report energy ONLY as the Atwater calculations
+    // (957 general / 958 specific) and omit 208 entirely — "Peppers, bell,
+    // green, raw" is one. Requiring 208 silently deleted them from search.
+    double? kcalAtwaterGeneral, kcalAtwaterSpecific;
     double prot = 0, fat = 0, carb = 0;
+    bool anyMacro = false;
     final Map<String, double> micros = <String, double>{};
 
     for (final dynamic raw in nutrients) {
@@ -640,14 +648,23 @@ class Usda {
         case '208':
           kcal = value;
           break;
+        case '957':
+          kcalAtwaterGeneral = value;
+          break;
+        case '958':
+          kcalAtwaterSpecific = value;
+          break;
         case '203':
           prot = value;
+          anyMacro = true;
           break;
         case '204':
           fat = value;
+          anyMacro = true;
           break;
         case '205':
           carb = value;
+          anyMacro = true;
           break;
         default:
           final String? key = _usdaNumToKey[number];
@@ -661,6 +678,13 @@ class Usda {
             }
           }
       }
+    }
+    // Energy: reported 208, else Atwater general, else specific, else derive
+    // it from the macros. A whole food is never thrown away for lacking a
+    // particular energy row.
+    kcal ??= kcalAtwaterGeneral ?? kcalAtwaterSpecific;
+    if (kcal == null && anyMacro) {
+      kcal = prot * 4 + fat * 9 + carb * 4;
     }
     if (kcal == null) {
       return null;
