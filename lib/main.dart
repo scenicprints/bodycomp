@@ -8697,8 +8697,22 @@ class _CookScreenState extends State<_CookScreen> {
       _persist();
       final MealPortion portion =
           MealMath.byCookedGrams(built.plate, built.plate.cookedTotalGrams);
+      // Log it on the day it was COOKED, not the day it was drained. The
+      // queue can sit for days — Pantry writes the meal the moment it is
+      // measured, and this end only sees it next time the Cook screen opens,
+      // which could be after the weekend. Using today's date would quietly
+      // put Friday's dinner on Monday.
+      final DateTime cookedAt =
+          DateTime.fromMillisecondsSinceEpoch(h.cookedAtMs);
+      final bool sane = h.cookedAtMs > 0 &&
+          cookedAt.isBefore(DateTime.now().add(const Duration(days: 1)));
       widget.onLogFood(MealMath.toEntry(built.plate, portion,
-          id: _newMealId(), date: widget.logDate, time: _nowTime()));
+          id: _newMealId(),
+          date: sane ? formatDate(cookedAt) : widget.logDate,
+          time: sane
+              ? '${cookedAt.hour.toString().padLeft(2, '0')}:'
+                  '${cookedAt.minute.toString().padLeft(2, '0')}'
+              : _nowTime()));
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           backgroundColor: const Color(0xFF2A2A2A),
           content: Text(
