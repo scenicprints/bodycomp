@@ -19,14 +19,21 @@ import 'pantry_bridge.dart';
 //   opened through _MealEditScreen with `existing` set, which is the path
 //   that skips the subtraction, and `pantrySettled` says why.
 //
-// PORTIONS. The cook weighs what goes on his own plate, never what the pan
-// produced, and does not want to be asked for the batch weight. So each pan's
-// yield is ESTIMATED from cookingYield() and his share is plate ÷ estimate.
-// That estimate is the denominator of everything logged off the dish, which
-// is a known and accepted inaccuracy, not an oversight.
+// PORTIONS ARE THIS APP'S JOB. Pantry sends one meal, every ingredient, each
+// tagged with the pan it was cooked in. It never asks about plates: it does
+// not know what was served, and this app already does that properly.
 //
-// It is per pan and not per meal on purpose: a plate is usually most of the
-// chicken and a little of the rice, and one meal-wide fraction cannot say so.
+// What the pan tag is FOR. Anything stirred together can never be separated
+// again, so it is portioned as one mass. Anything cooked APART can still be
+// weighed on its own, and must be, because its density is nothing like the
+// rest of the plate. Steak and broccoli are not interchangeable grams: a
+// plate that is mostly steak carries far more protein and saturated fat than
+// one meal-wide fraction would ever say, and those are the exact numbers
+// being tracked.
+//
+// The cook weighs his plate, not the pan, so each component's share is his
+// plate weight over what that component is RECKONED to have produced, from
+// cookingYield(). That estimate is a known and accepted inaccuracy.
 // ═══════════════════════════════════════════════════════════════════════
 
 const String _kOwner = 'scenicprints';
@@ -37,30 +44,19 @@ class CookedLine {
   final String name;
   final String? barcode;
   final double rawG;
-  const CookedLine({required this.name, this.barcode, required this.rawG});
+
+  /// The pan it was cooked in. Empty means it was never cooked with anything
+  /// — a garnish, or something added at the table.
+  final String group;
+
+  const CookedLine(
+      {required this.name, this.barcode, required this.rawG, this.group = ''});
 
   factory CookedLine.fromJson(Map<String, dynamic> j) => CookedLine(
         name: (j['name'] as String?) ?? '',
         barcode: j['barcode'] as String?,
+        group: (j['group'] as String?) ?? '',
         rawG: (j['raw_g'] as num?)?.toDouble() ?? 0,
-      );
-}
-
-/// One pan. [plateG] is what the cook took from it, 0 when he had none.
-class CookedGroup {
-  final String name;
-  final double plateG;
-  final List<CookedLine> lines;
-  const CookedGroup(
-      {required this.name, required this.plateG, required this.lines});
-
-  factory CookedGroup.fromJson(Map<String, dynamic> j) => CookedGroup(
-        name: (j['name'] as String?) ?? '',
-        plateG: (j['plate_g'] as num?)?.toDouble() ?? 0,
-        lines: ((j['lines'] as List<dynamic>?) ?? <dynamic>[])
-            .whereType<Map<String, dynamic>>()
-            .map(CookedLine.fromJson)
-            .toList(),
       );
 }
 
@@ -70,7 +66,22 @@ class CookedMeal {
   final int servings;
   final int cookedAtMs;
   final bool pantrySettled;
-  final List<CookedGroup> groups;
+  final List<CookedLine> lines;
+
+  /// The separately-cooked components, in the order they appear. Anything
+  /// with no pan sits under '' and is portioned as one mass.
+  List<String> get components {
+    final List<String> out = <String>[];
+    for (final CookedLine l in lines) {
+      if (!out.contains(l.group)) {
+        out.add(l.group);
+      }
+    }
+    return out;
+  }
+
+  List<CookedLine> linesIn(String group) =>
+      lines.where((CookedLine l) => l.group == group).toList();
 
   const CookedMeal({
     required this.id,
@@ -78,7 +89,7 @@ class CookedMeal {
     required this.servings,
     required this.cookedAtMs,
     required this.pantrySettled,
-    required this.groups,
+    required this.lines,
   });
 
   factory CookedMeal.fromJson(Map<String, dynamic> j) => CookedMeal(
@@ -89,9 +100,9 @@ class CookedMeal {
         // Absent means an older Pantry build that hadn't subtracted; treat it
         // as unsettled so nothing is silently skipped.
         pantrySettled: (j['pantry_settled'] as bool?) ?? false,
-        groups: ((j['groups'] as List<dynamic>?) ?? <dynamic>[])
+        lines: ((j['lines'] as List<dynamic>?) ?? <dynamic>[])
             .whereType<Map<String, dynamic>>()
-            .map(CookedGroup.fromJson)
+            .map(CookedLine.fromJson)
             .toList(),
       );
 }
@@ -138,7 +149,7 @@ class CookedInbox {
         meals
             .whereType<Map<String, dynamic>>()
             .map(CookedMeal.fromJson)
-            .where((CookedMeal m) => m.groups.isNotEmpty)
+            .where((CookedMeal m) => m.lines.isNotEmpty)
             .toList(),
         sha
       );
@@ -181,19 +192,13 @@ class CookedInbox {
         'servings': m.servings,
         'cooked_at_ms': m.cookedAtMs,
         'pantry_settled': m.pantrySettled,
-        'groups': <Map<String, dynamic>>[
-          for (final CookedGroup g in m.groups)
+        'lines': <Map<String, dynamic>>[
+          for (final CookedLine l in m.lines)
             <String, dynamic>{
-              'name': g.name,
-              'plate_g': g.plateG,
-              'lines': <Map<String, dynamic>>[
-                for (final CookedLine l in g.lines)
-                  <String, dynamic>{
-                    'name': l.name,
-                    if (l.barcode != null) 'barcode': l.barcode,
-                    'raw_g': l.rawG,
-                  }
-              ],
+              'name': l.name,
+              if (l.barcode != null) 'barcode': l.barcode,
+              if (l.group.isNotEmpty) 'group': l.group,
+              'raw_g': l.rawG,
             }
         ],
       });
@@ -261,86 +266,94 @@ FoodTemplate? _resolve(CookedLine line, List<PantryFood> foods) {
   return best;
 }
 
-/// What a handoff turns into: the batch that was cooked, and the plate that
-/// was eaten from it.
-class HandoffMeals {
+/// A handoff resolved against the pantry, ready to portion.
+class Handoff {
   /// Everything that went in the pans, at full weight. Goes in the meal list
-  /// so leftovers and "cook again" still work.
+  /// so leftovers and "cook again" work on what was actually cooked.
   final Meal batch;
 
-  /// The share that ended up on the plate, ready to log.
-  final Meal plate;
+  /// Ingredients per separately-cooked component, in order. The key is the
+  /// pan name; '' is the catch-all for anything cooked with nothing.
+  final Map<String, List<MealIngredient>> byComponent;
 
-  /// Lines that matched nothing in the pantry, by name, so the cook can be
-  /// told rather than quietly shorted.
+  /// Lines that matched nothing in the pantry, by name, so the cook is told
+  /// rather than quietly shorted.
   final List<String> unmatched;
 
-  const HandoffMeals(
-      {required this.batch, required this.plate, required this.unmatched});
+  const Handoff(
+      {required this.batch,
+      required this.byComponent,
+      required this.unmatched});
 
-  bool get isEmpty => batch.ingredients.isEmpty;
+  /// What a component is reckoned to have produced, from the yield table.
+  double estimatedCooked(String component) =>
+      (byComponent[component] ?? <MealIngredient>[])
+          .fold<double>(0, (double s, MealIngredient i) => s + i.cookedGrams);
+
+  /// The meal actually eaten, given what was weighed onto the plate from each
+  /// component. Each component is scaled on its own: a plate that is mostly
+  /// steak and a little broccoli cannot be described by one fraction, and
+  /// those two are nothing alike per gram.
+  Meal plate(Map<String, double> plateGrams, {String? name}) {
+    final List<MealIngredient> out = <MealIngredient>[];
+    byComponent.forEach((String component, List<MealIngredient> ings) {
+      final double cooked = estimatedCooked(component);
+      final double onPlate = plateGrams[component] ?? 0;
+      if (cooked <= 0 || onPlate <= 0) {
+        return;
+      }
+      // A yield estimate can sit under what really came out, so allow a share
+      // above 1 rather than silently capping what he ate.
+      final double share = (onPlate / cooked).clamp(0.0, 2.0);
+      for (final MealIngredient i in ings) {
+        out.add(MealIngredient(
+            food: i.food,
+            rawGrams: i.rawGrams * share,
+            yieldFactor: i.yieldFactor));
+      }
+    });
+    return Meal(
+        id: DateTime.now().microsecondsSinceEpoch.toString(),
+        name: name ?? batch.name,
+        ingredients: out);
+  }
 }
 
-/// Build both meals from [h].
-///
-/// Each pan's share is its plate weight over its ESTIMATED cooked weight, so
-/// a plate that took most of the chicken and a spoon of rice logs as exactly
-/// that. A pan the cook took nothing from contributes nothing to the plate but
-/// still counts as cooked.
-HandoffMeals? buildHandoffMeals(CookedMeal h, List<PantryFood> foods,
+/// Resolve [h] against the pantry.
+Handoff? buildHandoff(CookedMeal h, List<PantryFood> foods,
     {String Function()? newId}) {
-  final List<MealIngredient> batch = <MealIngredient>[];
-  final List<MealIngredient> plate = <MealIngredient>[];
+  final List<MealIngredient> all = <MealIngredient>[];
+  final Map<String, List<MealIngredient>> byComponent =
+      <String, List<MealIngredient>>{};
   final List<String> unmatched = <String>[];
 
-  for (final CookedGroup g in h.groups) {
-    final List<MealIngredient> mine = <MealIngredient>[];
-    for (final CookedLine l in g.lines) {
-      if (l.rawG <= 0) {
-        continue;
-      }
-      final FoodTemplate? t = _resolve(l, foods);
-      if (t == null) {
-        unmatched.add(l.name);
-        continue;
-      }
-      mine.add(MealIngredient(food: t, rawGrams: l.rawG));
-    }
-    if (mine.isEmpty) {
+  for (final CookedLine l in h.lines) {
+    if (l.rawG <= 0) {
       continue;
     }
-    batch.addAll(mine);
-
-    final double cooked = mine.fold<double>(
-        0, (double s, MealIngredient i) => s + i.cookedGrams);
-    // A yield estimate can sit under what actually came out, so allow a share
-    // above 1 rather than silently capping what he ate.
-    final double share =
-        (cooked <= 0 || g.plateG <= 0) ? 0 : (g.plateG / cooked).clamp(0.0, 2.0);
-    if (share <= 0) {
+    final FoodTemplate? t = _resolve(l, foods);
+    if (t == null) {
+      unmatched.add(l.name);
       continue;
     }
-    for (final MealIngredient i in mine) {
-      plate.add(MealIngredient(
-          food: i.food,
-          rawGrams: i.rawGrams * share,
-          yieldFactor: i.yieldFactor));
-    }
+    final MealIngredient mi = MealIngredient(food: t, rawGrams: l.rawG);
+    all.add(mi);
+    byComponent.putIfAbsent(l.group, () => <MealIngredient>[]).add(mi);
   }
 
-  if (batch.isEmpty) {
+  if (all.isEmpty) {
     return null;
   }
   final String Function() id =
       newId ?? () => DateTime.now().microsecondsSinceEpoch.toString();
-  return HandoffMeals(
+  return Handoff(
     batch: Meal(
       id: id(),
       name: h.recipe,
-      ingredients: batch,
+      ingredients: all,
       createdAtMs: h.cookedAtMs,
     ),
-    plate: Meal(id: id(), name: h.recipe, ingredients: plate),
+    byComponent: byComponent,
     unmatched: unmatched,
   );
 }
