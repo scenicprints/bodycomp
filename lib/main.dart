@@ -15,6 +15,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'updater.dart';
 import 'food.dart';
 import 'custom_foods.dart';
+import 'cooked_inbox.dart';
 import 'pantry_bridge.dart';
 import 'run_service.dart';
 import 'watch_bridge.dart';
@@ -8392,6 +8393,7 @@ class _CookScreenState extends State<_CookScreen> {
   void initState() {
     super.initState();
     _meals = List<Meal>.from(widget.meals);
+    _loadPantryInbox();
   }
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
@@ -8587,6 +8589,145 @@ class _CookScreenState extends State<_CookScreen> {
     );
   }
 
+  // ─── meals measured in the Pantry app ───
+  // Pantry has already taken these off the shelf and booked the spend, so
+  // nothing here subtracts. All that is left is to log what was eaten.
+
+  List<CookedMeal> _fromPantry = <CookedMeal>[];
+  bool _inboxBusy = false;
+
+  Future<void> _loadPantryInbox() async {
+    final List<CookedMeal>? pending = await CookedInbox.pending();
+    if (!mounted || pending == null) {
+      return; // couldn't read it: say nothing rather than "none"
+    }
+    setState(() => _fromPantry = pending);
+  }
+
+  Widget _pantryBanner() {
+    final int n = _fromPantry.length;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: widget.accent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: _inboxBusy ? null : () => _openHandoff(_fromPantry.first),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(children: <Widget>[
+              Icon(Icons.kitchen_rounded, size: 20, color: widget.accent),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                          n == 1
+                              ? 'Cooked in Pantry: ${_fromPantry.first.recipe}'
+                              : '$n meals cooked in Pantry',
+                          style: const TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFEEEEEE))),
+                      const SizedBox(height: 2),
+                      Text('Weighed at the counter. Tap to log it.',
+                          style: TextStyle(
+                              fontSize: 11.5, color: Colors.grey[500])),
+                    ]),
+              ),
+              if (_inboxBusy)
+                const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+              else
+                const Icon(Icons.chevron_right_rounded,
+                    color: Color(0xFF888888)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openHandoff(CookedMeal h) async {
+    setState(() => _inboxBusy = true);
+    final List<PantryFood>? foods = await fetchPantryFoods();
+    if (!mounted) {
+      return;
+    }
+    if (foods == null) {
+      setState(() => _inboxBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text("Couldn't read the pantry. Try again in a moment.")));
+      return;
+    }
+    final HandoffMeals? built = buildHandoffMeals(h, foods);
+    setState(() => _inboxBusy = false);
+    if (built == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text('Nothing in that meal matched your pantry.')));
+      return;
+    }
+
+    final String? choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: kSurface2,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (BuildContext ctx) => _HandoffSheet(
+          handoff: h, built: built, accent: widget.accent),
+    );
+    if (choice == null || !mounted) {
+      return;
+    }
+
+    // The batch joins the meal list either way, so leftovers and "cook again"
+    // work on what was actually cooked, not on the portion eaten.
+    if (choice == 'log') {
+      setState(() => _meals = <Meal>[
+            ..._meals.where((Meal x) => x.isActive(_now) || x.saved),
+            built.batch,
+          ]);
+      _persist();
+      final MealPortion portion =
+          MealMath.byCookedGrams(built.plate, built.plate.cookedTotalGrams);
+      widget.onLogFood(MealMath.toEntry(built.plate, portion,
+          id: _newMealId(), date: widget.logDate, time: _nowTime()));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text(
+              'Logged ${built.plate.calories.round()} cal from ${h.recipe}.')));
+    } else {
+      // Handed to the editor with `existing` set, which is also the path that
+      // does NOT subtract from the pantry — Pantry already did.
+      final Meal? m = await Navigator.of(context).push<Meal>(
+          MaterialPageRoute<Meal>(
+              builder: (_) => _MealEditScreen(
+                  accent: widget.accent, existing: built.batch)));
+      if (m == null || !mounted) {
+        return;
+      }
+      setState(() => _meals = <Meal>[
+            ..._meals.where((Meal x) => x.isActive(_now) || x.saved),
+            m,
+          ]);
+      _persist();
+      _portion(m);
+    }
+
+    setState(() =>
+        _fromPantry = _fromPantry.where((CookedMeal x) => x.id != h.id).toList());
+    // Best effort: if this fails the meal shows up again, which is far better
+    // than it vanishing unlogged.
+    await CookedInbox.clear(h.id);
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Meal> active = _active;
@@ -8604,7 +8745,7 @@ class _CookScreenState extends State<_CookScreen> {
           icon: const Icon(Icons.outdoor_grill_rounded),
           label: const Text('COOK A MEAL',
               style: TextStyle(fontWeight: FontWeight.w800))),
-      body: (active.isEmpty && saved.isEmpty)
+      body: (active.isEmpty && saved.isEmpty && _fromPantry.isEmpty)
           ? Center(
               child: Padding(
                   padding: const EdgeInsets.all(32),
@@ -8621,6 +8762,7 @@ class _CookScreenState extends State<_CookScreen> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
               children: <Widget>[
+                if (_fromPantry.isNotEmpty) _pantryBanner(),
                 if (active.isNotEmpty) ...<Widget>[
                   _sectionHead('LEFTOVERS (next 24h)'),
                   ...active.map((Meal m) => _mealCard(m, saved: false)),
@@ -8631,6 +8773,170 @@ class _CookScreenState extends State<_CookScreen> {
                   ...saved.map((Meal m) => _mealCard(m, saved: true)),
                 ],
               ]),
+    );
+  }
+}
+
+// ─── A meal handed over from the Pantry app ───
+// Shows what was weighed at the counter and what it comes to on the plate,
+// before anything is written to the day.
+class _HandoffSheet extends StatelessWidget {
+  final CookedMeal handoff;
+  final HandoffMeals built;
+  final Color accent;
+  const _HandoffSheet(
+      {required this.handoff, required this.built, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    final Meal plate = built.plate;
+    final bool ateNothing = plate.ingredients.isEmpty;
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+        child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              Text('FROM PANTRY',
+                  style: TextStyle(
+                      fontSize: 11,
+                      color: accent,
+                      letterSpacing: 1,
+                      fontWeight: FontWeight.w700)),
+              const SizedBox(height: 6),
+              Text(handoff.recipe,
+                  style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      color: Color(0xFFEEEEEE))),
+              const SizedBox(height: 4),
+              Text(
+                  'Weighed at the counter. The pantry has already been '
+                  'adjusted, so nothing here subtracts again.',
+                  style: TextStyle(
+                      fontSize: 12, color: Colors.grey[500], height: 1.4)),
+              const SizedBox(height: 16),
+
+              for (final CookedGroup g in handoff.groups) _groupRow(g),
+
+              if (built.unmatched.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFCC5555).withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(10)),
+                  child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        const Icon(Icons.error_outline_rounded,
+                            size: 16, color: Color(0xFFCC5555)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                              'Not in your pantry, so not counted: '
+                              '${built.unmatched.join(', ')}.',
+                              style: const TextStyle(
+                                  fontSize: 12,
+                                  color: Color(0xFFDDAAAA),
+                                  height: 1.4)),
+                        ),
+                      ]),
+                ),
+              ],
+
+              const SizedBox(height: 18),
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                    color: kSurface0, borderRadius: BorderRadius.circular(12)),
+                child: Row(children: <Widget>[
+                  Expanded(
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text('YOUR PLATE',
+                              style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.grey[600],
+                                  letterSpacing: 1,
+                                  fontWeight: FontWeight.w700)),
+                          const SizedBox(height: 4),
+                          Text(
+                              ateNothing
+                                  ? 'Nothing plated'
+                                  : '${plate.calories.round()} cal · '
+                                      '${plate.protein.round()} g protein',
+                              style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                  color: Color(0xFFEEEEEE))),
+                        ]),
+                  ),
+                ]),
+              ),
+
+              const SizedBox(height: 18),
+              if (!ateNothing)
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context, 'log'),
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: accent,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12))),
+                    child: const Text('LOG THIS PLATE',
+                        style: TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                height: 46,
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context, 'edit'),
+                  style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFBBBBBB),
+                      side: const BorderSide(color: Color(0xFF3A3A3A)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  child: const Text('Open as a meal instead'),
+                ),
+              ),
+            ]),
+      ),
+    );
+  }
+
+  /// One pan: what went in it, and how much of it ended up on the plate.
+  Widget _groupRow(CookedGroup g) {
+    final String what = g.lines.map((CookedLine l) => l.name).join(', ');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Expanded(
+            child: Text(g.name,
+                style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFDDDDDD))),
+          ),
+          Text(g.plateG > 0 ? '${g.plateG.round()} g on plate' : 'none taken',
+              style: TextStyle(
+                  fontSize: 12,
+                  color: g.plateG > 0 ? Colors.grey[400] : Colors.grey[600])),
+        ]),
+        const SizedBox(height: 2),
+        Text(what,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+      ]),
     );
   }
 }
