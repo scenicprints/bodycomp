@@ -8813,6 +8813,17 @@ class _HandoffSheetState extends State<_HandoffSheet> {
   String _label(String component) =>
       component.isEmpty ? 'Everything else' : component;
 
+  Map<String, double> get _entered => <String, double>{
+        for (final String c in _components)
+          c: double.tryParse(_plate[c]!.text.trim()) ?? 0
+      };
+
+  /// The plate as it stands, recomputed on every keystroke. The cook is
+  /// standing at the scale deciding how much to serve himself, and the number
+  /// he is deciding against is the calorie count — telling him only after he
+  /// has committed is telling him too late.
+  Meal get _plateSoFar => widget.built.plate(_entered);
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -8869,7 +8880,9 @@ class _HandoffSheetState extends State<_HandoffSheet> {
                         ]),
                   ),
                 ],
-                const SizedBox(height: 18),
+                const SizedBox(height: 14),
+                _runningTotal(),
+                const SizedBox(height: 14),
                 SizedBox(
                   width: double.infinity,
                   height: 50,
@@ -8889,6 +8902,50 @@ class _HandoffSheetState extends State<_HandoffSheet> {
       ),
     );
   }
+
+  Widget _runningTotal() {
+    final Meal m = _plateSoFar;
+    final bool any = m.ingredients.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+          color: kSurface0, borderRadius: BorderRadius.circular(12)),
+      child: Row(children: <Widget>[
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('ON YOUR PLATE',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey[600],
+                        letterSpacing: 1,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(any ? '${m.calories.round()} cal' : 'nothing yet',
+                    style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        color: any ? widget.accent : Colors.grey[700])),
+              ]),
+        ),
+        if (any)
+          Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                _stat('protein', m.protein),
+                _stat('fat', m.fat),
+                _stat('carbs', m.carbs),
+              ]),
+      ]),
+    );
+  }
+
+  Widget _stat(String label, double grams) => Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Text('${grams.round()} g $label',
+            style: TextStyle(fontSize: 12.5, color: Colors.grey[400])),
+      );
 
   Widget _row(String component) {
     final List<MealIngredient> ings =
@@ -8922,6 +8979,7 @@ class _HandoffSheetState extends State<_HandoffSheet> {
             controller: _plate[component],
             keyboardType: const TextInputType.numberWithOptions(decimal: true),
             textAlign: TextAlign.right,
+            onChanged: (_) => setState(() {}),
             style: const TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w700,
@@ -8949,12 +9007,7 @@ class _HandoffSheetState extends State<_HandoffSheet> {
     );
   }
 
-  void _submit() {
-    Navigator.pop(context, <String, double>{
-      for (final String c in _components)
-        c: double.tryParse(_plate[c]!.text.trim()) ?? 0
-    });
-  }
+  void _submit() => Navigator.pop(context, _entered);
 }
 
 // ─── Create / edit a meal ───
