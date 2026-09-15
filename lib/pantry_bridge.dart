@@ -237,7 +237,14 @@ int _match(IngredientDeduction ing, List<Map<String, dynamic>> items) {
 class PantryFood {
   final FoodTemplate template;
   final String remainingLabel; // e.g. "220 g left", "3 left", or ''
-  const PantryFood(this.template, this.remainingLabel);
+
+  /// The pantry item's own id. Carried so a meal handed over from Pantry can
+  /// be resolved by what the cook PAIRED it with, rather than by guessing
+  /// from the recipe's wording: "beef sirloin, lean, cut in 1cm strips" will
+  /// never match a shelf that says "Beef, top sirloin steak, raw".
+  final String pantryId;
+
+  const PantryFood(this.template, this.remainingLabel, {this.pantryId = ''});
 
   String get name => template.name;
 }
@@ -268,16 +275,24 @@ Future<List<PantryFood>?> fetchPantryFoods() async {
 
 PantryFood? _pantryFoodFrom(Map<String, dynamic> m) {
   final String name = (m['name'] as String?)?.trim() ?? '';
-  if (name.isEmpty || m['spice'] == true || m['quantity_unknown'] == true) {
+  // Spices and on-hand items used to be dropped here, which meant a meal that
+  // paired the soy sauce came over with it unrecognised. They carry no stock,
+  // but they are real food with real macros and the cook wants them logged.
+  // Only a nameless row is useless.
+  if (name.isEmpty) {
     return null;
   }
+  final bool untracked =
+      m['spice'] == true || m['quantity_unknown'] == true;
   // Used-up items stay in the shared file (the Pantry app shows them under
   // its "Used up" history) but they're not IN the pantry anymore — don't
   // offer them as loggable foods.
   final bool isCount = m['unit'] == 'count' || m.containsKey('total_count');
   final double remaining =
       _pd(isCount ? m['remaining_count'] : m['remaining_weight_g']);
-  if (remaining <= 0) {
+  // An untracked item has no meaningful stock figure, and a tracked one that
+  // has just been drawn to zero by the cook is still the thing he cooked with.
+  if (remaining <= 0 && !untracked) {
     return null;
   }
   final String servingUnit = (m['serving_unit'] as String?) ?? 'g';
@@ -325,9 +340,10 @@ PantryFood? _pantryFoodFrom(Map<String, dynamic> m) {
     barcode: (barcode != null && barcode.isNotEmpty) ? barcode : null,
   );
 
-  final String rem =
-      isCount ? '${_fmtNum(remaining)} left' : '${_fmtNum(remaining)} g left';
-  return PantryFood(t, rem);
+  final String rem = untracked
+      ? 'on hand'
+      : (isCount ? '${_fmtNum(remaining)} left' : '${_fmtNum(remaining)} g left');
+  return PantryFood(t, rem, pantryId: (m['id'] as String?) ?? '');
 }
 
 double _pd(dynamic v) {

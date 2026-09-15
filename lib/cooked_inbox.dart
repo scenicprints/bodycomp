@@ -49,11 +49,28 @@ class CookedLine {
   /// — a garnish, or something added at the table.
   final String group;
 
+  /// The pantry item the cook PAIRED this with, by its own name. The recipe
+  /// says "chicken thighs, bone in"; the shelf says "Boneless, Skinless
+  /// Chicken Breast Fillet (Just BARE)". Only the cook knows those are the
+  /// same purchase, and pairing is how he says so — so match on this first
+  /// and treat the recipe's wording as a last resort.
+  final String pantryName;
+
+  /// The pantry item's id, which is what pairing actually recorded.
+  final String pantryId;
+
   const CookedLine(
-      {required this.name, this.barcode, required this.rawG, this.group = ''});
+      {required this.name,
+      this.barcode,
+      required this.rawG,
+      this.group = '',
+      this.pantryName = '',
+      this.pantryId = ''});
 
   factory CookedLine.fromJson(Map<String, dynamic> j) => CookedLine(
         name: (j['name'] as String?) ?? '',
+        pantryName: (j['pantry_name'] as String?) ?? '',
+        pantryId: (j['pantry_id'] as String?) ?? '',
         barcode: j['barcode'] as String?,
         group: (j['group'] as String?) ?? '',
         rawG: (j['raw_g'] as num?)?.toDouble() ?? 0,
@@ -237,10 +254,35 @@ String _key(String s) => s
 /// name match either way round, shortest first so "chicken" can't beat
 /// "chicken thighs".
 FoodTemplate? _resolve(CookedLine line, List<PantryFood> foods) {
+  // What the cook PAIRED it with. This is the whole point of pairing, and
+  // ignoring it in favour of matching the recipe's wording is why a meal came
+  // over with everything paired and nothing recognised.
+  if (line.pantryId.isNotEmpty) {
+    for (final PantryFood f in foods) {
+      if (f.pantryId == line.pantryId) {
+        return f.template;
+      }
+    }
+  }
   final String? bc = line.barcode;
   if (bc != null && bc.isNotEmpty) {
     for (final PantryFood f in foods) {
       if (f.template.barcode == bc) {
+        return f.template;
+      }
+    }
+  }
+  // What the cook actually paired it with, exactly as the pantry spells it.
+  if (line.pantryName.isNotEmpty) {
+    for (final PantryFood f in foods) {
+      if (f.name.trim().toLowerCase() ==
+          line.pantryName.trim().toLowerCase()) {
+        return f.template;
+      }
+    }
+    final String paired = _key(line.pantryName);
+    for (final PantryFood f in foods) {
+      if (_key(f.name) == paired) {
         return f.template;
       }
     }
@@ -333,7 +375,7 @@ Handoff? buildHandoff(CookedMeal h, List<PantryFood> foods,
     }
     final FoodTemplate? t = _resolve(l, foods);
     if (t == null) {
-      unmatched.add(l.name);
+      unmatched.add(l.pantryName.isNotEmpty ? l.pantryName : l.name);
       continue;
     }
     final MealIngredient mi = MealIngredient(food: t, rawGrams: l.rawG);
