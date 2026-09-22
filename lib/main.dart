@@ -13,6 +13,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:health/health.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'updater.dart';
+import 'reclaim.dart';
 import 'food.dart';
 import 'custom_foods.dart';
 import 'cooked_inbox.dart';
@@ -992,6 +993,9 @@ String monthName(int m) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppStorage.init();
+  // Before anything else draws: every installer this app ever downloaded is
+  // still sitting in files/ota_update/ and he cannot clear it himself.
+  await Reclaim.sweep();
   FlutterForegroundTask.initCommunicationPort();
   runApp(const BodyCompApp());
 }

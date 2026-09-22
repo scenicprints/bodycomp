@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:ota_update/ota_update.dart';
 
+import 'reclaim.dart';
+
 // ═══════════════════════════════════════════════════════════════════════
 // IN-APP OTA UPDATER
 //
@@ -157,6 +159,9 @@ class _UpdateCardState extends State<UpdateCard> {
       _s = _State.downloading;
       _progress = 0;
     });
+    // Drop the last installer first, so the phone never holds two 100 MB
+    // APKs at once on the way to holding none.
+    Reclaim.beforeDownload();
     try {
       OtaUpdate()
           .execute(r.apkUrl, destinationFilename: 'bodycomp-${r.version}.apk')
@@ -227,7 +232,24 @@ class _UpdateCardState extends State<UpdateCard> {
         ]),
         const SizedBox(height: 12),
         _body(),
+        _reclaimed(),
       ]),
+    );
+  }
+
+  /// What the sweep at launch got back. Every release this app ever
+  /// downloaded used to stay in internal storage forever, and there was no
+  /// way to clear it from the phone's own settings without wiping the data
+  /// with it. Shown so the gigabytes coming back are visible, not silent.
+  Widget _reclaimed() {
+    if (Reclaim.freedEver <= 0) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Text(
+          'Cleared ${Reclaim.pretty(Reclaim.freedEver)} of old installers.',
+          style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
     );
   }
 
