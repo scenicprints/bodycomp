@@ -5,8 +5,7 @@ publish_to: 'none'
 # Version is the single source of truth for the app's version.
 # The publish script bumps this, and the in-app updater compares it
 # against the latest GitHub Release.
-version: 1.35.0+61
-
+version: 1.36.0+62
 environment:
   sdk: ^3.12.2
 
