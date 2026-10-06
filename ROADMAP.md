@@ -149,8 +149,11 @@ Key models:
 - A day's calories for the math come from that date's **food-log total** when present (`FoodMath.caloriesByDate`).
 
 ### Macro targets (`MacroTargets.compute`)
-Auto-derived, editable in Settings: protein ≈ 1 g/lb lean mass, fat ≈ 0.3 g/lb body weight,
-carbs = remaining calories, fiber ≈ 14 g/1000 kcal. Drives the Food-tab budget bars.
+Built on the app's calorie target (TDEE − deficit), editable in Settings, using the owner's
+formulas: protein = 2 g/kg body weight, fat = calories ÷ 30, fiber = calories × 0.014,
+carbs = (calories − protein×4 − fat×9) ÷ 4. Water = kg ÷ 30 liters, shown on the Food-tab
+budget header as a goal only (no tracking, no notifications, by his call). Calories stay
+adaptive; he chose NOT to switch them to kg × 26.
 
 ### Food journal & Cook calculator
 - **Food tab:** day view with budget bars (cal + P/F/C/fiber vs targets), an **hourly grid**

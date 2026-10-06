@@ -4,6 +4,7 @@ import 'main.dart';
 import 'food.dart';
 import 'sleep.dart';
 import 'trainer.dart';
+import 'gymboard_bridge.dart';
 
 // ═══════════════════════════════════════════════════════════════════════
 // CAMPAIGN — the fight is your deficit.
@@ -32,6 +33,13 @@ const double kDefaultUnloggedGain = 0.35; // lb/day until history exists
 const double kDefaultTdee = 2400; // only before any data exists
 const double kRunAttackMin = 50; // extra kcal before a run lands a hit
 const int kBossWinXp = 250;
+
+// Gymboard. Workouts move the hero's stats, they do not land hits: lifting
+// is what makes you strong, it is not what burns the deficit, and pretending
+// otherwise would inflate the one number this whole campaign is built on.
+const int kGymSessionsForFullBar = 4; // circuits a week for a full strength bar
+const double kGymStrengthWeight = 0.5; // protein vs training, in the blend
+const double kGymMinutesPerKm = 6.0; // circuit minutes worth one endurance km
 
 // ── the roster ──────────────────────────────────────────────────────────
 
@@ -398,6 +406,7 @@ class CampaignEngine {
     required Set<String> fasted,
     List<RunRecord> runs = const <RunRecord>[],
     List<SleepEntry> sleep = const <SleepEntry>[],
+    List<GymboardWorkout> workouts = const <GymboardWorkout>[],
     required String startDate,
     DateTime? asOf,
   }) {
@@ -430,6 +439,16 @@ class CampaignEngine {
       runCalByDate[r.date] = (runCalByDate[r.date] ?? 0) + kcal;
       runKmByDate[r.date] = (runKmByDate[r.date] ?? 0) + r.distanceKm;
     }
+    final Map<String, double> gymMinByDate = <String, double>{};
+    DateTime? firstGym;
+    for (final GymboardWorkout w in workouts) {
+      gymMinByDate[w.date] = (gymMinByDate[w.date] ?? 0) + w.ms / 60000.0;
+      final DateTime d = DateTime(w.at.year, w.at.month, w.at.day);
+      // A plain local, because a variable closures capture is never
+      // promoted and `firstGym` is read inside strengthPct below.
+      final DateTime? f = firstGym;
+      if (f == null || d.isBefore(f)) firstGym = d;
+    }
 
     double tdeeUpTo(String date) {
       final List<DailyLog> upTo =
@@ -446,7 +465,7 @@ class CampaignEngine {
     }
 
     // ── hero stat curves (all deterministic per date) ────────────────
-    double strengthPct(DateTime d) {
+    double proteinPct(DateTime d) {
       double got = 0;
       int days = 0;
       for (int i = 0; i < 7; i++) {
@@ -463,6 +482,28 @@ class CampaignEngine {
       final double lbm = _lbmOn(sorted, formatDate(d)) ?? cal.startLbm;
       final double target = cal.proteinTarget ?? lbm;
       return target <= 0 ? 0 : ((got / days) / target).clamp(0.0, 1.0);
+    }
+
+    /// Sessions on the board in the last week, against a weekly target.
+    double trainingPct(DateTime d) {
+      int n = 0;
+      for (int i = 0; i < 7; i++) {
+        if ((gymMinByDate[formatDate(d.subtract(Duration(days: i)))] ?? 0) > 0) {
+          n++;
+        }
+      }
+      return (n / kGymSessionsForFullBar).clamp(0.0, 1.0);
+    }
+
+    /// Protein is the material, circuits are the stimulus, and muscle wants
+    /// both. Before the first workout ever recorded this is protein alone,
+    /// so adding the board does not retroactively knock down months of
+    /// history that had no way to log a session.
+    double strengthPct(DateTime d) {
+      final double protein = proteinPct(d);
+      if (firstGym == null || d.isBefore(firstGym!)) return protein;
+      return protein * (1 - kGymStrengthWeight) +
+          trainingPct(d) * kGymStrengthWeight;
     }
 
     double vitalityPct(DateTime d) {
@@ -484,7 +525,11 @@ class CampaignEngine {
     double endurancePct(DateTime d) {
       double km = 0;
       for (int i = 0; i < 30; i++) {
-        km += runKmByDate[formatDate(d.subtract(Duration(days: i)))] ?? 0;
+        final String key = formatDate(d.subtract(Duration(days: i)));
+        km += runKmByDate[key] ?? 0;
+        // Circuit work is conditioning too. Counted conservatively so the
+        // existing 30 km a month still means what it meant.
+        km += (gymMinByDate[key] ?? 0) / kGymMinutesPerKm;
       }
       return (km / 30.0).clamp(0.0, 1.0); // 30 km/month = full bar
     }

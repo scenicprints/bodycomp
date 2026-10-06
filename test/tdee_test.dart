@@ -246,8 +246,13 @@ void main() {
       ];
       final MacroTargets t =
           MacroTargets.compute(cal, logs, <FoodEntry>[], <String>{});
-      expect(t.protein, closeTo(150, 1e-6)); // 1 g / lb lean mass
-      expect(t.fat, closeTo(60, 1e-6)); // 0.3 g / lb body weight
+      final double kg = 200 / 2.2046;
+      expect(t.protein, closeTo(kg * 2, 1e-6)); // 2 g / kg body weight
+      expect(t.fat, closeTo(t.calories / 30, 1e-6)); // 30% of calories
+      expect(t.fiber, closeTo(t.calories * 0.014, 1e-6));
+      expect(t.carbs,
+          closeTo((t.calories - t.protein * 4 - t.fat * 9) / 4, 1e-6));
+      expect(t.water, closeTo(kg / 30, 1e-6)); // liters
 
       final MacroTargets t2 = MacroTargets.compute(
           cal.copyWith(proteinTarget: 180), logs, <FoodEntry>[], <String>{});

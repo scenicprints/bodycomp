@@ -124,7 +124,7 @@ const List<KnowledgeCard> kKnowledge = <KnowledgeCard>[
   KnowledgeCard('Water weight lies',
       'Day-to-day scale swings are mostly water, glycogen and food in transit. A 7-day average is the only honest read.', '💧'),
   KnowledgeCard('Protein protects muscle',
-      'In a deficit the body will burn muscle for fuel unless protein stays high. Roughly 1 g per lb of lean mass keeps it.', '🥩'),
+      'In a deficit the body will burn muscle for fuel unless protein stays high. Roughly 2 g per kg of body weight keeps it.', '🥩'),
   KnowledgeCard('A pound of fat',
       'About 3,500 calories. A 500/day deficit is roughly a pound a week, which is why patience beats severity.', '🔥'),
   KnowledgeCard('Fiber is satiety',

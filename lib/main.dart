@@ -21,6 +21,9 @@ import 'pantry_bridge.dart';
 import 'run_service.dart';
 import 'watch_bridge.dart';
 import 'trainer.dart';
+import 'gymboard_bridge.dart';
+import 'gym_screen.dart';
+import 'gym_watch.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
@@ -478,12 +481,14 @@ class MacroTargets {
   final double fat;
   final double carbs;
   final double fiber;
+  final double water; // liters/day
   const MacroTargets(
       {required this.calories,
       required this.protein,
       required this.fat,
       required this.carbs,
-      required this.fiber});
+      required this.fiber,
+      required this.water});
 
   static MacroTargets compute(UserCalibration cal, List<DailyLog> logs,
       List<FoodEntry> foods, Set<String> fasted) {
@@ -498,20 +503,21 @@ class MacroTargets {
         logs.isEmpty ? 1200 : max(1200.0, MathEngine.bmr(logs.last.lbm) * 0.95);
     final double calTarget =
         tdee > 0 ? max(tdee - cal.deficit, min(floor, tdee)) : 0;
-    final double lbm = logs.isNotEmpty ? logs.last.lbm : cal.startLbm;
     final double bw = logs.isNotEmpty ? logs.last.weight : cal.startWeight;
-    final double protein = cal.proteinTarget ?? lbm * 1.0; // 1 g / lb LBM
-    final double fat = cal.fatTarget ?? bw * 0.3; // 0.3 g / lb body weight
+    final double kg = bw / 2.2046;
+    final double protein = cal.proteinTarget ?? kg * 2; // 2 g / kg body weight
+    final double fat = cal.fatTarget ?? calTarget / 30; // 30% of calories
     final double carbs = cal.carbTarget ??
         max(0.0, (calTarget - protein * 4 - fat * 9) / 4);
     final double fiber =
-        cal.fiberTarget ?? (calTarget > 0 ? calTarget / 1000 * 14 : 25);
+        cal.fiberTarget ?? (calTarget > 0 ? calTarget * 0.014 : 25);
     return MacroTargets(
         calories: calTarget,
         protein: protein,
         fat: fat,
         carbs: carbs,
-        fiber: fiber);
+        fiber: fiber,
+        water: kg / 30);
   }
 }
 
@@ -799,6 +805,28 @@ class AppStorage {
     _write(d);
   }
 
+  /// Gymboard's finished workouts, mirrored locally. The campaign recomputes
+  /// constantly and cannot await a network read, so the board's history is
+  /// cached here and refreshed in the background. This app never writes it
+  /// back: Gymboard owns that data.
+  static List<GymboardWorkout> getGymWorkouts() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('gymWorkouts')) {
+      return (d['gymWorkouts'] as List<dynamic>)
+          .map((dynamic e) =>
+              GymboardWorkout.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveGymWorkouts(List<GymboardWorkout> w) {
+    final Map<String, dynamic> d = _read();
+    d['gymWorkouts'] =
+        w.map((GymboardWorkout x) => x.toJson()).toList();
+    _write(d);
+  }
+
   static List<SleepEntry> getSleep() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('sleep')) {
@@ -1015,6 +1043,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<Meal> _meals = [];
   List<CustomFood> _customFoods = [];
   List<RunRecord> _runs = [];
+  List<GymboardWorkout> _gym = [];
   TrainerState _trainer = const TrainerState();
   List<SleepEntry> _sleep = [];
   List<AdvisorInsight> _insights = [];
@@ -1049,6 +1078,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
           fasted: _fasted.toSet(),
           runs: _runs,
           sleep: _sleep,
+          workouts: _gym,
           startDate: _campaignStart);
       CampaignWidget.push(c, skinAccent(_cos.skin, kPhases[ph].accent));
     });
@@ -1080,6 +1110,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _meals = AppStorage.getMeals();
     _customFoods = AppStorage.getCustomFoods();
     _runs = AppStorage.getRuns();
+    _gym = AppStorage.getGymWorkouts();
     _trainer = AppStorage.getTrainerState();
     _sleep = AppStorage.getSleep();
     _insights = AppStorage.getInsights();
@@ -1091,6 +1122,28 @@ class _BodyCompAppState extends State<BodyCompApp> {
     }
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
+    // And whatever the gym TV has finished since we last looked.
+    _syncGymboard();
+    // And mirror the board to the wrist for as long as the app is up.
+    GymWatchLink.start();
+  }
+
+  /// Mirror Gymboard's history. Silent and best effort: a gym TV that is
+  /// off, or a phone with no signal, just leaves the cached copy in place.
+  Future<void> _syncGymboard() async {
+    final List<GymboardWorkout>? w = await fetchGymboardHistory();
+    if (w == null || !mounted) {
+      return;
+    }
+    // Only touch state when something actually changed, so a background
+    // poll does not rebuild the tree and repaint the widget for nothing.
+    if (w.length == _gym.length &&
+        (w.isEmpty || w.last.at == _gym.last.at)) {
+      return;
+    }
+    AppStorage.saveGymWorkouts(w);
+    setState(() => _gym = w);
+    _pushWidget();
   }
 
   // A cheap fingerprint of a food list for change detection.
@@ -1303,6 +1356,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               meals: _meals,
               customFoods: _customFoods,
               runs: _runs,
+              workouts: _gym,
+              onRefreshGym: _syncGymboard,
               trainer: _trainer,
               sleep: _sleep,
               insights: _insights,
@@ -2010,6 +2065,8 @@ class HomeShell extends StatefulWidget {
   final List<Meal> meals;
   final List<CustomFood> customFoods;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
+  final Future<void> Function()? onRefreshGym;
   final TrainerState trainer;
   final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
@@ -2046,6 +2103,8 @@ class HomeShell extends StatefulWidget {
       required this.meals,
       required this.customFoods,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
+      this.onRefreshGym,
       required this.trainer,
       required this.sleep,
       required this.insights,
@@ -2120,6 +2179,7 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             runs: widget.runs,
+            workouts: widget.workouts,
             sleep: widget.sleep,
             trainer: widget.trainer,
             challenges: widget.challenges,
@@ -2139,6 +2199,7 @@ class _HomeShellState extends State<HomeShell> {
             fasted: widget.fasted,
             sleep: widget.sleep,
             runs: widget.runs,
+            workouts: widget.workouts,
             trainer: widget.trainer,
             insights: widget.insights,
             onSetLogs: widget.onSetLogs,
@@ -2163,17 +2224,11 @@ class _HomeShellState extends State<HomeShell> {
             embedded: true,
             onLogFood: (FoodEntry e) =>
                 widget.onSetFoods(<FoodEntry>[...widget.foods, e])),
-        TrainScreen(
+        GymScreen(
             accent: accent,
-            cal: widget.cal,
-            logs: widget.logs,
-            runs: widget.runs,
-            trainer: widget.trainer,
-            sleep: widget.sleep,
-            insights: widget.insights,
-            onSetRuns: widget.onSetRuns,
-            onSetTrainer: widget.onSetTrainer,
-            onSetInsights: widget.onSetInsights),
+            active: _tab == 4,
+            workouts: widget.workouts,
+            onRefresh: widget.onRefreshGym ?? () async {}),
         SleepScreen(
             accent: accent,
             cal: widget.cal,
@@ -2190,6 +2245,7 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             runs: widget.runs,
+            workouts: widget.workouts,
             sleep: widget.sleep,
             trainer: widget.trainer,
             seen: widget.seenAchievements,
@@ -2220,7 +2276,7 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.outdoor_grill_rounded), label: 'COOK'),
             BottomNavigationBarItem(
-                icon: Icon(Icons.directions_run_rounded), label: 'TRAIN'),
+                icon: Icon(Icons.fitness_center_rounded), label: 'GYM'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
@@ -2247,6 +2303,7 @@ class GoalsScreen extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final TrainerState trainer;
   final List<String> seen;
@@ -2268,6 +2325,7 @@ class GoalsScreen extends StatefulWidget {
     required this.foods,
     required this.fasted,
     required this.runs,
+    this.workouts = const <GymboardWorkout>[],
     required this.sleep,
     required this.trainer,
     required this.seen,
@@ -2299,6 +2357,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
       fasted: widget.fasted.toSet(),
       runs: widget.runs,
       sleep: widget.sleep,
+      workouts: widget.workouts,
       startDate: widget.campaignStart,
     ).xp;
   }
@@ -4267,6 +4326,7 @@ class DashboardScreen extends StatefulWidget {
   final List<String> fasted;
   final List<SleepEntry> sleep;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final TrainerState trainer;
   final List<AdvisorInsight> insights;
   final void Function(List<DailyLog>) onSetLogs;
@@ -4287,6 +4347,7 @@ class DashboardScreen extends StatefulWidget {
       required this.fasted,
       required this.sleep,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
       required this.trainer,
       required this.insights,
       required this.onSetLogs,
@@ -4822,6 +4883,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   foods: widget.foods,
                   fasted: widget.fasted,
                   runs: widget.runs,
+                  workouts: widget.workouts,
                   sleep: widget.sleep,
                   campaignStart: widget.campaignStart,
                   accent: accent),
@@ -6977,6 +7039,23 @@ class _BudgetHeader extends StatelessWidget {
           const SizedBox(width: 10),
           _macroBar(
               'Fiber', totals.nutrients['fiber'] ?? 0, targets.fiber, accent),
+        ]),
+        const SizedBox(height: 14),
+        Row(children: [
+          Icon(Icons.water_drop_rounded, size: 14, color: accent),
+          const SizedBox(width: 6),
+          Text('WATER',
+              style: TextStyle(
+                  fontSize: 9,
+                  color: Colors.grey[600],
+                  letterSpacing: 0.5,
+                  fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Text('${targets.water.toStringAsFixed(1)} L today',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFEEEEEE))),
         ]),
       ]),
     );
@@ -9936,6 +10015,7 @@ class _RivalCard extends StatelessWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final String campaignStart;
   final Color accent;
@@ -9945,6 +10025,7 @@ class _RivalCard extends StatelessWidget {
       required this.foods,
       required this.fasted,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
       required this.sleep,
       required this.campaignStart,
       required this.accent});
@@ -9962,6 +10043,7 @@ class _RivalCard extends StatelessWidget {
               foods: foods,
               fasted: fasted,
               runs: runs,
+              workouts: workouts,
               sleep: sleep,
               campaignStart: campaignStart,
               accent: accent))),

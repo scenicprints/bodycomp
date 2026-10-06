@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import 'campaign.dart';
+import 'gymboard_bridge.dart';
 import 'creatures.dart';
 import 'food.dart';
 import 'goals.dart';
@@ -25,6 +26,7 @@ class CampaignScreen extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final TrainerState trainer;
   final List<ChallengeRun> challenges;
@@ -40,6 +42,7 @@ class CampaignScreen extends StatefulWidget {
     required this.foods,
     required this.fasted,
     required this.runs,
+    this.workouts = const <GymboardWorkout>[],
     required this.sleep,
     required this.trainer,
     required this.challenges,
@@ -141,6 +144,7 @@ class _CampaignScreenState extends State<CampaignScreen> {
       foods: widget.foods,
       fasted: widget.fasted.toSet(),
       runs: widget.runs,
+      workouts: widget.workouts,
       sleep: widget.sleep,
       startDate: widget.campaignStart,
     );
@@ -150,6 +154,7 @@ class _CampaignScreenState extends State<CampaignScreen> {
       widget.foods,
       widget.fasted.toSet(),
       runs: widget.runs,
+      workouts: widget.workouts,
       sleep: widget.sleep,
       trainerLevel: widget.trainer.level,
       challenges: widget.challenges,
