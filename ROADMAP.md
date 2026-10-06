@@ -24,22 +24,34 @@ rebuilt into a real Flutter project with **over-the-air updates**. Core ideas:
 
 ## 2. Current status
 
-**Latest shipped version: v1.6.0** (`pubspec.yaml` `version:` is the source of truth — currently `1.6.0+11`).
+**Latest shipped version: v1.36.0** (`pubspec.yaml` `version:` is the source of
+truth, currently `1.36.0+62`).
 
-Release history (each is a GitHub Release with a signed APK):
+There are 62 releases. The full list with its notes lives on the
+[Releases page](https://github.com/scenicprints/bodycomp/releases), and prints
+locally with:
+
+```
+git tag -l --sort=-v:refname --format='%(refname:short) %(contents:subject)'
+```
+
+Copying all of it in here is how this section came to claim v1.6.0 thirty
+versions later, so it carries only the recent ones:
+
 | Version | What shipped |
 |---|---|
-| 1.0.0 | Initial real project + OTA self-updater |
-| 1.0.1 | TDEE fixes (ignore calorie-less days; smooth baseline over 7-day lean mass) |
-| 1.0.2 | **Fixed OTA install crash** (added the `ota_update` FileProvider) |
-| 1.1.0 | Food Journal: barcode scan → Open Food Facts, extended nutrients |
-| 1.1.1 | Fixed scanner crash (explicit controller); added search-by-name |
-| 1.1.2 | **USDA FoodData Central** as primary food source, OFF fallback |
-| 1.2.0 | Food Tab v2: budget bars, macro targets, future logging, per-serving, move/copy, meal grouping, fasting-vs-didn't-log |
-| 1.3.0 | Meal Maker (saved-meal library) + nav-bar bottom-sheet fix |
-| 1.4.0 | **Cook tab** (cooked-weight calculator + 24h leftovers), hourly food log, linked Grams↔Servings, date+time move/copy |
-| 1.5.0 | Multi-select food log (long-press → banner: Edit/View · Copy · Move · Modify Timestamp); scroll-wheel time picker (replaced the clock) |
-| 1.6.0 | **Food Advisor** — AI coach (Claude API) on Dashboard; on-demand daily/weekly, model selectable in Settings, adaptive tone, local digest builder |
+| 1.36.0 | The GYM tab reads your gym board, and a new macro formula. |
+| 1.35.0 | (no notes recorded) |
+| 1.34.0 | Live calorie count while weighing the plate |
+| 1.33.0 | Honour the pairing the cook made |
+| 1.32.0 | Portion a cooked meal per component |
+| 1.31.0 | Log a meal measured in the Pantry app |
+| 1.30.1 | Food search finds whole foods again |
+| 1.30.0 | The campaign comes alive |
+| 1.29.0 | CAMPAIGN |
+| 1.28.0 | Saved meals library |
+| 1.27.2 | Fix measurement prompt, grading baseline, sleep fragmentation; definitive goal requirements |
+| 1.27.1 | Fix fragmented sleep nights; definitive goal requirements |
 
 ---
 
@@ -113,18 +125,49 @@ tag to the installed `package_info` version, and installs the APK via the `ota_u
 
 ## 4. Architecture / code map
 
-Three Dart files:
-- **`lib/main.dart`** (~4,000 lines) — everything UI + the math engine + storage. Sections are
-  marked with `// ═══` banners: data models, MathEngine, MacroTargets, AppStorage, theme, the app
-  shell + bottom nav, Dashboard, Food tab, Cook/Meal UI, Ledger, Settings.
-- **`lib/food.dart`** — food data layer (no UI): `FoodEntry`, nutrient registry (`kNutrients`),
-  `FoodTemplate`, Open Food Facts + USDA clients, `FoodLookup` (USDA-primary), and the meal model
-  (`Meal`, `MealIngredient`, `cookingYield()`, `MealMath`).
-- **`lib/updater.dart`** — the OTA updater service + UI card.
+Not three files any more. `lib/main.dart` is ~13,000 lines and carries the UI, the
+math engine and storage, with `// ═══` banners marking sections: data models,
+MathEngine, MacroTargets, AppStorage, theme, app shell + bottom nav, Dashboard,
+Food, Cook, Ledger, Settings, the Health Connect imports and the coached-run screen.
 
-Tests: `test/tdee_test.dart`, `test/food_test.dart` (22 tests). They cover the **pure logic**
-(TDEE, macro targets, fasting, Open Food Facts + USDA parsing, unit conversions, meal cooked-weight
-portioning, JSON round-trips). UI isn't unit-tested — it's verified on-device after each batch.
+Everything else is pulled out beside it:
+
+| File | What |
+|---|---|
+| `food.dart` | Food data layer, no UI. Entries, nutrient registry, OFF + USDA clients, meal model. |
+| `custom_foods.dart` | The My Foods library and its sync with the private data repo. |
+| `cooked_inbox.dart` | Cooked meals arriving from the Pantry app. |
+| `pantry_bridge.dart` | Deducts a meal's ingredients from the shared Pantry over the GitHub API. |
+| `campaign.dart` | The deficit-as-a-fight simulation. Pure and deterministic; nothing stored but the start date. |
+| `campaign_screen.dart`, `campaign_widget.dart`, `creatures.dart`, `boss_alerts.dart`, `rival_screen.dart` | The campaign's UI, roster, launcher widget and Chad. |
+| `goals.dart`, `unlocks.dart`, `grade.dart` | The goal ladder, knowledge cards and goal-date grade. |
+| `coach.dart`, `insights.dart` | The Food Advisor (Claude API) and the insights it writes. |
+| `sleep.dart` | Sleep entries and their overnight vitals. |
+| `trainer.dart`, `run_service.dart`, `watch_bridge.dart` | The 5K ladder, its foreground service and the Wear link. See the note in Batch 4. |
+| `gymboard_bridge.dart` | Reads the Gymboard board over the Firestore REST API. Read only. |
+| `gym_screen.dart` | The GYM tab. |
+| `updater.dart`, `reclaim.dart` | The OTA updater, and clearing the installers it hoards. |
+
+### Gymboard (the gym TV)
+
+`scenicprints/gymboard` drives a Raspberry Pi on the gym TV and owns the workout.
+This app only reads it, through two Firestore documents in the shared `foos-6ecf3`
+project: `gymboard/session` for what is happening now and `gymboard/history` for
+what has finished.
+
+It is REST and not `cloud_firestore` on purpose. Adding the real SDK means
+`google-services.json`, native config and a change to the cloud build, for two
+reads, when `http` was already a dependency.
+
+The history is cached in `AppStorage` under `gymWorkouts` and refreshed in the
+background, because the campaign recomputes constantly and cannot await a network
+read. **Nothing here ever writes to Gymboard.** One source of truth for a session
+means a dropped connection on the phone cannot desync the TV.
+
+Workouts reach the campaign as **stats, not damage**: strength is a blend of
+protein and sessions rather than protein alone, and endurance counts circuit
+minutes as conditioning. The training half only applies from the first recorded
+workout, so adding this did not retroactively knock down the months before it.
 
 ### Data model & storage
 All data is one JSON file in the app's private internal storage (`bodycomp_data.json`), via
@@ -214,7 +257,16 @@ RDA-aware (the model knows RDAs — no table). Original plan below for reference
 - **Placement:** a card/section on the Dashboard, or a new "Coach" area. Read-only over existing data.
 - **Depends on:** accurate calorie data — already in place (food totals + fasting fix feed TDEE).
 
-### Batch 4 — 5K Trainer  (running program)
+### Batch 4 — 5K Trainer  (running program)  ⚠️ PARTLY REMOVED in v1.36.0
+
+> **The coached run is gone.** The TRAIN tab became GYM, and it was the only way
+> to start one. `trainer.dart`, `run_service.dart`, `watch_bridge.dart`, the
+> Health Connect run import, the running lane in Goals and RUN ATTACK in the
+> campaign all still work on runs that arrive. Nothing was deleted. What no
+> longer exists is a button that starts a guided run.
+>
+> The notes below are the original plan, kept for the reasoning.
+
 **Context:** the user is injured (no lifting), running now, very out of shape. Wants a couch-to-5K
 that's aware of weight loss + fueling.
 - **Plan:** a progressive run/walk program → 5K (C25K-style, ~9 weeks, adjustable for "can barely run").

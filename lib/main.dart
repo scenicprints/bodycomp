@@ -23,7 +23,6 @@ import 'watch_bridge.dart';
 import 'trainer.dart';
 import 'gymboard_bridge.dart';
 import 'gym_screen.dart';
-import 'gym_watch.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
@@ -1124,8 +1123,6 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _syncCustomFoods();
     // And whatever the gym TV has finished since we last looked.
     _syncGymboard();
-    // And mirror the board to the wrist for as long as the app is up.
-    GymWatchLink.start();
   }
 
   /// Mirror Gymboard's history. Silent and best effort: a gym TV that is
