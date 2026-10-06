@@ -501,7 +501,7 @@ class CampaignEngine {
     /// history that had no way to log a session.
     double strengthPct(DateTime d) {
       final double protein = proteinPct(d);
-      if (firstGym == null || d.isBefore(firstGym!)) return protein;
+      if (firstGym == null || d.isBefore(firstGym)) return protein;
       return protein * (1 - kGymStrengthWeight) +
           trainingPct(d) * kGymStrengthWeight;
     }

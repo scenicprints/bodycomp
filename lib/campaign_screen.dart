@@ -154,7 +154,6 @@ class _CampaignScreenState extends State<CampaignScreen> {
       widget.foods,
       widget.fasted.toSet(),
       runs: widget.runs,
-      workouts: widget.workouts,
       sleep: widget.sleep,
       trainerLevel: widget.trainer.level,
       challenges: widget.challenges,
