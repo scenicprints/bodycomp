@@ -102,6 +102,13 @@ class _GymScreenState extends State<GymScreen> {
   int _reps(List<GymboardWorkout> w) =>
       w.fold(0, (int a, GymboardWorkout x) => a + x.reps);
 
+  /// Measured burn only. Showing the 8 kcal a minute fallback here would
+  /// dress up a guess as a reading off the watch.
+  int _kcal(List<GymboardWorkout> w) => w
+      .where((GymboardWorkout x) => x.kcal != null)
+      .fold(0.0, (double a, GymboardWorkout x) => a + x.kcal!)
+      .round();
+
   @override
   Widget build(BuildContext context) {
     final List<GymboardWorkout> all = widget.workouts;
@@ -232,7 +239,10 @@ class _GymScreenState extends State<GymScreen> {
               children: <Widget>[
                 _stat('${week.length}', 'SESSIONS'),
                 _stat('${_minutes(week)}', 'MINUTES'),
-                _stat('${_reps(week)}', 'REPS'),
+                if (_kcal(week) > 0)
+                  _stat('${_kcal(week)}', 'KCAL')
+                else
+                  _stat('${_reps(week)}', 'REPS'),
                 _stat('$streak', 'DAY STREAK'),
               ],
             ),
@@ -255,6 +265,7 @@ class _GymScreenState extends State<GymScreen> {
               _stat('${all.length}', 'WORKOUTS'),
               _stat(hrs, 'HOURS'),
               _stat('${_reps(all)}', 'REPS'),
+              if (_kcal(all) > 0) _stat('${_kcal(all)}', 'KCAL'),
             ],
           ),
         ],
@@ -312,6 +323,15 @@ class _GymScreenState extends State<GymScreen> {
                   Text('${w.ms ~/ 60000} min',
                       style:
                           TextStyle(color: Colors.grey[500], fontSize: 13)),
+                  if (w.avgHr != null) ...<Widget>[
+                    const SizedBox(width: 12),
+                    Icon(Icons.favorite_rounded,
+                        size: 11, color: Colors.grey[700]),
+                    const SizedBox(width: 3),
+                    Text('${w.avgHr!.round()}',
+                        style: TextStyle(
+                            color: Colors.grey[500], fontSize: 13)),
+                  ],
                   const SizedBox(width: 14),
                   SizedBox(
                     width: 54,

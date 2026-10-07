@@ -23,6 +23,7 @@ import 'watch_bridge.dart';
 import 'trainer.dart';
 import 'gymboard_bridge.dart';
 import 'gym_screen.dart';
+import 'gym_vitals.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
@@ -1125,21 +1126,47 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _syncGymboard();
   }
 
-  /// Mirror Gymboard's history. Silent and best effort: a gym TV that is
-  /// off, or a phone with no signal, just leaves the cached copy in place.
+  /// Mirror Gymboard's history, then ask the watch how hard each one was.
+  /// Silent and best effort throughout: a gym TV that is off, a phone with
+  /// no signal, or a watch that never synced all leave the cached copy be.
   Future<void> _syncGymboard() async {
-    final List<GymboardWorkout>? w = await fetchGymboardHistory();
-    if (w == null || !mounted) {
+    final List<GymboardWorkout>? fetched = await fetchGymboardHistory();
+    if (fetched == null || !mounted) {
       return;
     }
+
+    // Heart rate and energy are attached locally and are NOT on the board,
+    // so a refresh has to carry them across or every sync would throw them
+    // away and ask Health Connect for them again.
+    final Map<String, GymboardWorkout> known = <String, GymboardWorkout>{
+      for (final GymboardWorkout w in _gym)
+        '${w.routineId}@${w.at.millisecondsSinceEpoch}': w
+    };
+    List<GymboardWorkout> merged = fetched.map((GymboardWorkout w) {
+      final GymboardWorkout? had =
+          known['${w.routineId}@${w.at.millisecondsSinceEpoch}'];
+      return had == null
+          ? w
+          : w.withVitals(avgHr: had.avgHr, maxHr: had.maxHr, kcal: had.kcal);
+    }).toList();
+
+    merged = await attachVitals(merged);
+    if (!mounted) {
+      return;
+    }
+
     // Only touch state when something actually changed, so a background
     // poll does not rebuild the tree and repaint the widget for nothing.
-    if (w.length == _gym.length &&
-        (w.isEmpty || w.last.at == _gym.last.at)) {
+    String stamp(List<GymboardWorkout> l) => l
+        .map((GymboardWorkout w) =>
+            '${w.at.millisecondsSinceEpoch}:${w.avgHr ?? 0}:${w.kcal ?? 0}')
+        .join(',');
+    if (stamp(merged) == stamp(_gym)) {
       return;
     }
-    AppStorage.saveGymWorkouts(w);
-    setState(() => _gym = w);
+
+    AppStorage.saveGymWorkouts(merged);
+    setState(() => _gym = merged);
     _pushWidget();
   }
 

@@ -38,13 +38,41 @@ class GymboardWorkout {
   /// [label] derives something honest from the id instead.
   final String? name;
 
+  // ── from the watch, not from the board ────────────────────────────────
+  // Gymboard knows what you did and when. It has no idea how hard it was.
+  // These come from Health Connect over this workout's own window and are
+  // stored locally only: they are never written back to the board.
+  final double? avgHr;
+  final double? maxHr;
+  final double? kcal; // measured active energy
+
   const GymboardWorkout({
     required this.routineId,
     required this.at,
     required this.ms,
     required this.reps,
     this.name,
+    this.avgHr,
+    this.maxHr,
+    this.kcal,
   });
+
+  /// The window the watch should be asked about.
+  DateTime get endsAt => at.add(Duration(milliseconds: ms));
+
+  bool get hasVitals => avgHr != null || kcal != null;
+
+  GymboardWorkout withVitals({double? avgHr, double? maxHr, double? kcal}) =>
+      GymboardWorkout(
+        routineId: routineId,
+        at: at,
+        ms: ms,
+        reps: reps,
+        name: name,
+        avgHr: avgHr ?? this.avgHr,
+        maxHr: maxHr ?? this.maxHr,
+        kcal: kcal ?? this.kcal,
+      );
 
   /// `l1-r7` becomes `LEVEL 1 - ROUTINE 7`. Anything that does not match
   /// falls back to the raw id rather than inventing a shape it does not have.
@@ -64,11 +92,11 @@ class GymboardWorkout {
 
   Duration get duration => Duration(milliseconds: ms);
 
-  /// A circuit workout is not a run and there is no heart rate here, so
-  /// this is deliberately conservative: roughly 8 kcal a minute of actual
-  /// work. It exists so the campaign has a number to hit with, not to
-  /// pretend at precision the data does not have.
-  double get estimatedKcal => (ms / 60000.0) * 8.0;
+  /// What the campaign spends. The watch's measured active energy when it
+  /// is there, and otherwise a deliberately conservative 8 kcal a minute of
+  /// work, which exists so the stat has a number at all rather than to
+  /// pretend at precision the board alone cannot give.
+  double get estimatedKcal => kcal ?? (ms / 60000.0) * 8.0;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'routineId': routineId,
@@ -76,6 +104,9 @@ class GymboardWorkout {
         'ms': ms,
         'reps': reps,
         if (name != null) 'name': name,
+        if (avgHr != null) 'avgHr': avgHr,
+        if (maxHr != null) 'maxHr': maxHr,
+        if (kcal != null) 'kcal': kcal,
       };
 
   factory GymboardWorkout.fromJson(Map<String, dynamic> j) => GymboardWorkout(
@@ -85,6 +116,9 @@ class GymboardWorkout {
         ms: (j['ms'] as num?)?.toInt() ?? 0,
         reps: (j['reps'] as num?)?.toInt() ?? 0,
         name: j['name'] as String?,
+        avgHr: (j['avgHr'] as num?)?.toDouble(),
+        maxHr: (j['maxHr'] as num?)?.toDouble(),
+        kcal: (j['kcal'] as num?)?.toDouble(),
       );
 }
 
