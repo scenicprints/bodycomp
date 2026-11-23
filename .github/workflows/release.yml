@@ -67,12 +67,15 @@ jobs:
         working-directory: android
         run: |
           chmod +x ./gradlew
-          ./gradlew :wear:assembleRelease --stacktrace
+          ./gradlew :wear:assembleRelease :watchface:assembleRelease --stacktrace
 
-      - name: Rename Wear APK to versioned name
+      # The watch face is a separate, resource-only APK (Watch Face Format).
+      # It is installed on the watch alongside the Wear app, which feeds it.
+      - name: Rename Wear and watch face APKs to versioned names
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           cp build/wear/outputs/apk/release/wear-release.apk "bodycomp-wear-${VERSION}.apk"
+          cp build/watchface/outputs/apk/release/watchface-release.apk "bodycomp-watchface-${VERSION}.apk"
 
       - name: Extract release notes from tag message
         run: git tag -l --format='%(contents)' "$GITHUB_REF_NAME" > RELEASE_NOTES.txt

@@ -52,7 +52,12 @@ class Updater {
     for (final dynamic a in (data['assets'] as List<dynamic>? ?? <dynamic>[])) {
       final Map<String, dynamic> m = a as Map<String, dynamic>;
       final String name = (m['name'] as String?) ?? '';
-      if (name.toLowerCase().endsWith('.apk')) {
+      // A release also carries the watch APKs (bodycomp-wear-*, and
+      // bodycomp-watchface-*); the phone must never pick one of those.
+      final String lower = name.toLowerCase();
+      if (lower.endsWith('.apk') &&
+          !lower.contains('-wear-') &&
+          !lower.contains('-watchface-')) {
         apkUrl = m['browser_download_url'] as String?;
         break;
       }

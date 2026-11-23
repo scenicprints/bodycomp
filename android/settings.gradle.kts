@@ -27,3 +27,6 @@ include(":app")
 // Standalone Wear OS companion — a native (non-Flutter) module that shows the
 // live coached run on a Pixel Watch. Builds as its own APK, sideloaded via adb.
 include(":wear")
+// Calorie-balance watch face (Watch Face Format): a resource-only APK that
+// gets its eaten/burned numbers from a complication published by :wear.
+include(":watchface")

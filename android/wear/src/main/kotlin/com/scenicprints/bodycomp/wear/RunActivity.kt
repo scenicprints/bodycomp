@@ -1,5 +1,6 @@
 package com.scenicprints.bodycomp.wear
 
+import android.Manifest
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
@@ -12,6 +13,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.wear.ambient.AmbientLifecycleObserver
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
@@ -61,6 +63,13 @@ class RunActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener
         )
     }
 
+    private val activityPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                HealthLink.ensureRegistered(this)
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -72,6 +81,13 @@ class RunActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener
         }
         setContentView(buildUi())
         RunStateHolder.latest?.let { render(it) }
+        // The calorie watch face needs the watch's "burned today" number. Ask
+        // once for the permission; after that the listener registers silently.
+        if (HealthLink.hasPermission(this)) {
+            HealthLink.ensureRegistered(this)
+        } else {
+            activityPermission.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+        }
     }
 
     override fun onResume() {

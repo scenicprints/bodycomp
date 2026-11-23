@@ -50,6 +50,21 @@ class WatchBridge {
     } catch (_) {}
   }
 
+  /// Sync today's eaten calories to the watch, for the calorie-balance watch
+  /// face. Sent as a Data Layer *item* (not a message), so it still arrives
+  /// if the watch is out of range right now. [date] is 'YYYY-MM-DD'.
+  static Future<void> sendCalories({
+    required String date,
+    required int eaten,
+  }) async {
+    try {
+      await _method.invokeMethod<void>(
+        'sendCalories',
+        <String, dynamic>{'date': date, 'eaten': eaten},
+      );
+    } catch (_) {}
+  }
+
   /// 'toggle' (pause/resume) or 'stop', emitted when a wrist button is tapped.
   static Stream<String> actions() {
     _actions ??= _events

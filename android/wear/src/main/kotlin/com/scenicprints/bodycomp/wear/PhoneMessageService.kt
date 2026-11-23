@@ -1,6 +1,9 @@
 package com.scenicprints.bodycomp.wear
 
 import android.content.Intent
+import com.google.android.gms.wearable.DataEvent
+import com.google.android.gms.wearable.DataEventBuffer
+import com.google.android.gms.wearable.DataMapItem
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.WearableListenerService
 
@@ -16,6 +19,22 @@ import com.google.android.gms.wearable.WearableListenerService
 // ═══════════════════════════════════════════════════════════════════════
 
 class PhoneMessageService : WearableListenerService() {
+
+    // Today's eaten calories from the phone's food log, for the watch face.
+    // This is a Data Layer item, so it is also delivered after a reconnect.
+    override fun onDataChanged(dataEvents: DataEventBuffer) {
+        for (event in dataEvents) {
+            if (event.type != DataEvent.TYPE_CHANGED ||
+                event.dataItem.uri.path != CalorieStore.PATH_CALORIES
+            ) {
+                continue
+            }
+            val map = DataMapItem.fromDataItem(event.dataItem).dataMap
+            val date = map.getString("date") ?: continue
+            CalorieStore.setEaten(this, date, map.getInt("eaten", 0))
+            CalorieComplicationService.requestUpdate(this, throttle = false)
+        }
+    }
 
     override fun onMessageReceived(event: MessageEvent) {
         if (event.path != RunProtocol.PATH_STATE) {
