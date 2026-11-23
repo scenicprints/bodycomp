@@ -66,7 +66,8 @@ class RunActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener
     private val activityPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             if (granted) {
-                HealthLink.ensureRegistered(this)
+                // The face can now be given the live burned number.
+                CalorieComplicationService.requestUpdate(this)
             }
         }
 
@@ -81,11 +82,9 @@ class RunActivity : ComponentActivity(), MessageClient.OnMessageReceivedListener
         }
         setContentView(buildUi())
         RunStateHolder.latest?.let { render(it) }
-        // The calorie watch face needs the watch's "burned today" number. Ask
-        // once for the permission; after that the listener registers silently.
-        if (HealthLink.hasPermission(this)) {
-            HealthLink.ensureRegistered(this)
-        } else {
+        // The calorie watch face shows the watch's own "burned today" number,
+        // which the watch only releases to an app holding this permission.
+        if (!CalorieComplicationService.hasActivityPermission(this)) {
             activityPermission.launch(Manifest.permission.ACTIVITY_RECOGNITION)
         }
     }

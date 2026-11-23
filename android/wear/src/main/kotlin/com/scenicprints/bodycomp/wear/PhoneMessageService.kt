@@ -32,7 +32,7 @@ class PhoneMessageService : WearableListenerService() {
             val map = DataMapItem.fromDataItem(event.dataItem).dataMap
             val date = map.getString("date") ?: continue
             CalorieStore.setEaten(this, date, map.getInt("eaten", 0))
-            CalorieComplicationService.requestUpdate(this, throttle = false)
+            CalorieComplicationService.requestUpdate(this)
         }
     }
 

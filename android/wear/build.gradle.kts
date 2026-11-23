@@ -94,11 +94,9 @@ dependencies {
     implementation("androidx.wear:wear:1.3.0")
     // Wearable Data Layer (MessageClient / NodeClient).
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
-    // Calorie-balance watch face support: read the watch's daily calories
-    // burned, and publish eaten/burned to the face as a complication.
-    implementation("androidx.health:health-services-client:1.1.0")
-    // Health Services returns ListenableFuture; this supplies that type
-    // without pulling in all of Guava.
-    implementation("androidx.concurrent:concurrent-futures:1.2.0")
+    // Calorie-balance watch face support: publish eaten/burned to the face
+    // as a complication. "Burned" is a dynamic value the watch evaluates
+    // itself (protolayout-expression), so this app never reads it.
     implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.3.0")
+    implementation("androidx.wear.protolayout:protolayout-expression:1.0.0")
 }
