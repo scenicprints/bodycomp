@@ -24,8 +24,8 @@ rebuilt into a real Flutter project with **over-the-air updates**. Core ideas:
 
 ## 2. Current status
 
-**Latest shipped version: v1.36.0** (`pubspec.yaml` `version:` is the source of
-truth, currently `1.36.0+62`).
+**Latest shipped version: v1.38.0** (`pubspec.yaml` `version:` is the source of
+truth, currently `1.38.0+64`).
 
 There are 62 releases. The full list with its notes lives on the
 [Releases page](https://github.com/scenicprints/bodycomp/releases), and prints
@@ -40,6 +40,8 @@ versions later, so it carries only the recent ones:
 
 | Version | What shipped |
 |---|---|
+| 1.38.0 | Each day's food totals go to Health Connect for the Workouts app to read. |
+| 1.37.0 | The watch says how hard the workout was. |
 | 1.36.0 | The GYM tab reads your gym board, and a new macro formula. |
 | 1.35.0 | (no notes recorded) |
 | 1.34.0 | Live calorie count while weighing the plate |
