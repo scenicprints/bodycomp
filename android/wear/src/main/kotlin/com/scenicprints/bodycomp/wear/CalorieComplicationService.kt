@@ -38,7 +38,7 @@ import java.util.Locale
 //  and only while the face is awake and on screen. So the numbers are live
 //  the moment the watch wakes, and nothing runs for them while it sleeps —
 //  no background listener, no polling. The watch only lets an app use that
-//  value if it holds ACTIVITY_RECOGNITION, which RunActivity asks for.
+//  value if it holds ACTIVITY_RECOGNITION, which MainActivity asks for.
 //
 //  This service is asked for fresh data only when the eaten number changes
 //  (a push from the phone), plus a slow safety-net period set in the
