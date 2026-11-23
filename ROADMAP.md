@@ -146,6 +146,8 @@ Everything else is pulled out beside it:
 | `trainer.dart`, `run_service.dart`, `watch_bridge.dart` | The 5K ladder, its foreground service and the Wear link. See the note in Batch 4. |
 | `gymboard_bridge.dart` | Reads the Gymboard board over the Firestore REST API. Read only. |
 | `gym_screen.dart` | The GYM tab. |
+| `gym_vitals.dart` | Heart rate and energy for a gym workout, read from Health Connect. |
+| `nutrition_sync.dart` | Each day's food totals written out to Health Connect. The one thing the app writes there. |
 | `updater.dart`, `reclaim.dart` | The OTA updater, and clearing the installers it hoards. |
 
 ### Gymboard (the gym TV)
@@ -168,6 +170,25 @@ Workouts reach the campaign as **stats, not damage**: strength is a blend of
 protein and sessions rather than protein alone, and endurance counts circuit
 minutes as conditioning. The training half only applies from the first recorded
 workout, so adding this did not retroactively knock down the months before it.
+
+### Health Connect
+
+Everything the app takes from Health Connect is a **read**: runs, sleep and the
+gym vitals above. The one exception is **nutrition**, which goes the other way.
+`nutrition_sync.dart` writes each day's food totals (calories, protein, fat,
+carbs) as a single Health Connect nutrition record spanning that local day,
+named `BodyComp day total`. It runs on every food save for the dates whose
+totals changed, and once at launch for today and yesterday.
+
+The reason is the **Workouts** app on the same phone, which reads Health
+Connect and wants calories and protein eaten per day without any link to this
+app. Health Connect is the shared mailbox. A day is replaced whole (delete this
+app's records in the window, then write the new total) so re-syncing never
+stacks duplicates, and a small ledger under the `nutritionSynced` pref
+remembers what was last written so unchanged days are not rewritten. Only the
+last 60 days are ever synced. It needs `WRITE_NUTRITION` (and `READ_NUTRITION`
+for the delete) in the manifest, and is silent if Health Connect is missing or
+the permission is refused.
 
 ### Data model & storage
 All data is one JSON file in the app's private internal storage (`bodycomp_data.json`), via

@@ -21,6 +21,10 @@
     <!-- Activity extras → richer run detail. -->
     <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED"/>
     <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED"/>
+    <!-- Each day's food totals go out as a nutrition record so Workouts can
+         read them. READ is needed to replace the previous day total. -->
+    <uses-permission android:name="android.permission.health.WRITE_NUTRITION"/>
+    <uses-permission android:name="android.permission.health.READ_NUTRITION"/>
     <!-- Keep a coached run alive with the screen off (foreground service). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH"/>
