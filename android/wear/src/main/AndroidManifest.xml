@@ -2,15 +2,8 @@
 
     <uses-feature android:name="android.hardware.type.watch" />
 
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.VIBRATE" />
-    <!-- Lets the watch face show "calories burned today" (Health Services). -->
+    <!-- Lets the watch face show the watch's own "calories burned today". -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-
-    <queries>
-        <package android:name="com.google.android.wearable.healthservices" />
-    </queries>
 
     <application
         android:allowBackup="true"
@@ -19,18 +12,13 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
-        <!-- Required for ambient (always-on) support. -->
-        <uses-library
-            android:name="com.google.android.wearable"
-            android:required="false" />
-
         <!-- Runs without a phone-side counterpart being required to install. -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
             android:value="true" />
 
         <activity
-            android:name=".RunActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -40,14 +28,12 @@
             </intent-filter>
         </activity>
 
-        <!-- Receives run-state pushes from the phone even when the watch app
-             isn't open (holds the latest state and best-effort launches the UI). -->
+        <!-- Receives today's eaten calories from the phone, even when the
+             watch app isn't open. -->
         <service
             android:name=".PhoneMessageService"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
-                <!-- Today's eaten calories, synced as a data item. -->
                 <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
                 <data
                     android:host="*"
@@ -71,22 +57,8 @@
                 android:value="RANGED_VALUE" />
             <meta-data
                 android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
-                android:value="300" />
+                android:value="3600" />
         </service>
 
-        <!-- Receives the watch's daily calorie total in the background. -->
-        <service
-            android:name=".CaloriesPassiveService"
-            android:exported="true"
-            android:permission="com.google.android.wearable.healthservices.permission.PASSIVE_DATA_BINDING" />
-
-        <!-- The calorie listener does not survive a reboot; re-register it. -->
-        <receiver
-            android:name=".BootReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-        </receiver>
     </application>
 </manifest>
