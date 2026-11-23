@@ -3,6 +3,7 @@ package com.scenicprints.bodycomp
 import android.content.Context
 import com.google.android.gms.wearable.MessageClient
 import com.google.android.gms.wearable.MessageEvent
+import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -23,6 +24,7 @@ private const val METHOD_CHANNEL = "bodycomp/watch"
 private const val EVENT_CHANNEL = "bodycomp/watch_events"
 private const val PATH_STATE = "/bodycomp/run"
 private const val PATH_ACTION = "/bodycomp/action"
+private const val PATH_CALORIES = "/bodycomp/calories"
 
 class WatchBridge(private val context: Context) :
     MessageClient.OnMessageReceivedListener {
@@ -37,6 +39,14 @@ class WatchBridge(private val context: Context) :
                         val json = call.arguments as? String
                         if (json != null) {
                             sendToWatches(PATH_STATE, json.toByteArray(Charsets.UTF_8))
+                        }
+                        result.success(null)
+                    }
+                    "sendCalories" -> {
+                        val date = call.argument<String>("date")
+                        val eaten = call.argument<Int>("eaten")
+                        if (date != null && eaten != null) {
+                            syncCalories(date, eaten)
                         }
                         result.success(null)
                     }
@@ -74,6 +84,24 @@ class WatchBridge(private val context: Context) :
             for (node in nodes) {
                 client.sendMessage(node.id, path, data)
             }
+        }
+    }
+
+    // Today's eaten calories, for the watch face. A Data Layer *item* is
+    // stored and synced whenever the watch is reachable, unlike a message,
+    // which is dropped if the watch is out of range at that instant.
+    private fun syncCalories(date: String, eaten: Int) {
+        try {
+            val request = PutDataMapRequest.create(PATH_CALORIES).apply {
+                dataMap.putString("date", date)
+                dataMap.putInt("eaten", eaten)
+                // An unchanged item is not re-delivered; the stamp makes every
+                // push count, so a freshly installed watch app catches up.
+                dataMap.putLong("ts", System.currentTimeMillis())
+            }.asPutDataRequest().setUrgent()
+            Wearable.getDataClient(context).putDataItem(request)
+        } catch (_: Exception) {
+            // No Play services / no watch: nothing to sync.
         }
     }
 
