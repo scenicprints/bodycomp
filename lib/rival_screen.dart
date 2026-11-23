@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import 'campaign.dart';
+import 'gymboard_bridge.dart';
 import 'creatures.dart';
 import 'food.dart';
 import 'main.dart';
@@ -22,6 +23,7 @@ class RivalScreen extends StatelessWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final String campaignStart;
   final Color accent;
@@ -33,6 +35,7 @@ class RivalScreen extends StatelessWidget {
     required this.foods,
     required this.fasted,
     required this.runs,
+    this.workouts = const <GymboardWorkout>[],
     required this.sleep,
     required this.campaignStart,
     required this.accent,
@@ -52,6 +55,7 @@ class RivalScreen extends StatelessWidget {
       foods: foods,
       fasted: fasted.toSet(),
       runs: runs,
+      workouts: workouts,
       sleep: sleep,
       startDate: campaignStart,
     );

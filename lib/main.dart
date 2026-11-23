@@ -13,12 +13,18 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:health/health.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'updater.dart';
+import 'reclaim.dart';
 import 'food.dart';
 import 'custom_foods.dart';
+import 'cooked_inbox.dart';
 import 'pantry_bridge.dart';
 import 'run_service.dart';
 import 'watch_bridge.dart';
 import 'trainer.dart';
+import 'gymboard_bridge.dart';
+import 'gym_screen.dart';
+import 'gym_vitals.dart';
+import 'nutrition_sync.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
@@ -476,12 +482,14 @@ class MacroTargets {
   final double fat;
   final double carbs;
   final double fiber;
+  final double water; // liters/day
   const MacroTargets(
       {required this.calories,
       required this.protein,
       required this.fat,
       required this.carbs,
-      required this.fiber});
+      required this.fiber,
+      required this.water});
 
   static MacroTargets compute(UserCalibration cal, List<DailyLog> logs,
       List<FoodEntry> foods, Set<String> fasted) {
@@ -496,20 +504,21 @@ class MacroTargets {
         logs.isEmpty ? 1200 : max(1200.0, MathEngine.bmr(logs.last.lbm) * 0.95);
     final double calTarget =
         tdee > 0 ? max(tdee - cal.deficit, min(floor, tdee)) : 0;
-    final double lbm = logs.isNotEmpty ? logs.last.lbm : cal.startLbm;
     final double bw = logs.isNotEmpty ? logs.last.weight : cal.startWeight;
-    final double protein = cal.proteinTarget ?? lbm * 1.0; // 1 g / lb LBM
-    final double fat = cal.fatTarget ?? bw * 0.3; // 0.3 g / lb body weight
+    final double kg = bw / 2.2046;
+    final double protein = cal.proteinTarget ?? kg * 2; // 2 g / kg body weight
+    final double fat = cal.fatTarget ?? calTarget / 30; // 30% of calories
     final double carbs = cal.carbTarget ??
         max(0.0, (calTarget - protein * 4 - fat * 9) / 4);
     final double fiber =
-        cal.fiberTarget ?? (calTarget > 0 ? calTarget / 1000 * 14 : 25);
+        cal.fiberTarget ?? (calTarget > 0 ? calTarget * 0.014 : 25);
     return MacroTargets(
         calories: calTarget,
         protein: protein,
         fat: fat,
         carbs: carbs,
-        fiber: fiber);
+        fiber: fiber,
+        water: kg / 30);
   }
 }
 
@@ -797,6 +806,28 @@ class AppStorage {
     _write(d);
   }
 
+  /// Gymboard's finished workouts, mirrored locally. The campaign recomputes
+  /// constantly and cannot await a network read, so the board's history is
+  /// cached here and refreshed in the background. This app never writes it
+  /// back: Gymboard owns that data.
+  static List<GymboardWorkout> getGymWorkouts() {
+    final Map<String, dynamic> d = _read();
+    if (d.containsKey('gymWorkouts')) {
+      return (d['gymWorkouts'] as List<dynamic>)
+          .map((dynamic e) =>
+              GymboardWorkout.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+    return [];
+  }
+
+  static void saveGymWorkouts(List<GymboardWorkout> w) {
+    final Map<String, dynamic> d = _read();
+    d['gymWorkouts'] =
+        w.map((GymboardWorkout x) => x.toJson()).toList();
+    _write(d);
+  }
+
   static List<SleepEntry> getSleep() {
     final Map<String, dynamic> d = _read();
     if (d.containsKey('sleep')) {
@@ -991,6 +1022,9 @@ String monthName(int m) {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await AppStorage.init();
+  // Before anything else draws: every installer this app ever downloaded is
+  // still sitting in files/ota_update/ and he cannot clear it himself.
+  await Reclaim.sweep();
   FlutterForegroundTask.initCommunicationPort();
   runApp(const BodyCompApp());
 }
@@ -1010,6 +1044,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
   List<Meal> _meals = [];
   List<CustomFood> _customFoods = [];
   List<RunRecord> _runs = [];
+  List<GymboardWorkout> _gym = [];
   TrainerState _trainer = const TrainerState();
   List<SleepEntry> _sleep = [];
   List<AdvisorInsight> _insights = [];
@@ -1044,6 +1079,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
           fasted: _fasted.toSet(),
           runs: _runs,
           sleep: _sleep,
+          workouts: _gym,
           startDate: _campaignStart);
       CampaignWidget.push(c, skinAccent(_cos.skin, kPhases[ph].accent));
     });
@@ -1085,6 +1121,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _meals = AppStorage.getMeals();
     _customFoods = AppStorage.getCustomFoods();
     _runs = AppStorage.getRuns();
+    _gym = AppStorage.getGymWorkouts();
     _trainer = AppStorage.getTrainerState();
     _sleep = AppStorage.getSleep();
     _insights = AppStorage.getInsights();
@@ -1097,6 +1134,59 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _pushWatchCalories();
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
+    // And whatever the gym TV has finished since we last looked.
+    _syncGymboard();
+    // Hand today's and yesterday's food totals to Health Connect, in case
+    // the last save happened while it was unavailable.
+    final DateTime now = DateTime.now();
+    syncNutritionToHealth(_foods, onlyDates: <String>{
+      formatDate(now),
+      formatDate(DateTime(now.year, now.month, now.day - 1)),
+    });
+  }
+
+  /// Mirror Gymboard's history, then ask the watch how hard each one was.
+  /// Silent and best effort throughout: a gym TV that is off, a phone with
+  /// no signal, or a watch that never synced all leave the cached copy be.
+  Future<void> _syncGymboard() async {
+    final List<GymboardWorkout>? fetched = await fetchGymboardHistory();
+    if (fetched == null || !mounted) {
+      return;
+    }
+
+    // Heart rate and energy are attached locally and are NOT on the board,
+    // so a refresh has to carry them across or every sync would throw them
+    // away and ask Health Connect for them again.
+    final Map<String, GymboardWorkout> known = <String, GymboardWorkout>{
+      for (final GymboardWorkout w in _gym)
+        '${w.routineId}@${w.at.millisecondsSinceEpoch}': w
+    };
+    List<GymboardWorkout> merged = fetched.map((GymboardWorkout w) {
+      final GymboardWorkout? had =
+          known['${w.routineId}@${w.at.millisecondsSinceEpoch}'];
+      return had == null
+          ? w
+          : w.withVitals(avgHr: had.avgHr, maxHr: had.maxHr, kcal: had.kcal);
+    }).toList();
+
+    merged = await attachVitals(merged);
+    if (!mounted) {
+      return;
+    }
+
+    // Only touch state when something actually changed, so a background
+    // poll does not rebuild the tree and repaint the widget for nothing.
+    String stamp(List<GymboardWorkout> l) => l
+        .map((GymboardWorkout w) =>
+            '${w.at.millisecondsSinceEpoch}:${w.avgHr ?? 0}:${w.kcal ?? 0}')
+        .join(',');
+    if (stamp(merged) == stamp(_gym)) {
+      return;
+    }
+
+    AppStorage.saveGymWorkouts(merged);
+    setState(() => _gym = merged);
+    _pushWidget();
   }
 
   // A cheap fingerprint of a food list for change detection.
@@ -1192,11 +1282,15 @@ class _BodyCompAppState extends State<BodyCompApp> {
   }
 
   void _setFoods(List<FoodEntry> f) {
+    final Set<String> changed = changedNutritionDates(_foods, f);
     setState(() {
       _foods = f;
     });
     AppStorage.saveFoods(f);
     _pushWidget();
+    // Fire and forget: Health Connect gets the new day totals, Workouts
+    // reads them from there. Silent if it is missing or says no.
+    if (changed.isNotEmpty) syncNutritionToHealth(f, onlyDates: changed);
     _pushWatchCalories();
   }
 
@@ -1310,6 +1404,8 @@ class _BodyCompAppState extends State<BodyCompApp> {
               meals: _meals,
               customFoods: _customFoods,
               runs: _runs,
+              workouts: _gym,
+              onRefreshGym: _syncGymboard,
               trainer: _trainer,
               sleep: _sleep,
               insights: _insights,
@@ -2017,6 +2113,8 @@ class HomeShell extends StatefulWidget {
   final List<Meal> meals;
   final List<CustomFood> customFoods;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
+  final Future<void> Function()? onRefreshGym;
   final TrainerState trainer;
   final List<SleepEntry> sleep;
   final List<AdvisorInsight> insights;
@@ -2053,6 +2151,8 @@ class HomeShell extends StatefulWidget {
       required this.meals,
       required this.customFoods,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
+      this.onRefreshGym,
       required this.trainer,
       required this.sleep,
       required this.insights,
@@ -2127,6 +2227,7 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             runs: widget.runs,
+            workouts: widget.workouts,
             sleep: widget.sleep,
             trainer: widget.trainer,
             challenges: widget.challenges,
@@ -2146,6 +2247,7 @@ class _HomeShellState extends State<HomeShell> {
             fasted: widget.fasted,
             sleep: widget.sleep,
             runs: widget.runs,
+            workouts: widget.workouts,
             trainer: widget.trainer,
             insights: widget.insights,
             onSetLogs: widget.onSetLogs,
@@ -2170,17 +2272,11 @@ class _HomeShellState extends State<HomeShell> {
             embedded: true,
             onLogFood: (FoodEntry e) =>
                 widget.onSetFoods(<FoodEntry>[...widget.foods, e])),
-        TrainScreen(
+        GymScreen(
             accent: accent,
-            cal: widget.cal,
-            logs: widget.logs,
-            runs: widget.runs,
-            trainer: widget.trainer,
-            sleep: widget.sleep,
-            insights: widget.insights,
-            onSetRuns: widget.onSetRuns,
-            onSetTrainer: widget.onSetTrainer,
-            onSetInsights: widget.onSetInsights),
+            active: _tab == 4,
+            workouts: widget.workouts,
+            onRefresh: widget.onRefreshGym ?? () async {}),
         SleepScreen(
             accent: accent,
             cal: widget.cal,
@@ -2197,6 +2293,7 @@ class _HomeShellState extends State<HomeShell> {
             foods: widget.foods,
             fasted: widget.fasted,
             runs: widget.runs,
+            workouts: widget.workouts,
             sleep: widget.sleep,
             trainer: widget.trainer,
             seen: widget.seenAchievements,
@@ -2227,7 +2324,7 @@ class _HomeShellState extends State<HomeShell> {
             BottomNavigationBarItem(
                 icon: Icon(Icons.outdoor_grill_rounded), label: 'COOK'),
             BottomNavigationBarItem(
-                icon: Icon(Icons.directions_run_rounded), label: 'TRAIN'),
+                icon: Icon(Icons.fitness_center_rounded), label: 'GYM'),
             BottomNavigationBarItem(
                 icon: Icon(Icons.bedtime_rounded), label: 'SLEEP'),
             BottomNavigationBarItem(
@@ -2254,6 +2351,7 @@ class GoalsScreen extends StatefulWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final TrainerState trainer;
   final List<String> seen;
@@ -2275,6 +2373,7 @@ class GoalsScreen extends StatefulWidget {
     required this.foods,
     required this.fasted,
     required this.runs,
+    this.workouts = const <GymboardWorkout>[],
     required this.sleep,
     required this.trainer,
     required this.seen,
@@ -2306,6 +2405,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
       fasted: widget.fasted.toSet(),
       runs: widget.runs,
       sleep: widget.sleep,
+      workouts: widget.workouts,
       startDate: widget.campaignStart,
     ).xp;
   }
@@ -4274,6 +4374,7 @@ class DashboardScreen extends StatefulWidget {
   final List<String> fasted;
   final List<SleepEntry> sleep;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final TrainerState trainer;
   final List<AdvisorInsight> insights;
   final void Function(List<DailyLog>) onSetLogs;
@@ -4294,6 +4395,7 @@ class DashboardScreen extends StatefulWidget {
       required this.fasted,
       required this.sleep,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
       required this.trainer,
       required this.insights,
       required this.onSetLogs,
@@ -4829,6 +4931,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   foods: widget.foods,
                   fasted: widget.fasted,
                   runs: widget.runs,
+                  workouts: widget.workouts,
                   sleep: widget.sleep,
                   campaignStart: widget.campaignStart,
                   accent: accent),
@@ -6985,6 +7088,23 @@ class _BudgetHeader extends StatelessWidget {
           _macroBar(
               'Fiber', totals.nutrients['fiber'] ?? 0, targets.fiber, accent),
         ]),
+        const SizedBox(height: 14),
+        Row(children: [
+          Icon(Icons.water_drop_rounded, size: 14, color: accent),
+          const SizedBox(width: 6),
+          Text('WATER',
+              style: TextStyle(
+                  fontSize: 9,
+                  color: Colors.grey[600],
+                  letterSpacing: 0.5,
+                  fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Text('${targets.water.toStringAsFixed(1)} L today',
+              style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFFEEEEEE))),
+        ]),
       ]),
     );
   }
@@ -8404,6 +8524,7 @@ class _CookScreenState extends State<_CookScreen> {
   void initState() {
     super.initState();
     _meals = List<Meal>.from(widget.meals);
+    _loadPantryInbox();
   }
 
   int get _now => DateTime.now().millisecondsSinceEpoch;
@@ -8599,6 +8720,144 @@ class _CookScreenState extends State<_CookScreen> {
     );
   }
 
+  // ─── meals measured in the Pantry app ───
+  // Pantry has already taken these off the shelf and booked the spend, so
+  // nothing here subtracts. All that is left is to log what was eaten.
+
+  List<CookedMeal> _fromPantry = <CookedMeal>[];
+  bool _inboxBusy = false;
+
+  Future<void> _loadPantryInbox() async {
+    final List<CookedMeal>? pending = await CookedInbox.pending();
+    if (!mounted || pending == null) {
+      return; // couldn't read it: say nothing rather than "none"
+    }
+    setState(() => _fromPantry = pending);
+  }
+
+  Widget _pantryBanner() {
+    final int n = _fromPantry.length;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Material(
+        color: widget.accent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: _inboxBusy ? null : () => _openHandoff(_fromPantry.first),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(children: <Widget>[
+              Icon(Icons.kitchen_rounded, size: 20, color: widget.accent),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Text(
+                          n == 1
+                              ? 'Cooked in Pantry: ${_fromPantry.first.recipe}'
+                              : '$n meals cooked in Pantry',
+                          style: const TextStyle(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                              color: Color(0xFFEEEEEE))),
+                      const SizedBox(height: 2),
+                      Text('Weighed at the counter. Tap to log it.',
+                          style: TextStyle(
+                              fontSize: 11.5, color: Colors.grey[500])),
+                    ]),
+              ),
+              if (_inboxBusy)
+                const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2))
+              else
+                const Icon(Icons.chevron_right_rounded,
+                    color: Color(0xFF888888)),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openHandoff(CookedMeal h) async {
+    setState(() => _inboxBusy = true);
+    final List<PantryFood>? foods = await fetchPantryFoods();
+    if (!mounted) {
+      return;
+    }
+    if (foods == null) {
+      setState(() => _inboxBusy = false);
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text("Couldn't read the pantry. Try again in a moment.")));
+      return;
+    }
+    final Handoff? built = buildHandoff(h, foods);
+    setState(() => _inboxBusy = false);
+    if (built == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          backgroundColor: Color(0xFF2A2A2A),
+          content: Text('Nothing in that meal matched your pantry.')));
+      return;
+    }
+
+    final Map<String, double>? plated =
+        await showModalBottomSheet<Map<String, double>>(
+      context: context,
+      backgroundColor: kSurface2,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (BuildContext ctx) =>
+          _HandoffSheet(handoff: h, built: built, accent: widget.accent),
+    );
+    if (plated == null || !mounted) {
+      return;
+    }
+
+    // The batch joins the meal list whatever happens, so leftovers and
+    // "cook again" work on what was cooked rather than on the portion eaten.
+    setState(() => _meals = <Meal>[
+          ..._meals.where((Meal x) => x.isActive(_now) || x.saved),
+          built.batch,
+        ]);
+    _persist();
+
+    final Meal plate = built.plate(plated);
+    if (plate.ingredients.isNotEmpty) {
+      // Log it on the day it was COOKED, not the day the queue was drained:
+      // Pantry writes the meal when it is cooked and this end only sees it
+      // next time the Cook screen opens, which could be after the weekend.
+      final DateTime cookedAt =
+          DateTime.fromMillisecondsSinceEpoch(h.cookedAtMs);
+      final bool sane = h.cookedAtMs > 0 &&
+          cookedAt.isBefore(DateTime.now().add(const Duration(days: 1)));
+      final MealPortion portion =
+          MealMath.byCookedGrams(plate, plate.cookedTotalGrams);
+      widget.onLogFood(MealMath.toEntry(plate, portion,
+          id: _newMealId(),
+          date: sane ? formatDate(cookedAt) : widget.logDate,
+          time: sane
+              ? '${cookedAt.hour.toString().padLeft(2, '0')}:'
+                  '${cookedAt.minute.toString().padLeft(2, '0')}'
+              : _nowTime()));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          backgroundColor: const Color(0xFF2A2A2A),
+          content: Text(
+              'Logged ${plate.calories.round()} cal from ${h.recipe}.')));
+    }
+
+    setState(() => _fromPantry =
+        _fromPantry.where((CookedMeal x) => x.id != h.id).toList());
+    // Best effort: if this fails the meal shows up again, which is far better
+    // than it vanishing unlogged.
+    await CookedInbox.clear(h.id);
+  }
+
   @override
   Widget build(BuildContext context) {
     final List<Meal> active = _active;
@@ -8616,7 +8875,7 @@ class _CookScreenState extends State<_CookScreen> {
           icon: const Icon(Icons.outdoor_grill_rounded),
           label: const Text('COOK A MEAL',
               style: TextStyle(fontWeight: FontWeight.w800))),
-      body: (active.isEmpty && saved.isEmpty)
+      body: (active.isEmpty && saved.isEmpty && _fromPantry.isEmpty)
           ? Center(
               child: Padding(
                   padding: const EdgeInsets.all(32),
@@ -8633,6 +8892,7 @@ class _CookScreenState extends State<_CookScreen> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
               children: <Widget>[
+                if (_fromPantry.isNotEmpty) _pantryBanner(),
                 if (active.isNotEmpty) ...<Widget>[
                   _sectionHead('LEFTOVERS (next 24h)'),
                   ...active.map((Meal m) => _mealCard(m, saved: false)),
@@ -8645,6 +8905,240 @@ class _CookScreenState extends State<_CookScreen> {
               ]),
     );
   }
+}
+
+// ─── A meal handed over from the Pantry app ───
+// Pantry says what went in the pans. This asks the only question it cannot:
+// how much of each separately-cooked thing ended up on YOUR plate.
+//
+// Per component, not per meal. Steak and broccoli are not interchangeable
+// grams — a plate that is mostly steak carries far more protein and saturated
+// fat than one meal-wide fraction would say, and those are the numbers being
+// tracked. Anything stirred together is one mass and gets one number.
+class _HandoffSheet extends StatefulWidget {
+  final CookedMeal handoff;
+  final Handoff built;
+  final Color accent;
+  const _HandoffSheet(
+      {required this.handoff, required this.built, required this.accent});
+
+  @override
+  State<_HandoffSheet> createState() => _HandoffSheetState();
+}
+
+class _HandoffSheetState extends State<_HandoffSheet> {
+  late final List<String> _components = widget.built.byComponent.keys.toList();
+  late final Map<String, TextEditingController> _plate =
+      <String, TextEditingController>{
+    for (final String c in _components) c: TextEditingController()
+  };
+
+  @override
+  void dispose() {
+    for (final TextEditingController c in _plate.values) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  String _label(String component) =>
+      component.isEmpty ? 'Everything else' : component;
+
+  Map<String, double> get _entered => <String, double>{
+        for (final String c in _components)
+          c: double.tryParse(_plate[c]!.text.trim()) ?? 0
+      };
+
+  /// The plate as it stands, recomputed on every keystroke. The cook is
+  /// standing at the scale deciding how much to serve himself, and the number
+  /// he is deciding against is the calorie count — telling him only after he
+  /// has committed is telling him too late.
+  Meal get _plateSoFar => widget.built.plate(_entered);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+      child: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 24),
+          child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('FROM PANTRY',
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: widget.accent,
+                        letterSpacing: 1,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                Text(widget.handoff.recipe,
+                    style: const TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFFEEEEEE))),
+                const SizedBox(height: 4),
+                Text(
+                    'Weighed at the counter, and already off the pantry. '
+                    'Now weigh what went on your plate.',
+                    style: TextStyle(
+                        fontSize: 12, color: Colors.grey[500], height: 1.4)),
+                const SizedBox(height: 18),
+                for (final String c in _components) _row(c),
+                if (widget.built.unmatched.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                        color: const Color(0xFFCC5555).withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(10)),
+                    child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          const Icon(Icons.error_outline_rounded,
+                              size: 16, color: Color(0xFFCC5555)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                                'Not in your pantry, so not counted: '
+                                '${widget.built.unmatched.join(', ')}.',
+                                style: const TextStyle(
+                                    fontSize: 12,
+                                    color: Color(0xFFDDAAAA),
+                                    height: 1.4)),
+                          ),
+                        ]),
+                  ),
+                ],
+                const SizedBox(height: 14),
+                _runningTotal(),
+                const SizedBox(height: 14),
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                        backgroundColor: widget.accent,
+                        foregroundColor: Colors.black,
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12))),
+                    child: const Text('LOG IT',
+                        style: TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              ]),
+        ),
+      ),
+    );
+  }
+
+  Widget _runningTotal() {
+    final Meal m = _plateSoFar;
+    final bool any = m.ingredients.isNotEmpty;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+          color: kSurface0, borderRadius: BorderRadius.circular(12)),
+      child: Row(children: <Widget>[
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text('ON YOUR PLATE',
+                    style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey[600],
+                        letterSpacing: 1,
+                        fontWeight: FontWeight.w700)),
+                const SizedBox(height: 4),
+                Text(any ? '${m.calories.round()} cal' : 'nothing yet',
+                    style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        color: any ? widget.accent : Colors.grey[700])),
+              ]),
+        ),
+        if (any)
+          Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: <Widget>[
+                _stat('protein', m.protein),
+                _stat('fat', m.fat),
+                _stat('carbs', m.carbs),
+              ]),
+      ]),
+    );
+  }
+
+  Widget _stat(String label, double grams) => Padding(
+        padding: const EdgeInsets.only(bottom: 2),
+        child: Text('${grams.round()} g $label',
+            style: TextStyle(fontSize: 12.5, color: Colors.grey[400])),
+      );
+
+  Widget _row(String component) {
+    final List<MealIngredient> ings =
+        widget.built.byComponent[component] ?? <MealIngredient>[];
+    final double cooked = widget.built.estimatedCooked(component);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(children: <Widget>[
+        Expanded(
+          child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(_label(component),
+                    style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFDDDDDD))),
+                Text(ings.map((MealIngredient i) => i.food.name).join(', '),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11.5, color: Colors.grey[600])),
+                Text('made about ${cooked.round()} g',
+                    style: TextStyle(fontSize: 11, color: Colors.grey[700])),
+              ]),
+        ),
+        const SizedBox(width: 12),
+        SizedBox(
+          width: 104,
+          height: 46,
+          child: TextField(
+            controller: _plate[component],
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            textAlign: TextAlign.right,
+            onChanged: (_) => setState(() {}),
+            style: const TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFFEEEEEE)),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: '0',
+              hintStyle: TextStyle(color: Colors.grey[700]),
+              suffixText: 'g',
+              suffixStyle: TextStyle(color: Colors.grey[600], fontSize: 12),
+              filled: true,
+              fillColor: kSurface0,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: Color(0xFF3A3A3A))),
+              enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                  borderSide: const BorderSide(color: Color(0xFF3A3A3A))),
+            ),
+          ),
+        ),
+      ]),
+    );
+  }
+
+  void _submit() => Navigator.pop(context, _entered);
 }
 
 // ─── Create / edit a meal ───
@@ -9569,6 +10063,7 @@ class _RivalCard extends StatelessWidget {
   final List<FoodEntry> foods;
   final List<String> fasted;
   final List<RunRecord> runs;
+  final List<GymboardWorkout> workouts;
   final List<SleepEntry> sleep;
   final String campaignStart;
   final Color accent;
@@ -9578,6 +10073,7 @@ class _RivalCard extends StatelessWidget {
       required this.foods,
       required this.fasted,
       required this.runs,
+      this.workouts = const <GymboardWorkout>[],
       required this.sleep,
       required this.campaignStart,
       required this.accent});
@@ -9595,6 +10091,7 @@ class _RivalCard extends StatelessWidget {
               foods: foods,
               fasted: fasted,
               runs: runs,
+              workouts: workouts,
               sleep: sleep,
               campaignStart: campaignStart,
               accent: accent))),
