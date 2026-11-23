@@ -24,6 +24,7 @@ import 'trainer.dart';
 import 'gymboard_bridge.dart';
 import 'gym_screen.dart';
 import 'gym_vitals.dart';
+import 'nutrition_sync.dart';
 import 'sleep.dart';
 import 'coach.dart';
 import 'insights.dart';
@@ -1124,6 +1125,13 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _syncCustomFoods();
     // And whatever the gym TV has finished since we last looked.
     _syncGymboard();
+    // Hand today's and yesterday's food totals to Health Connect, in case
+    // the last save happened while it was unavailable.
+    final DateTime now = DateTime.now();
+    syncNutritionToHealth(_foods, onlyDates: <String>{
+      formatDate(now),
+      formatDate(DateTime(now.year, now.month, now.day - 1)),
+    });
   }
 
   /// Mirror Gymboard's history, then ask the watch how hard each one was.
@@ -1263,11 +1271,15 @@ class _BodyCompAppState extends State<BodyCompApp> {
   }
 
   void _setFoods(List<FoodEntry> f) {
+    final Set<String> changed = changedNutritionDates(_foods, f);
     setState(() {
       _foods = f;
     });
     AppStorage.saveFoods(f);
     _pushWidget();
+    // Fire and forget: Health Connect gets the new day totals, Workouts
+    // reads them from there. Silent if it is missing or says no.
+    if (changed.isNotEmpty) syncNutritionToHealth(f, onlyDates: changed);
   }
 
   void _setFasted(List<String> dates) {
