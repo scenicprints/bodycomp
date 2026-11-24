@@ -9,7 +9,8 @@ and re-run; do not edit watchface.xml directly.
 
 Layout (450 x 450 design grid, scaled to the watch by the system):
 
-    Mon 23                      date, grey
+    Mon 23            o o o o o  date, grey; battery, five dots (20% each),
+                                 coloured red to green, going dark as it drains
     10:08                       time, watermelon
     | | | | | : | | | | |       ruler, one tick per 100 kcal, centre = even
          ####:                  bar: left/orange = burned ahead,
@@ -40,6 +41,17 @@ YELLOW = "#FFF2C500"  # eaten
 ORANGE = "#FFF28C28"  # burned
 WHITE = "#FFF1EFE8"
 DATE_GREY = "#FFB4B2A9"
+
+# ── Battery: five dots on the date line, one per 20% ──────────────────────
+# Each dot has its own colour, low end to full end, so the last dot left lit
+# is the watermelon one: the colour itself is the low-battery warning.
+# A dot is lit while the battery is ABOVE its threshold (0, 20, 40, 60, 80).
+BATTERY_COLOURS = ["#FFF5566E", "#FFF28C28", "#FFF2C500", "#FF9CCB3B", "#FF4CB86A"]
+BATTERY_UNLIT = "#FF2C2C2A"
+BATTERY_RIGHT = 356   # x of the last dot's centre: the right end of the ruler
+BATTERY_Y = 104       # centre line of the date text
+BATTERY_SPACING = 17.5
+BATTERY_DOT = 11.5    # diameter
 RULER_GREY = "#FF888780"
 
 # ── Geometry of the calorie slot (coordinates local to the slot) ──────────
@@ -122,6 +134,39 @@ def number(x: int, source: str, label: str, colour: str) -> str:
         </PartText>"""
 
 
+def battery() -> str:
+    """Five unlit dots, then each lit dot on top while the battery is above its step."""
+    def dot(i: int, colour: str) -> str:
+        x = BATTERY_RIGHT - (4 - i) * BATTERY_SPACING - BATTERY_DOT / 2
+        y = BATTERY_Y - BATTERY_DOT / 2
+        return (
+            f'<Ellipse x="{fmt(x)}" y="{fmt(y)}" width="{BATTERY_DOT}" '
+            f'height="{BATTERY_DOT}"><Fill color="{colour}"/></Ellipse>'
+        )
+
+    unlit = "\n        ".join(dot(i, BATTERY_UNLIT) for i in range(5))
+    lit = "\n      ".join(
+        f"""<Condition>
+        <Expressions>
+          <Expression name="above{i * 20}"><![CDATA[[BATTERY_PERCENT] > {i * 20}]]></Expression>
+        </Expressions>
+        <Compare expression="above{i * 20}">
+          <PartDraw x="0" y="0" width="450" height="450">
+            {dot(i, colour)}
+          </PartDraw>
+        </Compare>
+      </Condition>"""
+        for i, colour in enumerate(BATTERY_COLOURS)
+    )
+    return f"""<Group x="0" y="0" width="450" height="450" name="battery">
+      <Variant mode="AMBIENT" target="alpha" value="170"/>
+      <PartDraw x="0" y="0" width="450" height="450">
+        {unlit}
+      </PartDraw>
+      {lit}
+    </Group>"""
+
+
 def build() -> str:
     ranges = list(range(500, GAP_LIMIT, 500))  # the last range is the Default
     expressions = "\n            ".join(
@@ -149,6 +194,8 @@ def build() -> str:
         </Text>
       </PartText>
     </Group>
+
+    {battery()}
 
     <DigitalClock x="89" y="118" width="320" height="120">
       <Variant mode="AMBIENT" target="alpha" value="200"/>
