@@ -28,6 +28,13 @@ function Text([string]$s, [single]$size, [string]$hex, [single]$x, [single]$y) {
 
 $g.FillEllipse((Brush '#000000'), 0, 0, 450, 450)
 Text 'Mon 23' 27 '#B4B2A9' 94 86
+
+# Battery dots, shown at 80%: four lit, one unlit.
+$dots = '#F5566E', '#F28C28', '#F2C500', '#9CCB3B', '#2C2C2A'
+foreach ($i in 0..4) {
+    $x = 356 - (4 - $i) * 17.5 - 5.75
+    $g.FillEllipse((Brush $dots[$i]), $x, 104 - 5.75, 11.5, 11.5)
+}
 Text '10:08' 106 '#F5566E' 89 114
 
 # Calorie slot origin is (74, 236); the zero line is at slot x = 151.

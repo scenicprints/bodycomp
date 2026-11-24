@@ -16,6 +16,67 @@
       </PartText>
     </Group>
 
+    <Group x="0" y="0" width="450" height="450" name="battery">
+      <Variant mode="AMBIENT" target="alpha" value="170"/>
+      <PartDraw x="0" y="0" width="450" height="450">
+        <Ellipse x="280.2" y="98.2" width="11.5" height="11.5"><Fill color="#FF2C2C2A"/></Ellipse>
+        <Ellipse x="297.8" y="98.2" width="11.5" height="11.5"><Fill color="#FF2C2C2A"/></Ellipse>
+        <Ellipse x="315.2" y="98.2" width="11.5" height="11.5"><Fill color="#FF2C2C2A"/></Ellipse>
+        <Ellipse x="332.8" y="98.2" width="11.5" height="11.5"><Fill color="#FF2C2C2A"/></Ellipse>
+        <Ellipse x="350.2" y="98.2" width="11.5" height="11.5"><Fill color="#FF2C2C2A"/></Ellipse>
+      </PartDraw>
+      <Condition>
+        <Expressions>
+          <Expression name="above0"><![CDATA[[BATTERY_PERCENT] > 0]]></Expression>
+        </Expressions>
+        <Compare expression="above0">
+          <PartDraw x="0" y="0" width="450" height="450">
+            <Ellipse x="280.2" y="98.2" width="11.5" height="11.5"><Fill color="#FFF5566E"/></Ellipse>
+          </PartDraw>
+        </Compare>
+      </Condition>
+      <Condition>
+        <Expressions>
+          <Expression name="above20"><![CDATA[[BATTERY_PERCENT] > 20]]></Expression>
+        </Expressions>
+        <Compare expression="above20">
+          <PartDraw x="0" y="0" width="450" height="450">
+            <Ellipse x="297.8" y="98.2" width="11.5" height="11.5"><Fill color="#FFF28C28"/></Ellipse>
+          </PartDraw>
+        </Compare>
+      </Condition>
+      <Condition>
+        <Expressions>
+          <Expression name="above40"><![CDATA[[BATTERY_PERCENT] > 40]]></Expression>
+        </Expressions>
+        <Compare expression="above40">
+          <PartDraw x="0" y="0" width="450" height="450">
+            <Ellipse x="315.2" y="98.2" width="11.5" height="11.5"><Fill color="#FFF2C500"/></Ellipse>
+          </PartDraw>
+        </Compare>
+      </Condition>
+      <Condition>
+        <Expressions>
+          <Expression name="above60"><![CDATA[[BATTERY_PERCENT] > 60]]></Expression>
+        </Expressions>
+        <Compare expression="above60">
+          <PartDraw x="0" y="0" width="450" height="450">
+            <Ellipse x="332.8" y="98.2" width="11.5" height="11.5"><Fill color="#FF9CCB3B"/></Ellipse>
+          </PartDraw>
+        </Compare>
+      </Condition>
+      <Condition>
+        <Expressions>
+          <Expression name="above80"><![CDATA[[BATTERY_PERCENT] > 80]]></Expression>
+        </Expressions>
+        <Compare expression="above80">
+          <PartDraw x="0" y="0" width="450" height="450">
+            <Ellipse x="350.2" y="98.2" width="11.5" height="11.5"><Fill color="#FF4CB86A"/></Ellipse>
+          </PartDraw>
+        </Compare>
+      </Condition>
+    </Group>
+
     <DigitalClock x="89" y="118" width="320" height="120">
       <Variant mode="AMBIENT" target="alpha" value="200"/>
       <TimeText format="h:mm" hourFormat="SYNC_TO_DEVICE" align="START" x="0" y="0" width="320" height="120">
