@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:health/health.dart';
 
 import 'food.dart';
@@ -190,21 +191,28 @@ const List<HealthDataAccess> _access = <HealthDataAccess>[
 
 /// Writes each day's food totals to Health Connect as one nutrition record,
 /// for every date with food (or only [onlyDates]) inside the window whose
-/// totals changed since the last write. Never throws.
-Future<void> syncNutritionToHealth(List<FoodEntry> foods,
+/// totals changed since the last write. Never throws; says what it did.
+Future<NutritionSyncResult> syncNutritionToHealth(List<FoodEntry> foods,
     {Set<String>? onlyDates}) async {
-  if (!Platform.isAndroid) return;
+  if (!Platform.isAndroid) {
+    return const NutritionSyncResult(NutritionSyncOutcome.notAndroid);
+  }
   try {
     final DateTime now = DateTime.now();
     final Map<String, String> written =
         decodeNutritionLedger(AppStorage.getPref(kNutritionSyncedPref, ''));
     final List<NutritionDay> todo = nutritionDaysToSync(foods,
         onlyDates: onlyDates, written: written, now: now);
-    if (todo.isEmpty) return;
+    if (todo.isEmpty) {
+      return NutritionSyncResult(NutritionSyncOutcome.upToDate,
+          ledgerDays: written.length);
+    }
 
     final Health health = Health();
     await health.configure();
-    if (!await health.isHealthConnectAvailable()) return;
+    if (!await health.isHealthConnectAvailable()) {
+      return const NutritionSyncResult(NutritionSyncOutcome.unavailable);
+    }
     // Only ask when not already granted, so a refusal is not nagged about
     // on every save.
     bool granted =
@@ -212,9 +220,13 @@ Future<void> syncNutritionToHealth(List<FoodEntry> foods,
     if (!granted) {
       granted = await health.requestAuthorization(_types, permissions: _access);
     }
-    if (!granted) return;
+    if (!granted) {
+      return const NutritionSyncResult(NutritionSyncOutcome.denied);
+    }
 
     bool changed = false;
+    int wrote = 0;
+    int failed = 0;
     for (final NutritionDay day in todo) {
       try {
         // Replace whole: whatever this app wrote in the window goes first,
@@ -239,18 +251,153 @@ Future<void> syncNutritionToHealth(List<FoodEntry> foods,
           fatTotal: day.fat,
           recordingMethod: RecordingMethod.manual,
         );
-        if (!ok) continue;
+        if (!ok) {
+          failed++;
+          continue;
+        }
         written[day.date] = day.stamp;
+        wrote++;
         changed = true;
       } catch (_) {
         // This day stays unstamped and is tried again next save.
+        failed++;
       }
     }
     if (changed) {
       AppStorage.savePref(
           kNutritionSyncedPref, encodeNutritionLedger(written, now));
     }
-  } catch (_) {
+    return NutritionSyncResult(
+        failed > 0 && wrote == 0
+            ? NutritionSyncOutcome.failed
+            : NutritionSyncOutcome.wrote,
+        wrote: wrote,
+        failed: failed,
+        ledgerDays: written.length);
+  } catch (e) {
     // No Health Connect, no permission, a plugin error: the log is fine.
+    return NutritionSyncResult(NutritionSyncOutcome.failed, error: '$e');
+  }
+}
+
+/// What a sync did, for the Settings card. Callers that save food ignore it.
+enum NutritionSyncOutcome {
+  notAndroid,
+  unavailable,
+  denied,
+  upToDate,
+  wrote,
+  failed,
+}
+
+class NutritionSyncResult {
+  final NutritionSyncOutcome outcome;
+  final int wrote;
+  final int failed;
+  /// Days Health Connect currently holds a record for, per the ledger.
+  final int ledgerDays;
+  final String? error;
+  const NutritionSyncResult(this.outcome,
+      {this.wrote = 0, this.failed = 0, this.ledgerDays = 0, this.error});
+
+  /// One line for the user.
+  String get message {
+    switch (outcome) {
+      case NutritionSyncOutcome.notAndroid:
+        return 'Health Connect is Android only.';
+      case NutritionSyncOutcome.unavailable:
+        return 'Health Connect is not available on this phone.';
+      case NutritionSyncOutcome.denied:
+        return 'Nutrition permission not granted. Allow BodyComp to write '
+            'nutrition in Health Connect, then sync again.';
+      case NutritionSyncOutcome.upToDate:
+        return 'Up to date: $ledgerDays day${ledgerDays == 1 ? '' : 's'} in '
+            'Health Connect.';
+      case NutritionSyncOutcome.wrote:
+        return 'Wrote $wrote day${wrote == 1 ? '' : 's'}'
+            '${failed > 0 ? ', $failed failed' : ''}. '
+            '$ledgerDays day${ledgerDays == 1 ? '' : 's'} in Health Connect.';
+      case NutritionSyncOutcome.failed:
+        return 'Sync failed${error != null ? ': $error' : ''}.';
+    }
+  }
+}
+
+/// Settings card: where the food log stands in Health Connect, and a button
+/// to push the whole window now. Self-contained so Settings need not be
+/// handed the food list; it reads the saved log directly.
+class NutritionSyncCard extends StatefulWidget {
+  final Color accent;
+  const NutritionSyncCard({super.key, required this.accent});
+  @override
+  State<NutritionSyncCard> createState() => _NutritionSyncCardState();
+}
+
+class _NutritionSyncCardState extends State<NutritionSyncCard> {
+  bool _busy = false;
+  String? _msg;
+
+  Future<void> _sync() async {
+    setState(() {
+      _busy = true;
+      _msg = null;
+    });
+    final NutritionSyncResult r =
+        await syncNutritionToHealth(AppStorage.getFoods());
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      _msg = r.message;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final int days =
+        decodeNutritionLedger(AppStorage.getPref(kNutritionSyncedPref, ''))
+            .length;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+          color: kSurface1,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: kBorder)),
+      child:
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: <Widget>[
+        Row(children: <Widget>[
+          Icon(Icons.sync_rounded, size: 15, color: widget.accent),
+          const SizedBox(width: 6),
+          Text('HEALTH CONNECT',
+              style: TextStyle(
+                  fontSize: 11,
+                  color: Colors.grey[600],
+                  letterSpacing: 1,
+                  fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 4),
+        const Text('Food log to Health Connect',
+            style: TextStyle(
+                fontSize: 13.5,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFFDDDDDD))),
+        Text(
+            'Each day\'s calories, protein, carbs and fat go to Health Connect '
+            'as one record, so Workouts can read them. Syncs on every save; '
+            '$days day${days == 1 ? '' : 's'} written so far.',
+            style:
+                TextStyle(fontSize: 11, color: Colors.grey[600], height: 1.35)),
+        const SizedBox(height: 10),
+        Row(children: <Widget>[
+          TextButton(
+              onPressed: _busy ? null : _sync,
+              child: Text(_busy ? 'Syncing…' : 'Sync the last 60 days',
+                  style: TextStyle(color: widget.accent))),
+        ]),
+        if (_msg != null)
+          Text(_msg!,
+              style: TextStyle(
+                  fontSize: 11, color: Colors.grey[400], height: 1.35)),
+      ]),
+    );
   }
 }
