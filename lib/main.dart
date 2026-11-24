@@ -1125,13 +1125,19 @@ class _BodyCompAppState extends State<BodyCompApp> {
     _syncCustomFoods();
     // And whatever the gym TV has finished since we last looked.
     _syncGymboard();
-    // Hand today's and yesterday's food totals to Health Connect, in case
-    // the last save happened while it was unavailable.
+    // Hand food totals to Health Connect. The first time (empty ledger) the
+    // whole 60-day window goes, so Workouts has a week to read straight
+    // away; after that only today and yesterday, in case the last save
+    // happened while Health Connect was unavailable.
     final DateTime now = DateTime.now();
-    syncNutritionToHealth(_foods, onlyDates: <String>{
-      formatDate(now),
-      formatDate(DateTime(now.year, now.month, now.day - 1)),
-    });
+    final bool firstSync = AppStorage.getPref(kNutritionSyncedPref, '').isEmpty;
+    syncNutritionToHealth(_foods,
+        onlyDates: firstSync
+            ? null
+            : <String>{
+                formatDate(now),
+                formatDate(DateTime(now.year, now.month, now.day - 1)),
+              });
   }
 
   /// Mirror Gymboard's history, then ask the watch how hard each one was.
@@ -5942,6 +5948,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _recalibrateCard(accent),
           const SizedBox(height: 14),
           _advisorCard(accent),
+          const SizedBox(height: 12),
+          NutritionSyncCard(accent: accent),
           const SizedBox(height: 12),
           UpdateCard(accent: accent),
           const SizedBox(height: 12),
