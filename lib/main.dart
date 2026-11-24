@@ -1085,6 +1085,16 @@ class _BodyCompAppState extends State<BodyCompApp> {
     });
   }
 
+  /// Send today's eaten calories to the watch face. Cheap and best-effort;
+  /// the watch zeroes the number itself when the date rolls over.
+  void _pushWatchCalories() {
+    final String today = formatDate(DateTime.now());
+    WatchBridge.sendCalories(
+      date: today,
+      eaten: FoodMath.totals(_foods, today).calories.round(),
+    );
+  }
+
   /// The campaign (and Chad's race) starts the first day the app runs with
   /// a calibration in place — stamped once, then permanent.
   void _ensureCampaignStart() {
@@ -1121,6 +1131,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
           enabled: AppStorage.getPref('bossReminders', 'on') == 'on');
       WidgetsBinding.instance.addPostFrameCallback((_) => _pushWidget());
     }
+    _pushWatchCalories();
     // Pull the latest My Foods from the private data repo in the background.
     _syncCustomFoods();
     // And whatever the gym TV has finished since we last looked.
@@ -1286,6 +1297,7 @@ class _BodyCompAppState extends State<BodyCompApp> {
     // Fire and forget: Health Connect gets the new day totals, Workouts
     // reads them from there. Silent if it is missing or says no.
     if (changed.isNotEmpty) syncNutritionToHealth(f, onlyDates: changed);
+    _pushWatchCalories();
   }
 
   void _setFasted(List<String> dates) {

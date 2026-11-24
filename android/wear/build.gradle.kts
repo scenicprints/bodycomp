@@ -4,9 +4,10 @@ import java.io.FileInputStream
 // ═══════════════════════════════════════════════════════════════════════
 //  BodyComp — Wear OS companion app (standalone, native Android Views).
 //
-//  Shows the live coached run (phase, countdown, Pause/Stop) on a Pixel
-//  Watch. Talks to the phone over the Wearable Data Layer, so it MUST share
-//  the phone app's applicationId AND be signed with the SAME key.
+//  Feeds the BodyComp watch face (:watchface) with calories eaten and
+//  burned. It receives the eaten total from the phone over the Wearable
+//  Data Layer, so it MUST share the phone app's applicationId AND be signed
+//  with the SAME key.
 // ═══════════════════════════════════════════════════════════════════════
 
 plugins {
@@ -83,12 +84,16 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
-    // ComponentActivity (a LifecycleOwner, and NOT tied to an AppCompat theme)
-    // so we can attach the ambient observer.
+    // ComponentActivity, for the permission prompt (ActivityResult API).
     implementation("androidx.activity:activity-ktx:1.9.3")
-    // Ambient / always-on support so the run stays on the wrist through a
-    // wrist-down instead of the watch returning to its face.
-    implementation("androidx.wear:wear:1.3.0")
-    // Wearable Data Layer (MessageClient / NodeClient).
+    // Play services drags in an old Fragment library; the permission prompt
+    // (ActivityResult API) needs 1.3.0 or newer, and lint enforces it.
+    implementation("androidx.fragment:fragment:1.8.5")
+    // Wearable Data Layer: receives the eaten total from the phone.
     implementation("com.google.android.gms:play-services-wearable:18.2.0")
+    // Calorie-balance watch face support: publish eaten/burned to the face
+    // as a complication. "Burned" is a dynamic value the watch evaluates
+    // itself (protolayout-expression), so this app never reads it.
+    implementation("androidx.wear.watchface:watchface-complications-data-source-ktx:1.3.0")
+    implementation("androidx.wear.protolayout:protolayout-expression:1.0.0")
 }

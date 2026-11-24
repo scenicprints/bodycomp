@@ -2,8 +2,8 @@
 
     <uses-feature android:name="android.hardware.type.watch" />
 
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Lets the watch face show the watch's own "calories burned today". -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <application
         android:allowBackup="true"
@@ -12,18 +12,13 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
-        <!-- Required for ambient (always-on) support. -->
-        <uses-library
-            android:name="com.google.android.wearable"
-            android:required="false" />
-
         <!-- Runs without a phone-side counterpart being required to install. -->
         <meta-data
             android:name="com.google.android.wearable.standalone"
             android:value="true" />
 
         <activity
-            android:name=".RunActivity"
+            android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -33,18 +28,37 @@
             </intent-filter>
         </activity>
 
-        <!-- Receives run-state pushes from the phone even when the watch app
-             isn't open (holds the latest state and best-effort launches the UI). -->
+        <!-- Receives today's eaten calories from the phone, even when the
+             watch app isn't open. -->
         <service
             android:name=".PhoneMessageService"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.google.android.gms.wearable.MESSAGE_RECEIVED" />
+                <action android:name="com.google.android.gms.wearable.DATA_CHANGED" />
                 <data
                     android:host="*"
                     android:pathPrefix="/bodycomp"
                     android:scheme="wear" />
             </intent-filter>
         </service>
+
+        <!-- Supplies eaten/burned calories to the BodyComp watch face. -->
+        <service
+            android:name=".CalorieComplicationService"
+            android:exported="true"
+            android:icon="@drawable/ic_launcher"
+            android:label="Calorie balance"
+            android:permission="com.google.android.wearable.permission.BIND_COMPLICATION_PROVIDER">
+            <intent-filter>
+                <action android:name="android.support.wearable.complications.ACTION_COMPLICATION_UPDATE_REQUEST" />
+            </intent-filter>
+            <meta-data
+                android:name="android.support.wearable.complications.SUPPORTED_TYPES"
+                android:value="RANGED_VALUE" />
+            <meta-data
+                android:name="android.support.wearable.complications.UPDATE_PERIOD_SECONDS"
+                android:value="3600" />
+        </service>
+
     </application>
 </manifest>
